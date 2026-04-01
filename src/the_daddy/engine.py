@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .agents.diagnoser import Diagnoser
 from .agents.improvement_planner import ImprovementPlanner
 from .agents.reviewer import WakeReviewer
 from .agents.vetter import ExternalVetter
 from .config import Settings, get_settings
-from .logging_utils import console, write_local_summary
+from .logging_utils import write_local_summary
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .models import ArchitectureReview, ExternalProposal, RunRecord, utc_now_iso
@@ -44,8 +42,78 @@ class DaddyEngine:
             recent_summary=latest.diagnosis if latest else "",
         )
         self.memory.add_architecture_review(review)
-        trace.add("architecture_review.done", risk=review.risk_level, recommendations=len(review.recommendations))
+        trace.add(
+            "architecture_review.done",
+            risk=review.risk_level,
+            recommendations=len(review.recommendations),
+            self_evolution_actions=len(review.self_evolution_actions),
+        )
         return review
+
+    def _execute_self_evolution(self, review: ArchitectureReview, trace: TraceBuffer):
+        planned = self.improvement_planner.plan_self_evolution(
+            review,
+            enabled=self.settings.enable_self_evolution,
+            max_actions=self.settings.self_evolution_max_actions,
+        )
+        proposed_count = len(planned.actions)
+        if not planned.actions:
+            return self.improvement_planner.build_execution_result(
+                enabled=self.settings.enable_self_evolution,
+                attempted=False,
+                applied=False,
+                route="disabled" if not self.settings.enable_self_evolution else "none",
+                summary=planned.reasons[0] if planned.reasons else "No self-evolution action planned.",
+                reasons=planned.reasons,
+                proposed_count=0,
+                applied_count=0,
+                patches=[],
+            )
+
+        trace.add("self_evolution.planned", proposed_count=proposed_count)
+        policy = classify_patch_risk(planned.actions)
+        trace.add("self_evolution.policy", route=policy.route, passed=policy.passed)
+
+        if not policy.passed or policy.route != "safe":
+            reasons = [*planned.reasons, *policy.reasons]
+            self.memory.record_improvement_result(
+                "Wake review self-evolution",
+                applied=False,
+                payload={"route": policy.route, "reasons": reasons, "proposed_count": proposed_count},
+            )
+            return self.improvement_planner.build_execution_result(
+                enabled=self.settings.enable_self_evolution,
+                attempted=True,
+                applied=False,
+                route=policy.route,
+                summary="Self-evolution changes were generated but not auto-applied.",
+                reasons=reasons,
+                proposed_count=proposed_count,
+                applied_count=0,
+                patches=[],
+            )
+
+        patches = []
+        for change in planned.actions:
+            patches.append(apply_patch_action(self.settings.target_root, change, self.settings.allow_extensions))
+        reasons = [*planned.reasons, *policy.reasons]
+        self.memory.record_improvement_result(
+            "Wake review self-evolution",
+            applied=True,
+            payload={"route": policy.route, "reasons": reasons, "proposed_count": proposed_count, "patches": patches},
+        )
+        trace.add("self_evolution.applied", applied_count=len(patches))
+        return self.improvement_planner.build_execution_result(
+            enabled=self.settings.enable_self_evolution,
+            attempted=True,
+            applied=True,
+            route=policy.route,
+            summary="Applied safe self-evolution changes from wake audit.",
+            reasons=reasons,
+            proposed_count=proposed_count,
+            applied_count=len(patches),
+            patches=patches,
+        )
 
     def run(self) -> RunRecord:
         run_id = make_run_id()
@@ -57,6 +125,7 @@ class DaddyEngine:
         record.architecture_review = review
         if review:
             record.backlog_updates = self.improvement_planner.merge_review_into_backlog(self.memory.state, review)
+            record.self_evolution = self._execute_self_evolution(review, trace)
             self.memory.save()
 
         prior_attempts = []
@@ -116,11 +185,7 @@ class DaddyEngine:
             try:
                 patch_events = []
                 for change in plan.changes:
-                    patch_events.append(apply_patch_action(
-                        self.settings.target_root,
-                        change,
-                        self.settings.allow_extensions,
-                    ))
+                    patch_events.append(apply_patch_action(self.settings.target_root, change, self.settings.allow_extensions))
                 record.patches_applied.extend(patch_events)
                 self.memory.record_failure_pattern(
                     signature,

@@ -6,7 +6,7 @@ on:
     - cron: "0 */12 * * *"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   daddy:
@@ -24,12 +24,16 @@ jobs:
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
       R2_REGION: ${{ vars.R2_REGION || 'auto' }}
       DADDY_COMMAND: ${{ vars.DADDY_COMMAND || 'pytest -q' }}
+      DADDY_MAINTENANCE_COMMAND: ${{ vars.DADDY_MAINTENANCE_COMMAND || 'pytest -q' }}
       DADDY_TARGET_ROOT: ${{ vars.DADDY_TARGET_ROOT || '.' }}
       DADDY_MAX_ATTEMPTS: ${{ vars.DADDY_MAX_ATTEMPTS || '4' }}
       DADDY_RUN_TIMEOUT_SECONDS: ${{ vars.DADDY_RUN_TIMEOUT_SECONDS || '1200' }}
-
+      DADDY_ENABLE_SELF_EVOLUTION: ${{ vars.DADDY_ENABLE_SELF_EVOLUTION || 'true' }}
+      DADDY_SELF_EVOLUTION_MAX_ACTIONS: ${{ vars.DADDY_SELF_EVOLUTION_MAX_ACTIONS || '3' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -42,6 +46,18 @@ jobs:
 
       - name: Run The Daddy
         run: daddy run
+
+      - name: Commit safe self-evolution changes
+        run: |
+          if git diff --quiet; then
+            echo "No repo changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore: apply daddy safe self-evolution"
+          git push
 
       - name: Export summary
         if: always()

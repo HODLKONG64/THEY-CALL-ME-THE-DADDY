@@ -50,6 +50,20 @@ class MemoryRepository:
         self.state.failure_patterns[signature]["seen"] += 1
         self.save()
 
+    def record_improvement_result(self, title: str, *, applied: bool, payload: dict) -> None:
+        bucket = self.state.accepted_improvements if applied else self.state.rejected_improvements
+        if title not in bucket:
+            bucket.append(title)
+        self.state.improvement_history.append(
+            {
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "title": title,
+                "applied": applied,
+                "payload": payload,
+            }
+        )
+        self.save()
+
     def latest_review(self):
         return self.state.architecture_reviews[-1] if self.state.architecture_reviews else None
 

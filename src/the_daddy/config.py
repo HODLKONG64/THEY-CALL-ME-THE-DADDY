@@ -20,18 +20,25 @@ class Settings(BaseModel):
 
     target_root: Path = Field(default_factory=lambda: Path(os.getenv("DADDY_TARGET_ROOT", ".")).resolve())
     command: str = Field(default_factory=lambda: os.getenv("DADDY_COMMAND", "pytest -q"))
+    maintenance_command: str = Field(default_factory=lambda: os.getenv("DADDY_MAINTENANCE_COMMAND", "pytest -q"))
     max_attempts: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_ATTEMPTS", "4")))
     max_file_bytes: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_FILE_BYTES", "120000")))
     run_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("DADDY_RUN_TIMEOUT_SECONDS", "1200")))
     heartbeat_seconds: int = Field(default_factory=lambda: int(os.getenv("DADDY_HEARTBEAT_SECONDS", "5")))
     enable_patching: bool = Field(default_factory=lambda: os.getenv("DADDY_ENABLE_PATCHING", "true").lower() == "true")
     enable_test_generation: bool = Field(default_factory=lambda: os.getenv("DADDY_ENABLE_TEST_GENERATION", "true").lower() == "true")
-    allow_extensions: List[str] = Field(default_factory=lambda: [
-        ext.strip() for ext in os.getenv(
-            "DADDY_ALLOW_EXTENSIONS",
-            ".py,.js,.ts,.tsx,.jsx,.json,.yml,.yaml,.toml,.md"
-        ).split(",") if ext.strip()
-    ])
+    enable_self_evolution: bool = Field(default_factory=lambda: os.getenv("DADDY_ENABLE_SELF_EVOLUTION", "true").lower() == "true")
+    self_evolution_max_actions: int = Field(default_factory=lambda: int(os.getenv("DADDY_SELF_EVOLUTION_MAX_ACTIONS", "3")))
+    allow_extensions: List[str] = Field(
+        default_factory=lambda: [
+            ext.strip()
+            for ext in os.getenv(
+                "DADDY_ALLOW_EXTENSIONS",
+                ".py,.js,.ts,.tsx,.jsx,.json,.yml,.yaml,.toml,.md",
+            ).split(",")
+            if ext.strip()
+        ]
+    )
 
     r2_endpoint_url: str = Field(default_factory=lambda: os.getenv("R2_ENDPOINT_URL", ""))
     r2_access_key_id: str = Field(default_factory=lambda: os.getenv("R2_ACCESS_KEY_ID", ""))
@@ -52,6 +59,7 @@ class Settings(BaseModel):
     @property
     def has_r2(self) -> bool:
         return all([self.r2_endpoint_url, self.r2_access_key_id, self.r2_secret_access_key, self.r2_bucket])
+
 
 
 def get_settings() -> Settings:

@@ -2,7 +2,7 @@
 
 A full OpenAI-powered debugging and self-improvement swarm for software repos.
 
-## What it does.
+## What it does
 
 - Runs your repo command (tests, app start, lint, etc.)
 - Watches logs and stack traces
@@ -12,6 +12,7 @@ A full OpenAI-powered debugging and self-improvement swarm for software repos.
   - safe patch plan
   - external-agent vetting
   - self-improvement recommendations
+  - bounded self-evolution patch actions
 - Applies bounded file patches
 - Reruns verification
 - Saves every run, recommendation, reputation score, and decision to Cloudflare R2
@@ -26,31 +27,45 @@ A full OpenAI-powered debugging and self-improvement swarm for software repos.
 ## Core design
 
 ### Wake cycle
+
 1. Load durable memory from Cloudflare R2
 2. Read latest repo state and recent run history
-3. Run OpenAI architecture audit
+3. Run OpenAI architecture audit against the actual repo tree and key files
 4. Save advisory + backlog
-5. Execute debugging workflow
-6. Verify results
-7. Save everything back to R2
+5. Auto-apply only low-risk self-evolution actions
+6. Execute debugging workflow
+7. Verify results
+8. Save everything back to R2
 
 ### Agent graph
+
 - **Wake Auditor**: audits structure, drift, and missing safeguards
 - **Diagnoser**: turns logs and stack traces into root-cause hypotheses
 - **Patch Planner**: suggests minimal targeted changes
 - **Vetter**: reviews unknown-agent submissions
 - **Verifier**: reruns command and decides pass/fail
-- **Improvement Planner**: converts advice into backlog entries
+- **Improvement Planner**: converts advice into backlog entries and self-evolution candidates
 - **Risk Gate**: classifies changes into safe / branch / recommend-only
 
 ### Memory
+
 Durable state is stored in Cloudflare R2 under a single object:
+
 - `the-daddy/memory.json`
 
 Per-run artifacts are also stored:
+
 - `the-daddy/runs/<timestamp>.json`
 - `the-daddy/quarantine/<timestamp>-<agent>.json`
 - `the-daddy/advisories/<timestamp>.json`
+
+The memory also keeps:
+
+- applied improvements
+- rejected improvements
+- improvement history
+- failure patterns
+- agent reputation
 
 ## Quick start
 
@@ -73,6 +88,21 @@ Start the dashboard API:
 daddy-api
 ```
 
+## Self-evolution
+
+Self-evolution is now a separate lane from runtime debugging.
+
+- the wake audit can propose concrete patch actions
+- only low-risk actions are auto-applied
+- workflow and sensitive targets are blocked or staged by policy
+- GitHub Actions can commit safe self-evolution changes back to the repo
+
+Key environment flags:
+
+- `DADDY_ENABLE_SELF_EVOLUTION=true`
+- `DADDY_SELF_EVOLUTION_MAX_ACTIONS=3`
+- `DADDY_MAINTENANCE_COMMAND=pytest -q`
+
 ## External agent intake
 
 Submit an unknown-agent proposal:
@@ -82,6 +112,7 @@ daddy submit-proposal --agent-id scout-1 --file proposal.json
 ```
 
 The system will:
+
 - quarantine it
 - send it to OpenAI vetting
 - run hard policy rules
@@ -91,13 +122,13 @@ The system will:
 ## GitHub Actions
 
 Workflow file:
+
 - `.github/workflows/daddy-cycle.yml`
 
 It runs every 12 hours and on manual dispatch.
 
 ## Notes
 
-This is a bounded self-healing system for debugging and maintenance.
+This is a bounded self-healing and bounded self-evolving system for debugging and maintenance.
 
-It is **not** a free-for-all autonomous shell bot.
-High-risk actions are blocked unless you explicitly wire those permissions in yourself.
+It is **not** a free-for-all autonomous shell bot. High-risk actions are blocked unless you explicitly wire those permissions in yourself.

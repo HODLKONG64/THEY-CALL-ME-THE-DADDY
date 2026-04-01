@@ -35,10 +35,13 @@ class PatchAction(BaseModel):
 
 class ArchitectureReview(BaseModel):
     diagnosis: str
+    system_intent: str = ""
     strengths: List[str] = Field(default_factory=list)
     weaknesses: List[str] = Field(default_factory=list)
     recommendations: List[str] = Field(default_factory=list)
     backlog_items: List[str] = Field(default_factory=list)
+    self_evolution_actions: List[PatchAction] = Field(default_factory=list)
+    execution_notes: List[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     reviewed_at: str = Field(default_factory=utc_now_iso)
 
@@ -71,6 +74,18 @@ class ExternalProposal(BaseModel):
     submitted_at: str = Field(default_factory=utc_now_iso)
 
 
+class SelfEvolutionExecution(BaseModel):
+    enabled: bool = False
+    attempted: bool = False
+    applied: bool = False
+    route: Literal["safe", "branch", "recommend", "reject", "disabled", "none"] = "none"
+    summary: str = ""
+    reasons: List[str] = Field(default_factory=list)
+    proposed_count: int = 0
+    applied_count: int = 0
+    patches: List[Dict] = Field(default_factory=list)
+
+
 class RunRecord(BaseModel):
     run_id: str
     started_at: str = Field(default_factory=utc_now_iso)
@@ -80,6 +95,7 @@ class RunRecord(BaseModel):
     success: bool = False
     summary: str = ""
     architecture_review: Optional[ArchitectureReview] = None
+    self_evolution: Optional[SelfEvolutionExecution] = None
     diagnostic_history: List[DiagnosticPlan] = Field(default_factory=list)
     patches_applied: List[Dict] = Field(default_factory=list)
     verification: Optional[CommandResult] = None
@@ -113,6 +129,7 @@ class MemoryState(BaseModel):
     backlog: List[str] = Field(default_factory=list)
     accepted_improvements: List[str] = Field(default_factory=list)
     rejected_improvements: List[str] = Field(default_factory=list)
+    improvement_history: List[Dict] = Field(default_factory=list)
     failure_patterns: Dict[str, Dict] = Field(default_factory=dict)
     successful_fixes: Dict[str, List[Dict]] = Field(default_factory=dict)
     failed_fixes: Dict[str, List[Dict]] = Field(default_factory=dict)
