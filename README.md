@@ -2,7 +2,7 @@
 
 A full OpenAI-powered debugging and self-improvement swarm for software repos.
 
-## What it does
+## What it does.
 
 - Runs your repo command (tests, app start, lint, etc.)
 - Watches logs and stack traces
