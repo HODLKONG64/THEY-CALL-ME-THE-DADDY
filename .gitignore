@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+doctor_local/
+.env
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.coverage
+htmlcov/
