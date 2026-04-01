@@ -1,0 +1,56 @@
+name: Daddy Cycle
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */12 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  daddy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL_MAIN: ${{ vars.OPENAI_MODEL_MAIN || 'gpt-5.4' }}
+      OPENAI_MODEL_REVIEW: ${{ vars.OPENAI_MODEL_REVIEW || 'gpt-5.4' }}
+      OPENAI_MODEL_VET: ${{ vars.OPENAI_MODEL_VET || 'gpt-5.4-mini' }}
+      OPENAI_MODEL_LIGHT: ${{ vars.OPENAI_MODEL_LIGHT || 'gpt-5.4-nano' }}
+      R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_REGION: ${{ vars.R2_REGION || 'auto' }}
+      DADDY_COMMAND: ${{ vars.DADDY_COMMAND || 'pytest -q' }}
+      DADDY_TARGET_ROOT: ${{ vars.DADDY_TARGET_ROOT || '.' }}
+      DADDY_MAX_ATTEMPTS: ${{ vars.DADDY_MAX_ATTEMPTS || '4' }}
+      DADDY_RUN_TIMEOUT_SECONDS: ${{ vars.DADDY_RUN_TIMEOUT_SECONDS || '1200' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run The Daddy
+        run: daddy run
+
+      - name: Export summary
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("doctor_local/last_run_summary.txt")
+          if p.exists():
+              print(p.read_text())
+          else:
+              print("No run summary generated.")
+          PY
