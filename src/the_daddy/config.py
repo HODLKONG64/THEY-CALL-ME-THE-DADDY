@@ -29,6 +29,7 @@ class Settings(BaseModel):
     enable_test_generation: bool = Field(default_factory=lambda: os.getenv("DADDY_ENABLE_TEST_GENERATION", "true").lower() == "true")
     enable_self_evolution: bool = Field(default_factory=lambda: os.getenv("DADDY_ENABLE_SELF_EVOLUTION", "true").lower() == "true")
     self_evolution_max_actions: int = Field(default_factory=lambda: int(os.getenv("DADDY_SELF_EVOLUTION_MAX_ACTIONS", "3")))
+    self_evolution_circuit_breaker_threshold: int = Field(default_factory=lambda: int(os.getenv("DADDY_SELF_EVOLUTION_CIRCUIT_BREAKER_THRESHOLD", "3")))
     allow_extensions: List[str] = Field(
         default_factory=lambda: [
             ext.strip()

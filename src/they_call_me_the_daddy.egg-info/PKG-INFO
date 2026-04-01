@@ -1,3 +1,20 @@
+Metadata-Version: 2.4
+Name: they-call-me-the-daddy
+Version: 1.0.0
+Summary: OpenAI-driven self-improving debugging swarm with R2 memory, external agent vetting, and workflow automation
+Author-email: OpenAI <noreply@example.com>
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=2.0.0
+Requires-Dist: boto3>=1.35.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: pydantic>=2.8.2
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: rich>=13.7.1
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: pytest>=8.0.0
+
 # THEY-CALL-ME-THE-DADDY
 
 A full OpenAI-powered debugging and self-improvement swarm for software repos.
@@ -101,7 +118,6 @@ Key environment flags:
 
 - `DADDY_ENABLE_SELF_EVOLUTION=true`
 - `DADDY_SELF_EVOLUTION_MAX_ACTIONS=3`
-- `DADDY_SELF_EVOLUTION_CIRCUIT_BREAKER_THRESHOLD=3`
 - `DADDY_MAINTENANCE_COMMAND=pytest -q`
 
 ## External agent intake

@@ -51,6 +51,26 @@ class DaddyEngine:
         return review
 
     def _execute_self_evolution(self, review: ArchitectureReview, trace: TraceBuffer):
+        recent_failures = 0
+        for entry in reversed(self.memory.state.improvement_history):
+            if entry.get("title") != "Wake review self-evolution":
+                continue
+            if entry.get("applied"):
+                break
+            recent_failures += 1
+            if recent_failures >= self.settings.self_evolution_circuit_breaker_threshold:
+                return self.improvement_planner.build_execution_result(
+                    enabled=self.settings.enable_self_evolution,
+                    attempted=False,
+                    applied=False,
+                    route="disabled",
+                    summary="Self-evolution auto-apply disabled by circuit breaker.",
+                    reasons=["Recent wake-review self-evolution attempts repeatedly failed or were blocked."],
+                    proposed_count=0,
+                    applied_count=0,
+                    patches=[],
+                )
+
         planned = self.improvement_planner.plan_self_evolution(
             review,
             enabled=self.settings.enable_self_evolution,

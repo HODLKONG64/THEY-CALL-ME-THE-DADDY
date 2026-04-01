@@ -1,0 +1,3 @@
+[console_scripts]
+daddy = the_daddy.cli:main
+daddy-api = the_daddy.dashboard:main
