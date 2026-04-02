@@ -40,6 +40,7 @@ PROACTIVE_RUNTIME_PATH = "src/the_daddy/runtime/trace_summary.py"
 FALLBACK_RUNTIME_PATH = "src/the_daddy/runtime/reviewer_fallback.py"
 ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
 ERROR_DIGEST_RUNTIME_PATH = "src/the_daddy/runtime/error_digest.py"
+RUN_HEALTH_RUNTIME_PATH = "src/the_daddy/runtime/run_health.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -50,6 +51,7 @@ SAFE_NEW_FILE_ALLOWLIST = {
     FALLBACK_RUNTIME_PATH,
     ARCHITECTURE_RUNTIME_PATH,
     ERROR_DIGEST_RUNTIME_PATH,
+    RUN_HEALTH_RUNTIME_PATH,
 }
 
 ALLOWLISTED_RUNTIME_HELPERS = {
@@ -57,6 +59,7 @@ ALLOWLISTED_RUNTIME_HELPERS = {
     FALLBACK_RUNTIME_PATH,
     ARCHITECTURE_RUNTIME_PATH,
     ERROR_DIGEST_RUNTIME_PATH,
+    RUN_HEALTH_RUNTIME_PATH,
 }
 
 BANNED_INVENTED_MODULE_FILENAMES = {
@@ -182,6 +185,9 @@ class WakeReviewer:
             "digest": "digest",
             "failure": "failure",
             "failures": "failure",
+            "run": "run",
+            "health": "health",
+            "success": "success",
         }
 
         stopwords = {
@@ -231,6 +237,8 @@ class WakeReviewer:
             tokens.add("runtime_observability")
         if "error" in tokens and "digest" in tokens:
             tokens.add("error_digest")
+        if "run" in tokens and "health" in tokens:
+            tokens.add("run_health")
 
         return tokens
 
@@ -620,6 +628,7 @@ class WakeReviewer:
         repo_root: Path,
     ) -> ArchitectureReview:
         proactive_action = self._proactive_runtime_action(repo_root)
+        run_health_action = self._run_health_action(repo_root)
         digest_action = self._error_digest_action(repo_root)
         fallback_action = self._fallback_patch_action(repo_root)
 
@@ -628,6 +637,14 @@ class WakeReviewer:
             review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
             review.execution_notes.append(
                 "Reviewer output drifted onto invalid targets; replaced with allowlisted proactive runtime helper."
+            )
+            return review
+
+        if run_health_action is not None:
+            review.self_evolution_actions = [run_health_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted run-health runtime helper."
             )
             return review
 
@@ -765,6 +782,60 @@ def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, An
             ],
         )
 
+    def _run_health_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / RUN_HEALTH_RUNTIME_PATH
+        if target.exists():
+            return None
+
+        new_content = '''from __future__ import annotations
+
+from typing import Any
+
+
+def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    total_runs = len(items)
+    success_count = 0
+    failure_count = 0
+    latest_run = items[-1] if items else None
+
+    recent_modes: dict[str, int] = {}
+    for item in items[-10:]:
+        if bool(item.get("success", False)):
+            success_count += 1
+        else:
+            failure_count += 1
+
+        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
+        recent_modes[mode] = recent_modes.get(mode, 0) + 1
+
+    success_rate = 0.0
+    if total_runs > 0:
+        success_rate = round(success_count / total_runs, 4)
+
+    return {
+        "total_runs": total_runs,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "success_rate": success_rate,
+        "recent_mode_counts": recent_modes,
+        "latest_run": latest_run,
+    }
+'''
+        return SelfEvolutionAction(
+            title="Add runtime run health helper",
+            description="Create a bounded runtime helper that summarizes recent run success and failure state.",
+            risk="safe",
+            patches=[
+                PatchAction(
+                    path=RUN_HEALTH_RUNTIME_PATH,
+                    operation="replace_file",
+                    new_content=new_content,
+                    description="Add runtime run health helper.",
+                )
+            ],
+        )
+
     def _default_build_action(self) -> PlannedWorkItem:
         return PlannedWorkItem(
             work_id="build-thread-001",
@@ -779,6 +850,7 @@ def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, An
                 FALLBACK_RUNTIME_PATH,
                 ARCHITECTURE_RUNTIME_PATH,
                 ERROR_DIGEST_RUNTIME_PATH,
+                RUN_HEALTH_RUNTIME_PATH,
             ],
             notes=[
                 "Prefer bounded code patches over doc-only churn.",
@@ -916,7 +988,7 @@ Rules:
 - CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
 - CRITICAL: do not retry the same target if it was recently blocked for shrink-replace or missing regex anchor.
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
-- Prefer a fresh allowlisted helper like error_digest.py before repeating stale runtime-helper ideas.
+- Prefer a fresh allowlisted helper like run_health.py or error_digest.py before repeating stale runtime-helper ideas.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -998,6 +1070,7 @@ Repository snapshot:
 
     def _fallback_review(self, repo_root: Path, reason: str) -> ArchitectureReview:
         proactive_action = self._proactive_runtime_action(repo_root)
+        run_health_action = self._run_health_action(repo_root)
         digest_action = self._error_digest_action(repo_root)
         fallback_action = self._fallback_patch_action(repo_root)
         fallback_plan = self._default_architecture_plan(repo_root)
@@ -1005,6 +1078,8 @@ Repository snapshot:
         actions: list[SelfEvolutionAction] = []
         if proactive_action is not None:
             actions.append(proactive_action)
+        elif run_health_action is not None:
+            actions.append(run_health_action)
         elif digest_action is not None:
             actions.append(digest_action)
         elif fallback_action is not None:
@@ -1015,8 +1090,10 @@ Repository snapshot:
         execution_notes = ["Fallback review used because model output was unavailable or invalid."]
         if proactive_action is not None:
             execution_notes.append("Proactive runtime improvement injected while repo is otherwise healthy.")
+        elif run_health_action is not None:
+            execution_notes.append("Run-health runtime improvement injected while repo is otherwise healthy.")
         elif digest_action is not None:
-            execution_notes.append("Error digest runtime improvement injected while repo is otherwise healthy.")
+            execution_notes.append("Error-digest runtime improvement injected while repo is otherwise healthy.")
 
         return ArchitectureReview(
             diagnosis="Fallback review generated",
@@ -1056,7 +1133,7 @@ Repository snapshot:
                     "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
-                    "Prefer a fresh allowlisted helper like error_digest.py before repeating stale helper ideas. "
+                    "Prefer a fresh allowlisted helper like run_health.py or error_digest.py before repeating stale helper ideas. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -1117,19 +1194,26 @@ Repository snapshot:
                     "Proactive runtime improvement injected while repo is green."
                 )
             else:
-                digest_action = self._error_digest_action(repo_root)
-                if digest_action is not None:
-                    review.self_evolution_actions = [digest_action]
+                run_health_action = self._run_health_action(repo_root)
+                if run_health_action is not None:
+                    review.self_evolution_actions = [run_health_action]
                     review.execution_notes.append(
-                        "Error digest runtime improvement injected while repo is green."
+                        "Run-health runtime improvement injected while repo is green."
                     )
                 else:
-                    fallback_action = self._fallback_patch_action(repo_root)
-                    if fallback_action is not None:
-                        review.self_evolution_actions = [fallback_action]
+                    digest_action = self._error_digest_action(repo_root)
+                    if digest_action is not None:
+                        review.self_evolution_actions = [digest_action]
                         review.execution_notes.append(
-                            "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                            "Error-digest runtime improvement injected while repo is green."
                         )
+                    else:
+                        fallback_action = self._fallback_patch_action(repo_root)
+                        if fallback_action is not None:
+                            review.self_evolution_actions = [fallback_action]
+                            review.execution_notes.append(
+                                "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                            )
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
