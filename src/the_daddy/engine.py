@@ -62,18 +62,111 @@ class DaddyEngine:
             "reasons": list(scored.reasons),
         }
 
+    def _patch_fingerprint(self, patch) -> str:
+        payload = "|".join(
+            [
+                getattr(patch, "path", "") or "",
+                getattr(patch, "operation", "") or "",
+                getattr(patch, "new_content", "") or "",
+                getattr(patch, "pattern", "") or "",
+                getattr(patch, "replacement", "") or "",
+            ]
+        )
+        return self.memory.fingerprint(payload)
+
+    def _recent_patch_entries(self, limit: int = 25):
+        history = getattr(self.memory.state, "patch_provenance", []) or []
+        return history[-limit:]
+
+    def _recent_runs(self, limit: int = 6):
+        runs = getattr(self.memory.state, "runs", []) or []
+        return runs[-limit:]
+
+    def _is_doc_only_patch(self, patch) -> bool:
+        path = (getattr(patch, "path", "") or "").lower()
+        doc_exts = (".md", ".txt", ".rst")
+        return path.endswith(doc_exts)
+
+    def _has_recent_failure_pressure(self) -> bool:
+        recent_runs = self._recent_runs(limit=4)
+        if any(not getattr(run, "success", False) for run in recent_runs):
+            return True
+
+        ranked_failures = self.memory.ranked_failure_patterns()
+        if ranked_failures and getattr(ranked_failures[0], "failure_count", 0) > 0:
+            return True
+
+        backlog = getattr(self.memory.state, "backlog", []) or []
+        technical_markers = ("fix", "bug", "test", "import", "failure", "error", "patch", "runtime", "schema")
+        for item in backlog[-10:]:
+            text = str(item).lower()
+            if any(marker in text for marker in technical_markers):
+                return True
+
+        return False
+
+    def _patch_seen_recently(self, patch, window: int = 12) -> bool:
+        fingerprint = self._patch_fingerprint(patch)
+        for entry in self._recent_patch_entries(limit=window):
+            if getattr(entry, "description", "") == fingerprint:
+                return True
+        return False
+
+    def _path_seen_recently(self, path: str, window: int = 8) -> bool:
+        normalized = (path or "").strip()
+        if not normalized:
+            return False
+        for entry in self._recent_patch_entries(limit=window):
+            if getattr(entry, "path", "") == normalized:
+                return True
+        return False
+
+    def _filter_low_value_patches(self, patches: list):
+        accepted = []
+        filtered_reasons: list[str] = []
+
+        recent_failure_pressure = self._has_recent_failure_pressure()
+
+        for patch in patches:
+            path = getattr(patch, "path", "") or ""
+
+            if self._patch_seen_recently(patch):
+                filtered_reasons.append(f"blocked repeated patch fingerprint: {path}")
+                continue
+
+            if self._path_seen_recently(path) and not recent_failure_pressure:
+                filtered_reasons.append(f"blocked recent repeat on same path without failure pressure: {path}")
+                continue
+
+            if self._is_doc_only_patch(patch) and not recent_failure_pressure:
+                filtered_reasons.append(f"blocked doc-only maintenance patch without failure pressure: {path}")
+                continue
+
+            accepted.append(patch)
+
+        return accepted, filtered_reasons
+
     def _apply_safe_patches(self, run_id: str, mode: str, patches: list):
         applied = []
 
         if not patches:
             return applied, "none"
 
-        scoring = self._score_patch_set(patches)
+        filtered_patches, filter_reasons = self._filter_low_value_patches(patches)
+        if not filtered_patches:
+            if filter_reasons:
+                print("[PATCH FILTER] " + " | ".join(filter_reasons), flush=True)
+            return applied, "recommend"
+
+        if filter_reasons:
+            print("[PATCH FILTER] " + " | ".join(filter_reasons), flush=True)
+
+        scoring = self._score_patch_set(filtered_patches)
 
         if scoring["recommended_route"] == "reject":
             return applied, "reject"
 
-        policy = classify_patch_risk(patches)
+        policy = classify_patch_risk(filtered_patches)
 
         if not policy.passed:
             return applied, policy.route
@@ -81,14 +174,14 @@ class DaddyEngine:
         if scoring["recommended_route"] in {"branch", "recommend"}:
             return applied, scoring["recommended_route"]
 
-        for patch in patches:
+        for patch in filtered_patches:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
 
             self.memory.record_patch(
                 run_id,
                 mode,
                 patch.path,
-                patch.description,
+                self._patch_fingerprint(patch),
                 policy.route,
             )
 
