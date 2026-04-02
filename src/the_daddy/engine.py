@@ -70,7 +70,6 @@ class DaddyEngine:
 
         scoring = self._score_patch_set(patches)
 
-        # 🔥 HARD BLOCK
         if scoring["recommended_route"] == "reject":
             return applied, "reject"
 
@@ -125,9 +124,10 @@ class DaddyEngine:
 
         patches = []
 
-        for action in review.self_evolution_actions:
-            if action.patches:
-                patches.extend(action.patches)
+        if mode == "build":
+            for action in getattr(review, "self_evolution_actions", []) or []:
+                if action.patches:
+                    patches.extend(action.patches)
 
         record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
 
