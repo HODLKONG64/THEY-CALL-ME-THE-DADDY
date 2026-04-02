@@ -1,239 +1,257 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from ..models import (
-    ArchitecturePlan,
-    ArchitectureReview,
-    FailurePatternRecord,
-    MemoryState,
-    MetricsLedgerEntry,
-    PatchProvenance,
-    PlannedWorkItem,
-    RunRecord,
-)
+
+MEMORY_SCHEMA_VERSION = 2
 
 
-def _now() -> str:
+def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+@dataclass
+class DaddyMemoryState:
+    """
+    Backward-compatible memory state used by both older tests and newer engine code.
+
+    This class intentionally keeps the shape broad and permissive so the repo can
+    evolve without breaking import-time expectations.
+    """
+
+    schema_version: int = MEMORY_SCHEMA_VERSION
+    created_at: str = field(default_factory=_utc_now)
+    updated_at: str = field(default_factory=_utc_now)
+
+    # Core run history
+    runs: list[dict[str, Any]] = field(default_factory=list)
+    failures: list[dict[str, Any]] = field(default_factory=list)
+    failure_patterns: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Reviews / planning
+    architecture_reviews: list[dict[str, Any]] = field(default_factory=list)
+    latest_architecture_review: dict[str, Any] = field(default_factory=dict)
+    build_queue: list[dict[str, Any]] = field(default_factory=list)
+    architecture_queue: list[dict[str, Any]] = field(default_factory=list)
+    backlog: list[str] = field(default_factory=list)
+
+    # Self-improvement
+    self_evolution_history: list[dict[str, Any]] = field(default_factory=list)
+    proposed_builds: list[dict[str, Any]] = field(default_factory=list)
+
+    # Reputation / agent intelligence
+    reputations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    drift_warnings: list[dict[str, Any]] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    notes: dict[str, Any] = field(default_factory=dict)
+    latest_run_summary: dict[str, Any] = field(default_factory=dict)
+
+
+# Alias used by newer code paths in parts of the repo.
+MemoryState = DaddyMemoryState
+
+
 class MemoryRepository:
-    def __init__(self, store) -> None:
+    """
+    Broad compatibility repository layer.
+
+    Supports:
+    - older tests importing DaddyMemoryState + MEMORY_SCHEMA_VERSION
+    - engine code calling fingerprint(...)
+    - store implementations exposing load()/save() or get()/put()
+    """
+
+    def __init__(self, store: Any | None = None) -> None:
         self.store = store
-        self.state: MemoryState = self._load()
+        self._state = self._load_from_store()
 
-    # 🔥 FIX: MIGRATE OLD MEMORY (THIS IS THE BUG FIX)
-    def _migrate_legacy_state(self, data: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(data, dict):
-            return {}
-
-        failure_patterns = data.get("failure_patterns")
-
-        if isinstance(failure_patterns, dict):
-            fixed: dict[str, Any] = {}
-
-            for key, value in failure_patterns.items():
-                if isinstance(value, dict):
-                    item = dict(value)
-
-                    # 🔥 CRITICAL: backfill missing signature
-                    if "signature" not in item:
-                        item["signature"] = key
-
-                    item.setdefault("success_count", 0)
-                    item.setdefault("failure_count", 0)
-                    item.setdefault("last_route", "")
-                    item.setdefault("last_summary", "")
-                    item.setdefault("related_files", [])
-                    item.setdefault("updated_at", _now())
-
-                    fixed[key] = item
-
-                else:
-                    # handle completely broken entries
-                    fixed[key] = {
-                        "signature": key,
-                        "success_count": 0,
-                        "failure_count": 1,
-                        "last_route": "",
-                        "last_summary": str(value),
-                        "related_files": [],
-                        "updated_at": _now(),
-                    }
-
-            data["failure_patterns"] = fixed
-
-        # ensure all required fields exist
-        data.setdefault("schema_version", "3.0")
-        data.setdefault("architecture_reviews", [])
-        data.setdefault("runs", [])
-        data.setdefault("backlog", [])
-        data.setdefault("improvement_history", [])
-        data.setdefault("quarantine_events", [])
-        data.setdefault("reputations", {})
-        data.setdefault("metrics_ledger", [])
-        data.setdefault("planned_work", [])
-        data.setdefault("architecture_queue", [])
-        data.setdefault("patch_provenance", [])
-        data.setdefault("learning_weights", {})
-        data.setdefault("last_saved_at", _now())
-
-        return data
-
-    def _load(self) -> MemoryState:
-        data = self.store.load()
-
-        if not data:
-            return MemoryState()
-
-        # 🔥 APPLY MIGRATION BEFORE VALIDATION
-        migrated = self._migrate_legacy_state(data)
-
-        return MemoryState.model_validate(migrated)
-
-    def save(self) -> None:
-        self.state.last_saved_at = _now()
-        self.store.save(self.state.model_dump(mode="json"))
+    @property
+    def state(self) -> DaddyMemoryState:
+        return self._state
 
     def fingerprint(self, text: str) -> str:
-        if not text:
-            return "empty"
         return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
-    def add_architecture_review(self, review: ArchitectureReview) -> None:
-        self.state.architecture_reviews.append(review)
-        self._trim_reviews()
+    def load_state(self) -> DaddyMemoryState:
+        self._state = self._load_from_store()
+        return self._state
 
-    def latest_review(self) -> ArchitectureReview | None:
-        if not self.state.architecture_reviews:
-            return None
-        return self.state.architecture_reviews[-1]
+    # Compatibility alias
+    def load(self) -> DaddyMemoryState:
+        return self.load_state()
 
-    def _trim_reviews(self, keep: int = 40) -> None:
-        if len(self.state.architecture_reviews) > keep:
-            self.state.architecture_reviews = self.state.architecture_reviews[-keep:]
+    def save_state(self, state: DaddyMemoryState | dict[str, Any] | None = None) -> DaddyMemoryState:
+        if state is not None:
+            self._state = self._coerce_state(state)
+        self._state.updated_at = _utc_now()
+        self._save_to_store(self._state)
+        return self._state
 
-    def add_run(self, run: RunRecord) -> None:
-        self.state.runs.append(run)
-        self._trim_runs()
+    # Compatibility alias
+    def save(self, state: DaddyMemoryState | dict[str, Any] | None = None) -> DaddyMemoryState:
+        return self.save_state(state)
 
-    def _trim_runs(self, keep: int = 100) -> None:
-        if len(self.state.runs) > keep:
-            self.state.runs = self.state.runs[-keep:]
+    def snapshot(self) -> dict[str, Any]:
+        return asdict(self._state)
+
+    def record_run_summary(self, summary: dict[str, Any]) -> None:
+        self._state.runs.append(dict(summary))
+        self._state.latest_run_summary = dict(summary)
+        if not summary.get("success", False):
+            self._state.failures.append(dict(summary))
+        self._bump_metric("run_count")
+        if summary.get("success", False):
+            self._bump_metric("successful_runs")
+        else:
+            self._bump_metric("failed_runs")
+        self.save_state()
+
+    def record_architecture_review(self, review: dict[str, Any]) -> None:
+        payload = dict(review)
+        payload.setdefault("recorded_at", _utc_now())
+        self._state.architecture_reviews.append(payload)
+        self._state.latest_architecture_review = payload
+
+        backlog_items = payload.get("backlog_items") or []
+        if isinstance(backlog_items, list):
+            self._state.backlog = _dedupe_keep_order(self._state.backlog + [str(x) for x in backlog_items])
+
+        self.save_state()
+
+    def record_self_evolution(self, event: dict[str, Any]) -> None:
+        payload = dict(event)
+        payload.setdefault("recorded_at", _utc_now())
+        self._state.self_evolution_history.append(payload)
+        self._bump_metric("self_evolution_events")
+        self.save_state()
 
     def add_backlog_items(self, items: list[str]) -> None:
-        for item in items:
-            if item and item not in self.state.backlog:
-                self.state.backlog.append(item)
+        self._state.backlog = _dedupe_keep_order(self._state.backlog + [str(i) for i in items])
+        self.save_state()
 
-    def record_failure_pattern(self, signature: str, context: dict[str, Any], resolved: bool) -> None:
-        existing = self.state.failure_patterns.get(signature)
+    def enqueue_build_action(self, action: dict[str, Any]) -> None:
+        self._state.build_queue.append(dict(action))
+        self.save_state()
 
-        if not existing:
-            existing = FailurePatternRecord(signature=signature)
+    def enqueue_architecture_plan(self, plan: dict[str, Any]) -> None:
+        self._state.architecture_queue.append(dict(plan))
+        self.save_state()
 
-        if resolved:
-            existing.success_count += 1
+    def mark_failure_pattern(
+        self,
+        signature: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if not signature:
+            return
+        existing = dict(self._state.failure_patterns.get(signature, {}))
+        details = dict(details or {})
+        entry = {
+            "signature": signature,
+            "first_seen_at": existing.get("first_seen_at", _utc_now()),
+            "last_seen_at": _utc_now(),
+            "count": int(existing.get("count", 0)) + 1,
+            **existing,
+            **details,
+        }
+        entry["signature"] = signature
+        self._state.failure_patterns[signature] = entry
+        self.save_state()
+
+    def update_reputation(self, actor: str, **fields: Any) -> None:
+        record = dict(self._state.reputations.get(actor, {}))
+        record.update(fields)
+        record.setdefault("updated_at", _utc_now())
+        self._state.reputations[actor] = record
+        self.save_state()
+
+    def _load_from_store(self) -> DaddyMemoryState:
+        raw: Any = {}
+        if self.store is None:
+            return DaddyMemoryState()
+
+        if hasattr(self.store, "load"):
+            raw = self.store.load()
+        elif hasattr(self.store, "get"):
+            raw = self.store.get()
+        elif hasattr(self.store, "read"):
+            raw = self.store.read()
         else:
-            existing.failure_count += 1
+            raw = {}
 
-        existing.last_route = str(context.get("route", ""))
-        existing.last_summary = str(context.get("diagnosis", ""))
-        existing.related_files = list(context.get("files", [])) if isinstance(context.get("files", []), list) else []
-        existing.updated_at = _now()
+        return self._coerce_state(raw)
 
-        self.state.failure_patterns[signature] = existing
+    def _save_to_store(self, state: DaddyMemoryState) -> None:
+        if self.store is None:
+            return
 
-    def ranked_failure_patterns(self) -> list[FailurePatternRecord]:
-        weights = self.state.learning_weights
-        ranked = list(self.state.failure_patterns.values())
+        payload = asdict(state)
+        if hasattr(self.store, "save"):
+            self.store.save(payload)
+        elif hasattr(self.store, "put"):
+            self.store.put(payload)
+        elif hasattr(self.store, "write"):
+            self.store.write(payload)
 
-        def score(item: FailurePatternRecord) -> float:
-            return (
-                item.failure_count * weights.repeated_failure_weight
-                + item.success_count * weights.repeated_success_weight
-            )
+    def _coerce_state(self, raw: Any) -> DaddyMemoryState:
+        if isinstance(raw, DaddyMemoryState):
+            return raw
 
-        return sorted(ranked, key=score, reverse=True)
+        if is_dataclass(raw):
+            raw = asdict(raw)
 
-    def record_improvement_result(self, title: str, applied: bool, payload: dict[str, Any]) -> None:
-        self.state.improvement_history.append(
-            {
-                "title": title,
-                "applied": applied,
-                "payload": payload,
-                "timestamp": _now(),
-            }
-        )
+        if not isinstance(raw, dict):
+            return DaddyMemoryState()
 
-        if len(self.state.improvement_history) > 150:
-            self.state.improvement_history = self.state.improvement_history[-150:]
+        merged: dict[str, Any] = asdict(DaddyMemoryState())
+        merged.update(raw)
+        merged["schema_version"] = int(merged.get("schema_version") or MEMORY_SCHEMA_VERSION)
 
-    def add_planned_work(self, item: PlannedWorkItem) -> None:
-        if not any(existing.work_id == item.work_id for existing in self.state.planned_work):
-            self.state.planned_work.append(item)
+        # Defensive shape repairs
+        for key in (
+            "runs",
+            "failures",
+            "architecture_reviews",
+            "build_queue",
+            "architecture_queue",
+            "backlog",
+            "self_evolution_history",
+            "proposed_builds",
+            "drift_warnings",
+        ):
+            if not isinstance(merged.get(key), list):
+                merged[key] = []
 
-    def get_active_work(self) -> list[PlannedWorkItem]:
-        return [w for w in self.state.planned_work if w.state == "active"]
+        for key in (
+            "failure_patterns",
+            "latest_architecture_review",
+            "reputations",
+            "metrics",
+            "notes",
+            "latest_run_summary",
+        ):
+            if not isinstance(merged.get(key), dict):
+                merged[key] = {}
 
-    def get_next_build_work(self) -> PlannedWorkItem | None:
-        candidates = [w for w in self.state.planned_work if w.state in {"proposed", "active"}]
+        return DaddyMemoryState(**merged)
 
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda x: (x.priority, x.created_at))
-
-        return candidates[0]
-
-    def update_work_state(self, work_id: str, state: str, note: str | None = None) -> None:
-        for work in self.state.planned_work:
-            if work.work_id == work_id:
-                work.state = state
-                work.updated_at = _now()
-
-                if note:
-                    work.notes.append(note)
-
-    def add_architecture_plan(self, plan: ArchitecturePlan) -> None:
-        if not any(existing.title == plan.title for existing in self.state.architecture_queue):
-            self.state.architecture_queue.append(plan)
-
-    def get_pending_architecture(self) -> list[ArchitecturePlan]:
-        return [p for p in self.state.architecture_queue if p.status == "proposed"]
-
-    def update_architecture_status(self, title: str, status: str) -> None:
-        for plan in self.state.architecture_queue:
-            if plan.title == title:
-                plan.status = status
-                plan.updated_at = _now()
-
-    def record_patch(self, run_id: str, mode: str, path: str, description: str, route: str, source: str = "reviewer") -> None:
-        self.state.patch_provenance.append(
-            PatchProvenance(
-                run_id=run_id,
-                mode=mode,
-                path=path,
-                description=description,
-                source=source,
-                route=route,
-            )
-        )
-
-        if len(self.state.patch_provenance) > 300:
-            self.state.patch_provenance = self.state.patch_provenance[-300:]
-
-    def record_metrics(self, entry: MetricsLedgerEntry) -> None:
-        self.state.metrics_ledger.append(entry)
-
-        if len(self.state.metrics_ledger) > 300:
-            self.state.metrics_ledger = self.state.metrics_ledger[-300:]
-
-    def add_quarantine_event(self, event: dict[str, Any]) -> None:
-        self.state.quarantine_events.append(event)
-
-        if len(self.state.quarantine_events) > 200:
-            self.state.quarantine_events = self.state.quarantine_events[-200:]
+    def _bump_metric(self, key: str, amount: int = 1) -> None:
+        current = self._state.metrics.get(key, 0)
+        try:
+            current = int(current)
+        except Exception:
+            current = 0
+        self._state.metrics[key] = current + amount
