@@ -10,12 +10,7 @@ doctor_local/
 .coverage
 htmlcov/
 
-# build / packaging
-build/
-dist/
-*.egg-info/
-
-# agent junk blockers
+# === DADDY SELF-EVOLUTION PROTECTION (DO NOT REMOVE) ===
 bool
 None
 str
@@ -25,4 +20,17 @@ list
 dict
 tuple
 set
+path/
+README_FIX.md
 THEY-CALL-ME-THE-DADDY
+
+# build / packaging
+build/
+dist/
+*.egg-info/
+
+# cache / temp
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
