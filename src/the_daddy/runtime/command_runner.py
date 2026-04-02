@@ -9,6 +9,7 @@ from ..models import CommandResult
 
 def run_command(command: str, cwd: Path, timeout_seconds: int) -> CommandResult:
     started = time.time()
+
     try:
         proc = subprocess.run(
             command,
@@ -19,6 +20,7 @@ def run_command(command: str, cwd: Path, timeout_seconds: int) -> CommandResult:
             timeout=timeout_seconds,
         )
         duration = time.time() - started
+
         return CommandResult(
             returncode=proc.returncode,
             stdout=proc.stdout,
@@ -27,10 +29,12 @@ def run_command(command: str, cwd: Path, timeout_seconds: int) -> CommandResult:
             duration_seconds=duration,
             timed_out=False,
         )
+
     except subprocess.TimeoutExpired as exc:
         duration = time.time() - started
         stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+
         return CommandResult(
             returncode=124,
             stdout=stdout,
