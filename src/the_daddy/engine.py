@@ -308,6 +308,19 @@ class DaddyEngine:
         mode = self.choose_mode(review)
         record.selected_mode = mode
         record.architecture_review = review
+        record.trace.append(
+            {
+                "event": "proposed_actions",
+                "actions": [
+                    {
+                        "title": action.title,
+                        "risk": action.risk,
+                        "patch_paths": [patch.path for patch in action.patches],
+                    }
+                    for action in getattr(review, "self_evolution_actions", []) or []
+                ],
+            }
+        )
 
         patches = []
 
