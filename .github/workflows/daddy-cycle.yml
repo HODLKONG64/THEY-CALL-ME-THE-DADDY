@@ -13,6 +13,10 @@ jobs:
   run-daddy:
     runs-on: ubuntu-latest
 
+    concurrency:
+      group: daddy-cycle
+      cancel-in-progress: false
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -31,17 +35,17 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-          # 👇 PR SYSTEM
+          # PR SYSTEM
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPO: HODLKONG64/THEY-CALL-ME-THE-DADDY
 
-          # 👇 STORAGE
+          # R2
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
 
-          # 👇 ENGINE SETTINGS
+          # ENGINE SETTINGS
           DADDY_COMMAND: pytest -q
           DADDY_TARGET_ROOT: .
 
@@ -63,3 +67,6 @@ jobs:
 
           git diff --cached --quiet || git commit -m "auto: daddy evolution"
           git push
+
+      - name: Done
+        run: echo "Daddy cycle complete"
