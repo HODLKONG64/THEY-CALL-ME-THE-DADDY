@@ -67,7 +67,7 @@ class MemoryRepository:
         return self.load()
 
     def save(self) -> MemoryState:
-        self._state.last_saved_at = utc_now_iso()
+        self._state.last_saved_at = _utc_now()
         self._save_to_store(self._state)
         return self._state
 
@@ -146,7 +146,7 @@ class MemoryRepository:
         else:
             existing.failure_count += 1
 
-        existing.updated_at = utc_now_iso()
+        existing.updated_at = _utc_now()
 
         route = payload.get("route")
         if route is not None:
@@ -173,6 +173,44 @@ class MemoryRepository:
     # Patch provenance / metrics / runs
     # -------------------------------------------------------------------------
 
+    def recent_patch_provenance(self, limit: int = 25) -> list[PatchProvenance]:
+        history = self._state.patch_provenance or []
+        if limit <= 0:
+            return []
+        return history[-limit:]
+
+    def recent_runs(self, limit: int = 6) -> list[RunRecord]:
+        runs = self._state.runs or []
+        if limit <= 0:
+            return []
+        return runs[-limit:]
+
+    def has_recent_patch_fingerprint(self, fingerprint: str, window: int = 12) -> bool:
+        if not fingerprint or window <= 0:
+            return False
+
+        recent_events = self._state.improvement_history[-window:] if self._state.improvement_history else []
+        for event in recent_events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "patch_observation":
+                continue
+            if event.get("patch_fingerprint") == fingerprint:
+                return True
+
+        return False
+
+    def has_recent_patch_path(self, path: str, window: int = 8) -> bool:
+        normalized = (path or "").strip()
+        if not normalized or window <= 0:
+            return False
+
+        for entry in self.recent_patch_provenance(limit=window):
+            if getattr(entry, "path", "") == normalized:
+                return True
+
+        return False
+
     def record_patch(
         self,
         run_id: str,
@@ -181,6 +219,7 @@ class MemoryRepository:
         description: str,
         route: str,
         source: str = "reviewer",
+        patch_fingerprint: str | None = None,
     ) -> PatchProvenance:
         entry = PatchProvenance(
             run_id=run_id,
@@ -191,6 +230,20 @@ class MemoryRepository:
             source=source,
         )
         self._state.patch_provenance.append(entry)
+
+        if patch_fingerprint:
+            self._state.improvement_history.append(
+                {
+                    "type": "patch_observation",
+                    "run_id": run_id,
+                    "path": path,
+                    "route": route,
+                    "source": source,
+                    "patch_fingerprint": patch_fingerprint,
+                    "created_at": _utc_now(),
+                }
+            )
+
         self.save()
         return entry
 
@@ -284,7 +337,7 @@ class MemoryRepository:
             if hasattr(rep, key):
                 setattr(rep, key, value)
 
-        rep.updated_at = utc_now_iso()
+        rep.updated_at = _utc_now()
         self._state.reputations[actor] = rep
         self.save()
         return rep
@@ -437,6 +490,6 @@ class MemoryRepository:
             state.schema_version = MEMORY_SCHEMA_VERSION
 
         if not getattr(state, "last_saved_at", None):
-            state.last_saved_at = utc_now_iso()
+            state.last_saved_at = _utc_now()
 
         return state
