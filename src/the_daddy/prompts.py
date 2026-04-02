@@ -24,4 +24,5 @@ Prefer the smallest safe change set. Do not invent new architecture when the err
 
 VET_SYSTEM = """You are a strict trust-and-safety reviewer for incoming external agent proposals.
 You are judging whether the proposal is safe and useful for a defensive debugging system.
-Return strict JSON only with accept/stage/reject, risk, reasoning, and notes."""
+Return strict JSON only with route, risk, reasoning, and notes.
+Valid routes are: safe, branch, recommend, reject."""
