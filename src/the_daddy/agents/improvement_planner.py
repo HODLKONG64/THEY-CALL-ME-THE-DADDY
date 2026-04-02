@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from pydantic import ValidationError
+
 from ..models import ArchitectureReview, MemoryState, PatchAction, SelfEvolutionAction
 
 
@@ -24,33 +26,55 @@ class ImprovementPlanner:
         except TypeError:
             return []
 
+    def _coerce_patch_action(self, value: Any) -> PatchAction | None:
+        if isinstance(value, PatchAction):
+            return value
+        if isinstance(value, dict):
+            try:
+                return PatchAction.model_validate(value)
+            except ValidationError:
+                return None
+        return None
+
     def _normalize_patches(self, value: Any) -> list[PatchAction]:
         normalized: list[PatchAction] = []
         for item in self._safe_list(value):
-            if not isinstance(item, PatchAction):
+            patch = self._coerce_patch_action(item)
+            if not patch:
                 continue
-            if not getattr(item, "path", ""):
+            if not getattr(patch, "path", ""):
                 continue
-            if getattr(item, "operation", None) not in {"replace_file", "regex_replace"}:
+            if getattr(patch, "operation", None) not in {"replace_file", "regex_replace"}:
                 continue
-            normalized.append(item)
+            normalized.append(patch)
         return normalized
+
+    def _coerce_self_evolution_action(self, value: Any) -> SelfEvolutionAction | None:
+        if isinstance(value, SelfEvolutionAction):
+            return value
+        if isinstance(value, dict):
+            try:
+                return SelfEvolutionAction.model_validate(value)
+            except ValidationError:
+                return None
+        return None
 
     def _normalize_self_evolution_actions(self, value: Any) -> list[SelfEvolutionAction]:
         normalized: list[SelfEvolutionAction] = []
         for item in self._safe_list(value):
-            if not isinstance(item, SelfEvolutionAction):
+            action = self._coerce_self_evolution_action(item)
+            if not action:
                 continue
-            if not isinstance(getattr(item, "title", None), str) or not item.title:
+            if not isinstance(getattr(action, "title", None), str) or not action.title:
                 continue
-            if not isinstance(getattr(item, "description", None), str) or not item.description:
+            if not isinstance(getattr(action, "description", None), str) or not action.description:
                 continue
-            if getattr(item, "risk", None) != "safe":
+            if getattr(action, "risk", None) != "safe":
                 continue
-            patches = self._normalize_patches(getattr(item, "patches", None))
+            patches = self._normalize_patches(getattr(action, "patches", None))
             if not patches:
                 continue
-            normalized.append(item.model_copy(update={"patches": patches}))
+            normalized.append(action.model_copy(update={"patches": patches}))
         return normalized
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
