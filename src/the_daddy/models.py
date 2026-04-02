@@ -19,6 +19,20 @@ class PatchAction(BaseModel):
     description: str = ""
 
 
+class FileSnapshot(BaseModel):
+    path: str
+    content: str
+
+
+class CommandResult(BaseModel):
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+    combined: str = ""
+    duration_seconds: float = 0.0
+    timed_out: bool = False
+
+
 class SelfEvolutionAction(BaseModel):
     title: str
     description: str
@@ -48,16 +62,7 @@ class DiagnosticPlan(BaseModel):
     post_fix_checks: list[str] = Field(default_factory=list)
 
 
-class CommandResult(BaseModel):
-    returncode: int
-    stdout: str
-    stderr: str
-    combined: str
-    duration_seconds: float
-    timed_out: bool = False
-
-
-class SelfEvolutionRecord(BaseModel):
+class SelfEvolutionExecution(BaseModel):
     enabled: bool
     attempted: bool
     applied: bool
@@ -69,44 +74,59 @@ class SelfEvolutionRecord(BaseModel):
     patches: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class RunRecord(BaseModel):
-    run_id: str
-    started_at: str = Field(default_factory=utc_now_iso)
-    finished_at: str | None = None
-    command: str
-    attempt_count: int = 0
-    success: bool = False
-    summary: str = ""
-    architecture_review: ArchitectureReview | None = None
-    self_evolution: SelfEvolutionRecord | None = None
-    diagnostic_history: list[DiagnosticPlan] = Field(default_factory=list)
-    patches_applied: list[dict[str, Any]] = Field(default_factory=list)
-    verification: CommandResult | None = None
-    trace: list[dict[str, Any]] = Field(default_factory=list)
-    backlog_updates: list[str] = Field(default_factory=list)
-    repo_fingerprint: dict[str, Any] = Field(default_factory=dict)
-    rollback_manifest: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class ReputationRecord(BaseModel):
+class ExternalProposal(BaseModel):
     agent_id: str
-    score: int = 0
-    accepted: int = 0
-    rejected: int = 0
-    total: int = 0
+    title: str
+    summary: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    submitted_at: str = Field(default_factory=utc_now_iso)
 
 
-class VetDecision(BaseModel):
+class VettingDecision(BaseModel):
     accepted: bool
-    route: Literal["safe", "branch", "recommend", "reject"]
-    reason: str
-    risk: Literal["low", "medium", "high"]
+    route: Literal["safe", "branch", "recommend", "reject"] = "reject"
+    reason: str = ""
+    risk: Literal["low", "medium", "high"] = "medium"
     reputation_delta: int = 0
     notes: list[str] = Field(default_factory=list)
 
 
-class ExternalProposal(BaseModel):
+class AgentReputation(BaseModel):
     agent_id: str
-    title: str
-    description: str
-    payload: dict[str, Any] = Field(default_factory=dict)
+    score: int = 0
+    accepted: int = 0
+    rejected: int = 0
+    impact: Literal["low", "medium", "high"] = "low"
+    updated_at: str = Field(default_factory=utc_now_iso)
+
+
+class RunRecord(BaseModel):
+    run_id: str
+    command: str
+    started_at: str = Field(default_factory=utc_now_iso)
+    finished_at: str = ""
+    attempt_count: int = 0
+    success: bool = False
+    summary: str = ""
+    architecture_review: ArchitectureReview | None = None
+    self_evolution: SelfEvolutionExecution | None = None
+    diagnostic_history: list[DiagnosticPlan] = Field(default_factory=list)
+    patches_applied: list[dict[str, Any]] = Field(default_factory=list)
+    rollback_manifest: list[dict[str, Any]] = Field(default_factory=list)
+    verification: CommandResult | None = None
+    trace: list[dict[str, Any]] = Field(default_factory=list)
+    backlog_updates: list[str] = Field(default_factory=list)
+    repo_fingerprint: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryState(BaseModel):
+    schema_version: str = "2.0"
+    architecture_reviews: list[ArchitectureReview] = Field(default_factory=list)
+    runs: list[RunRecord] = Field(default_factory=list)
+    backlog: list[str] = Field(default_factory=list)
+    failure_patterns: dict[str, Any] = Field(default_factory=dict)
+    improvement_history: list[dict[str, Any]] = Field(default_factory=list)
+    quarantine_events: list[dict[str, Any]] = Field(default_factory=list)
+    reputations: dict[str, AgentReputation] = Field(default_factory=dict)
+    metrics_ledger: list[dict[str, Any]] = Field(default_factory=list)
+    last_saved_at: str = Field(default_factory=utc_now_iso)
