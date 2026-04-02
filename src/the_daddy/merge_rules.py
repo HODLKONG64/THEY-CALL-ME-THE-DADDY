@@ -4,6 +4,7 @@ from typing import Iterable
 
 
 SAFE_EXTENSIONS = {".py", ".md", ".yml", ".yaml", ".json", ".toml"}
+
 RISKY_PATH_PARTS = {
     ".github/workflows",
     "secrets",
@@ -12,6 +13,7 @@ RISKY_PATH_PARTS = {
     "dist",
     "build",
 }
+
 MAX_SAFE_PATCH_COUNT = 8
 MAX_ARCHITECTURE_BRANCH_FILES = 5
 MAX_AUTO_MERGE_BYTE_DELTA = 1200
@@ -27,19 +29,46 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/runtime/command_runner.py",
 }
 
+ALLOWLISTED_RUNTIME_HELPERS = {
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+}
+
+
+def _normalize_path(path: str) -> str:
+    normalized = (path or "").strip().replace("\\", "/")
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
 
 class AutoMergeJudge:
     def __init__(self) -> None:
         pass
 
     def is_safe_file(self, path: str) -> bool:
-        if any(part in path for part in RISKY_PATH_PARTS):
+        normalized = _normalize_path(path)
+        if any(part in normalized for part in RISKY_PATH_PARTS):
             return False
-        return any(path.endswith(ext) for ext in SAFE_EXTENSIONS)
+        return any(normalized.endswith(ext) for ext in SAFE_EXTENSIONS)
 
     def _is_low_value_loop(self, files: list[str]) -> bool:
-        lowered = [p.lower() for p in files]
-        return bool(lowered) and all(any(k in p for k in ("logging", "trace", "observability")) for p in lowered)
+        normalized = [_normalize_path(p).lower() for p in files]
+        if not normalized:
+            return False
+
+        non_allowlisted = [
+            path for path in normalized
+            if path not in {item.lower() for item in ALLOWLISTED_RUNTIME_HELPERS}
+        ]
+
+        if not non_allowlisted:
+            return False
+
+        return all(any(k in p for k in ("logging", "trace", "observability")) for p in non_allowlisted)
 
     def should_auto_merge(
         self,
@@ -52,7 +81,7 @@ class AutoMergeJudge:
         review_risk: str,
     ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
-        files = list(changed_files)
+        files = [_normalize_path(path) for path in changed_files]
 
         if not success:
             reasons.append("Verification failed.")
@@ -71,7 +100,7 @@ class AutoMergeJudge:
                 f"Patch byte delta {total_byte_delta} exceeds auto-merge threshold {MAX_AUTO_MERGE_BYTE_DELTA}."
             )
 
-        protected_touched = [p for p in files if p.strip().replace("\\", "/") in PROTECTED_CORE_FILES]
+        protected_touched = [p for p in files if p in PROTECTED_CORE_FILES]
         if protected_touched:
             reasons.append(f"Protected core file modified: {', '.join(protected_touched)}")
 
