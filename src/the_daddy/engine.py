@@ -134,6 +134,7 @@ class DaddyEngine:
         review = getattr(record, "architecture_review", None)
         risk = getattr(review, "risk_level", "") if review is not None else ""
         summary = getattr(record, "summary", "") or "Automated bounded patch set."
+
         body_lines = [
             "## Daddy automated patch",
             "",
@@ -149,6 +150,7 @@ class DaddyEngine:
             "",
             "### Changed files",
         ]
+
         if changed_files:
             body_lines.extend([f"- `{path}`" for path in changed_files])
         else:
@@ -167,26 +169,40 @@ class DaddyEngine:
 
         return "\n".join(body_lines)
 
-    def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str) -> None:
-        changed_files = self._changed_files_from_record(record)
-        if not changed_files:
-            record.trace.append(
-                {
-                    "event": "pr_skipped",
-                    "reason": "no_changed_files",
-                }
+    def _is_git_repo(self) -> bool:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=self.settings.target_root,
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            return
+            return result.returncode == 0 and result.stdout.strip() == "true"
+        except Exception:
+            return False
+
+    def _can_use_pr_lane(self, record: RunRecord) -> tuple[bool, str]:
+        if not getattr(record, "patches_applied", None):
+            return False, "no_patches_applied"
+
+        if not getattr(record, "success", False):
+            return False, "verification_failed"
 
         if not self.settings.has_github:
-            record.trace.append(
-                {
-                    "event": "pr_skipped",
-                    "reason": "github_not_configured",
-                    "changed_files": changed_files,
-                }
-            )
-            return
+            return False, "github_not_configured"
+
+        if not self._is_git_repo():
+            return False, "target_root_not_git_repo"
+
+        changed_files = self._changed_files_from_record(record)
+        if not changed_files:
+            return False, "no_changed_files"
+
+        return True, "ok"
+
+    def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str) -> None:
+        changed_files = self._changed_files_from_record(record)
 
         title = self._build_pr_title(record.run_id, changed_files)
         body = self._build_pr_body(record, policy_route, changed_files)
@@ -225,7 +241,7 @@ class DaddyEngine:
             success=record.success,
             policy_route=policy_route,
             changed_files=changed_files,
-            patch_count=len(changed_files),
+            patch_count=len(record.patches_applied),
         )
 
         record.trace.append(
@@ -319,8 +335,25 @@ class DaddyEngine:
             record.success = False
             record.summary = f"build: failed ({result.returncode}) but continuing"
 
-        if record.patches_applied:
-            self._deliver_patch_via_pr(record, policy_route)
+        can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
+        if can_use_pr_lane:
+            try:
+                self._deliver_patch_via_pr(record, policy_route)
+            except Exception as exc:
+                record.trace.append(
+                    {
+                        "event": "pr_delivery_failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+        else:
+            record.trace.append(
+                {
+                    "event": "pr_skipped",
+                    "reason": pr_reason,
+                }
+            )
 
         self.memory.record_metrics(
             MetricsLedgerEntry(
