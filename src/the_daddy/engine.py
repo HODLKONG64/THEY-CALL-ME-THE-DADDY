@@ -154,6 +154,8 @@ class DaddyEngine:
                     "path": patch.path,
                     "description": patch.description,
                     "route": policy.route,
+                    "bytes_before": result["bytes_before"],
+                    "bytes_after": result["bytes_after"],
                 }
             )
 
@@ -188,6 +190,15 @@ class DaddyEngine:
                 files.append(path)
         return files
 
+    def _total_byte_delta_from_record(self, record: RunRecord) -> int:
+        total = 0
+        for item in getattr(record, "patches_applied", []) or []:
+            if isinstance(item, dict):
+                before = int(item.get("bytes_before", 0) or 0)
+                after = int(item.get("bytes_after", 0) or 0)
+                total += abs(after - before)
+        return total
+
     def _build_pr_title(self, run_id: str, changed_files: list[str]) -> str:
         if len(changed_files) == 1:
             return f"auto: daddy fix {run_id} ({changed_files[0]})"
@@ -197,6 +208,7 @@ class DaddyEngine:
         review = getattr(record, "architecture_review", None)
         risk = getattr(review, "risk_level", "") if review is not None else ""
         summary = getattr(record, "summary", "") or "Automated bounded patch set."
+        total_delta = self._total_byte_delta_from_record(record)
 
         body_lines = [
             "## Daddy automated patch",
@@ -207,6 +219,7 @@ class DaddyEngine:
             f"- Review risk: `{risk}`",
             f"- Verification success: `{record.success}`",
             f"- Patch count: `{len(getattr(record, 'patches_applied', []) or [])}`",
+            f"- Byte delta: `{total_delta}`",
             "",
             "### Summary",
             summary,
@@ -264,15 +277,46 @@ class DaddyEngine:
 
         return True, "ok"
 
-    def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str) -> None:
+    def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str, prepared_branch: str | None = None) -> None:
         changed_files = self._changed_files_from_record(record)
+
+        if not changed_files:
+            record.trace.append(
+                {
+                    "event": "pr_skipped",
+                    "reason": "no_changed_files",
+                }
+            )
+            return
+
+        branch_name = prepared_branch
+        if not branch_name:
+            branch_name = self.git_tools.prepare_branch(record.run_id)
+            record.trace.append(
+                {
+                    "event": "branch_prepared",
+                    "branch_name": branch_name,
+                    "source": "pr_delivery_fallback",
+                }
+            )
+
+        committed_branch = self.git_tools.commit_current_branch_changes(record.run_id, changed_files)
+
+        if not committed_branch:
+            record.trace.append(
+                {
+                    "event": "pr_skipped",
+                    "reason": "no_pr_created",
+                    "changed_files": changed_files,
+                }
+            )
+            return
 
         title = self._build_pr_title(record.run_id, changed_files)
         body = self._build_pr_body(record, policy_route, changed_files)
 
-        pr = self.git_tools.commit_push_open_pr(
-            run_id=record.run_id,
-            safe_paths=changed_files,
+        pr = self.git_tools.create_pull_request(
+            branch_name=committed_branch,
             title=title,
             body=body,
             base_branch="main",
@@ -305,6 +349,8 @@ class DaddyEngine:
             policy_route=policy_route,
             changed_files=changed_files,
             patch_count=len(record.patches_applied),
+            total_byte_delta=self._total_byte_delta_from_record(record),
+            review_risk=getattr(getattr(record, "architecture_review", None), "risk_level", ""),
         )
 
         record.trace.append(
@@ -315,7 +361,23 @@ class DaddyEngine:
             }
         )
 
-        if not should_merge or not pr_number:
+        if not should_merge:
+            record.trace.append(
+                {
+                    "event": "pr_left_open",
+                    "pr_number": pr_number,
+                    "reasons": reasons,
+                }
+            )
+            return
+
+        if not pr_number:
+            record.trace.append(
+                {
+                    "event": "pr_merge_failed",
+                    "reason": "missing_pr_number",
+                }
+            )
             return
 
         merge_result = self.git_tools.merge_pull_request(
@@ -373,11 +435,32 @@ class DaddyEngine:
         )
 
         patches = []
+        prepared_branch: str | None = None
 
         if mode == "build":
             for action in getattr(review, "self_evolution_actions", []) or []:
                 if action.patches:
                     patches.extend(action.patches)
+
+        if patches and self.settings.has_github and self._is_git_repo():
+            try:
+                prepared_branch = self.git_tools.prepare_branch(run_id)
+                record.trace.append(
+                    {
+                        "event": "branch_prepared",
+                        "branch_name": prepared_branch,
+                        "source": "pre_apply",
+                    }
+                )
+            except Exception as exc:
+                record.trace.append(
+                    {
+                        "event": "branch_prepare_failed",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
+                prepared_branch = None
 
         (
             record.patches_applied,
@@ -414,7 +497,7 @@ class DaddyEngine:
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:
             try:
-                self._deliver_patch_via_pr(record, policy_route)
+                self._deliver_patch_via_pr(record, policy_route, prepared_branch=prepared_branch)
             except Exception as exc:
                 record.trace.append(
                     {
