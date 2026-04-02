@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import time
 from datetime import datetime, timezone
 
 from .agents.diagnoser import Diagnoser
@@ -155,7 +154,7 @@ class DaddyEngine:
                 False,
             )
 
-            record.success = True
+            record.success = False
             record.summary = f"build: failed ({result.returncode}) but continuing"
 
         self.memory.record_metrics(

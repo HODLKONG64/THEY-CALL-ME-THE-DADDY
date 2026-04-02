@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openai_model_review: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_REVIEW", "gpt-5.4"))
     openai_model_vet: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_VET", "gpt-5.4-mini"))
     openai_model_light: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_LIGHT", "gpt-5.4-nano"))
+    openai_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("OPENAI_TIMEOUT_SECONDS", "120")))
 
     # GitHub / PR lane
     github_token: str = Field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))

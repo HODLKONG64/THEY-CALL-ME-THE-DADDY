@@ -54,7 +54,7 @@ class R2Store:
                 return data
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
-            if code not in {"NoSuchKey", "404", "NoSuchBucket"}:
+            if code in {"NoSuchKey", "404", "NoSuchBucket"}:
                 return self._read_local()
         except (BotoCoreError, json.JSONDecodeError, UnicodeDecodeError):
             return self._read_local()

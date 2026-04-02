@@ -100,7 +100,7 @@ def score_patch(action: PatchAction) -> PatchScore:
     for keyword, penalty in DANGEROUS_KEYWORDS.items():
         if keyword in content:
             score += penalty
-            reasons.append(f"dangero us keyword {keyword}: {penalty}")
+            reasons.append(f"dangerous keyword {keyword}: {penalty}")
 
     content_bytes = len(content.encode("utf-8", errors="ignore"))
     if content_bytes == 0:
