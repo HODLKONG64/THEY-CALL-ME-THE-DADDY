@@ -26,13 +26,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      # 🔥 HARD CLEAN — remove ghost tests / cache contamination
+      # 🔥 HARD CLEAN
       - name: Clean workspace
         run: |
           find . -type d -name "__pycache__" -exec rm -rf {} +
           find . -type f -name "*.pyc" -delete
-          rm -rf .pytest_cache
-          rm -rf build dist *.egg-info
+          rm -rf .pytest_cache build dist *.egg-info
+
+      # 🔥 REMOVE TRACKED JUNK FROM GIT INDEX
+      - name: Remove tracked junk files
+        run: |
+          git rm -r --cached __pycache__ || true
+          git rm -r --cached .pytest_cache || true
+          git rm -r --cached build dist *.egg-info || true
 
       - name: Install dependencies
         run: |
@@ -68,8 +74,8 @@ jobs:
           git add .github/workflows/daddy-cycle.yml || true
           git add .gitignore || true
 
-          # 🔒 prevent junk / ghost files
-          git restore --staged build dist '*.egg-info' bool None str int float list dict tuple set path README_FIX.md THEY-CALL-ME-THE-DADDY 2>/dev/null || true
+          # 🔒 FINAL SAFETY FILTER
+          git restore --staged '**/__pycache__/**' '**/*.pyc' '.pytest_cache/**' 2>/dev/null || true
 
           git diff --cached --quiet || git commit -m "auto: daddy evolution"
           git push
