@@ -16,10 +16,8 @@ from ..models import (
     RunRecord,
 )
 
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
 
 class MemoryRepository:
     def __init__(self, store) -> None:
@@ -236,12 +234,10 @@ class MemoryRepository:
         rep = self.get_reputation(agent_name)
         delta = int(getattr(decision, "reputation_delta", 0))
         rep.trust_score = max(0, min(100, rep.trust_score + delta))
-
         if getattr(decision, "accepted", False):
             rep.accepted_count += 1
         else:
             rep.rejected_count += 1
-
         rep.updated_at = _now()
         self.state.reputations[agent_name] = rep
         return rep
