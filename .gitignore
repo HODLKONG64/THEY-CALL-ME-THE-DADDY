@@ -10,15 +10,19 @@ doctor_local/
 .coverage
 htmlcov/
 
-# packaging / build artifacts
+# build / packaging
 build/
 dist/
 *.egg-info/
 
-# self-evolution junk blockers
+# agent junk blockers
 bool
 None
 str
 int
 float
+list
+dict
+tuple
+set
 THEY-CALL-ME-THE-DADDY
