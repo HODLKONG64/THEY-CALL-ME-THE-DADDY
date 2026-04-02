@@ -24,6 +24,7 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/scoring.py",
     "src/the_daddy/merge_rules.py",
     "src/the_daddy/git_tools.py",
+    "src/the_daddy/runtime/command_runner.py",
 }
 
 
@@ -58,7 +59,6 @@ class AutoMergeJudge:
         if len(files) > MAX_ARCHITECTURE_BRANCH_FILES:
             reasons.append(f"Changed file count {len(files)} exceeds safe limit {MAX_ARCHITECTURE_BRANCH_FILES}.")
 
-        # 🔒 PROTECTED CORE FILES: never auto-merge a PR that touched them
         protected_touched = [p for p in files if p.strip().replace("\\", "/") in PROTECTED_CORE_FILES]
         if protected_touched:
             reasons.append(f"Protected core file modified: {', '.join(protected_touched)}")
@@ -68,5 +68,6 @@ class AutoMergeJudge:
             reasons.append(f"Unsafe files touched: {', '.join(unsafe)}")
 
         return (len(reasons) == 0, reasons)
+
 
 # daddy-review-guard
