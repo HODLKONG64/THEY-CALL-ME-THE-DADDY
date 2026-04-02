@@ -119,16 +119,14 @@ class GitBranchExecutor:
 
         if self.branch_exists_local(branch_name):
             self._run("checkout", branch_name)
-            if self.branch_exists_remote(branch_name):
-                self._run_no_check("fetch", "origin", branch_name)
-            if self.branch_exists_remote(base_branch):
-                self._run("reset", "--hard", f"origin/{base_branch}")
-            else:
-                self._run("reset", "--hard", base_branch)
         else:
             self._run("checkout", "-b", branch_name)
 
         return self.current_branch()
+
+    def prepare_branch(self, run_id: str, base_branch: str = "main") -> str:
+        branch_name = self.branch_for_architecture_run(run_id)
+        return self.create_or_checkout_branch(branch_name, base_branch=base_branch)
 
     def add_safe_paths(self, paths: Iterable[str]) -> None:
         path_list = [str(path) for path in paths if str(path).strip()]
@@ -139,6 +137,21 @@ class GitBranchExecutor:
     def has_staged_changes(self) -> bool:
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode != 0
+
+    def has_working_tree_changes(self, paths: Iterable[str] | None = None) -> bool:
+        cmd = ["git", "diff", "--quiet"]
+        if paths:
+            cmd.append("--")
+            cmd.extend([str(path) for path in paths if str(path).strip()])
+
+        result = subprocess.run(
+            cmd,
             cwd=self.repo_root,
             capture_output=True,
             text=True,
@@ -182,16 +195,17 @@ class GitBranchExecutor:
                     f"Pre-push syntax check failed for {path}:\n{result.stderr.strip()}"
                 )
 
-    def commit_safe_branch_changes(self, run_id: str, safe_paths: Iterable[str]) -> str | None:
+    def commit_current_branch_changes(self, run_id: str, safe_paths: Iterable[str]) -> str | None:
         paths = [str(path) for path in safe_paths if str(path).strip()]
-        branch_name = self.branch_for_architecture_run(run_id)
-
         if not paths:
             return None
 
-        self.create_or_checkout_branch(branch_name)
-        self.add_safe_paths(paths)
+        branch_name = self.current_branch()
 
+        if not self.has_working_tree_changes(paths) and not self.has_staged_changes():
+            return None
+
+        self.add_safe_paths(paths)
         committed = self.commit(f"auto: daddy architecture plan {run_id}")
         if not committed:
             return None
@@ -268,23 +282,3 @@ class GitBranchExecutor:
         if isinstance(response, dict):
             return response
         raise RuntimeError(f"Unexpected PR merge response: {response}")
-
-    def commit_push_open_pr(
-        self,
-        run_id: str,
-        safe_paths: Iterable[str],
-        title: str,
-        body: str,
-        base_branch: str = "main",
-    ) -> dict | None:
-        branch_name = self.commit_safe_branch_changes(run_id, safe_paths)
-
-        if not branch_name:
-            return None
-
-        return self.create_pull_request(
-            branch_name=branch_name,
-            title=title,
-            body=body,
-            base_branch=base_branch,
-        )
