@@ -74,29 +74,22 @@ class DaddyEngine:
             )
         return applied, policy.route
 
-    def _execute_architecture_pr(self, run_id: str):
-        pending = self.memory.get_pending_architecture()
-        if not pending:
-            return None
-
-        plan = pending[0]
-        if not plan.patch_bundle:
-            self.memory.update_architecture_status(plan.title, "blocked")
+    def _execute_architecture_pr(self, run_id: str, patches: list):
+        if not patches:
             return None
 
         safe_paths = set()
 
         # 🔥 APPLY PATCHES ON BRANCH
-        for patch in plan.patch_bundle:
+        for patch in patches:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
             safe_paths.add(patch.path)
 
-        # 🔥 CRITICAL FIX: FORCE FILE CHANGE (GUARANTEES COMMIT)
+        # 🔥 FORCE FILE CHANGE
         marker_file = self.settings.target_root / "ARCHITECTURE.md"
-
         try:
             with open(marker_file, "a", encoding="utf-8") as f:
-                f.write(f"\n# AUTO-RUN MARKER {time.time()}\n")
+                f.write(f"\n# AUTO-RUN {time.time()}\n")
             safe_paths.add("ARCHITECTURE.md")
         except Exception:
             pass
@@ -104,27 +97,13 @@ class DaddyEngine:
         pr = self.git_tools.commit_push_open_pr(
             run_id=run_id,
             safe_paths=sorted(safe_paths),
-            title=f"[AUTO] {plan.title}",
+            title=f"[AUTO] Architecture Update {run_id}",
             body=f"""Auto-generated architecture upgrade.
 
-### Summary
-{plan.summary}
-
-### Rationale
-{plan.rationale}
-
-### Files Changed
+Files:
 {", ".join(sorted(safe_paths))}
-
-### Safety
-- bounded patch set
-- no infra changes
-- no secrets
 """,
         )
-
-        if pr:
-            self.memory.update_architecture_status(plan.title, "active")
 
         return pr
 
@@ -136,14 +115,11 @@ class DaddyEngine:
         if not pull_number:
             return None
 
-        changed_files = [p["path"] for p in record.patches_applied]
-        patch_count = len(record.patches_applied)
-
         allowed, reasons = self.merge_judge.should_auto_merge(
             success=record.success,
             policy_route=policy_route,
-            changed_files=changed_files,
-            patch_count=patch_count,
+            changed_files=[p["path"] for p in record.patches_applied],
+            patch_count=len(record.patches_applied),
         )
 
         if not allowed:
@@ -152,11 +128,11 @@ class DaddyEngine:
 
         merged = self.git_tools.merge_pull_request(
             pull_number=pull_number,
-            commit_title=f"auto: daddy merge {record.run_id}",
+            commit_title=f"auto merge {record.run_id}",
         )
 
         if merged:
-            record.backlog_updates.append(f"PR auto-merged: {pr.get('html_url', '')}")
+            record.backlog_updates.append(f"PR auto-merged")
 
         return merged
 
@@ -185,13 +161,21 @@ class DaddyEngine:
         record.selected_mode = mode
         record.architecture_review = review
 
-        patches = []
-        for action in review.self_evolution_actions:
-            patches.extend(action.patches)
-
-        # 🔥 DO NOT APPLY PATCHES IN ARCHITECTURE MODE
+        # 🔥 FIX: USE ARCHITECTURE PATCHES
         if mode == "architecture":
-            record.patches_applied = []
+            pending = self.memory.get_pending_architecture()
+            patches = pending[0].patch_bundle if pending else []
+        else:
+            patches = []
+            for action in review.self_evolution_actions:
+                patches.extend(action.patches)
+
+        # 🔥 FIX: DO NOT APPLY EARLY
+        if mode == "architecture":
+            record.patches_applied = [
+                {"path": p.path, "description": p.description, "route": "branch"}
+                for p in patches
+            ]
             policy_route = "branch"
         else:
             record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
@@ -199,24 +183,16 @@ class DaddyEngine:
         pr = None
 
         if mode == "architecture":
-            pr = self._execute_architecture_pr(run_id)
+            pr = self._execute_architecture_pr(run_id, patches)
 
             if pr:
-                record.backlog_updates.append(f"PR created: {pr.get('html_url', '')}")
+                record.backlog_updates.append("PR created")
 
-        result = run_command(
-            self.settings.command,
-            cwd=self.settings.target_root,
-            timeout_seconds=getattr(self.settings, "timeout_seconds", 300),
-        )
+        result = run_command(self.settings.command, cwd=self.settings.target_root)
 
         record.verification = result
         record.success = result.returncode == 0
         record.summary = "Success" if record.success else f"Failed ({result.returncode})"
-
-        if not record.success:
-            sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
-            self.memory.record_failure_pattern(sig, {"route": mode, "diagnosis": "run failure"}, False)
 
         if pr:
             self._attempt_auto_merge(pr, record, policy_route)
