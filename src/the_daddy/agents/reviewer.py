@@ -457,14 +457,78 @@ class WakeReviewer:
         except re.error:
             return False
 
+    def _recently_blocked_paths(self, memory_snapshot: dict[str, Any], limit: int = 6) -> dict[str, list[str]]:
+        blocked: dict[str, list[str]] = {}
+
+        runs = memory_snapshot.get("runs", []) or []
+        for run in runs[-limit:]:
+            if not isinstance(run, dict):
+                continue
+
+            for event in run.get("trace", []) or []:
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") != "patch_apply_failed":
+                    continue
+
+                path = self._normalize_path(str(event.get("path", "")).strip())
+                if not path:
+                    continue
+
+                error = str(event.get("error", "")).strip()
+                if not error:
+                    continue
+
+                blocked.setdefault(path, [])
+                if error not in blocked[path]:
+                    blocked[path].append(error)
+
+            self_evolution = run.get("self_evolution")
+            if isinstance(self_evolution, dict):
+                for reason in self_evolution.get("reasons", []) or []:
+                    text = str(reason)
+                    if "->" not in text:
+                        continue
+                    left, right = text.rsplit("->", 1)
+                    path = self._normalize_path(right.strip())
+                    if not path:
+                        continue
+                    blocked.setdefault(path, [])
+                    if left.strip() not in blocked[path]:
+                        blocked[path].append(left.strip())
+
+        return blocked
+
+    def _is_repeat_blocked_target(
+        self,
+        path: str,
+        recently_blocked: dict[str, list[str]],
+    ) -> bool:
+        normalized = self._normalize_path(path)
+        reasons = recently_blocked.get(normalized, [])
+        if not reasons:
+            return False
+
+        hot_reasons = (
+            "shrink-replace",
+            "pattern does not match",
+            "regex_replace action whose pattern does not match",
+            "blocked regex_replace",
+            "blocked shrink-replace",
+        )
+        lowered = " | ".join(reasons).lower()
+        return any(token in lowered for token in hot_reasons)
+
     def _filter_low_value_actions(
         self,
         actions: list[SelfEvolutionAction],
         tracked_files: list[str],
         repo_root: Path,
+        memory_snapshot: dict[str, Any],
     ) -> tuple[list[SelfEvolutionAction], list[str]]:
         kept: list[SelfEvolutionAction] = []
         removed_notes: list[str] = []
+        recently_blocked = self._recently_blocked_paths(memory_snapshot)
 
         for action in actions:
             if self._is_banned_test_action(action):
@@ -482,21 +546,46 @@ class WakeReviewer:
             invalid_paths: list[str] = []
             shrink_replace_paths: list[str] = []
             missing_regex_anchor_paths: list[str] = []
+            repeated_blocked_paths: list[str] = []
+            repetitive_fallback_paths: list[str] = []
 
             for patch in action.patches or []:
                 patch_path = self._normalize_path(getattr(patch, "path", ""))
+
                 if not self._is_allowed_patch_path(patch_path, tracked_files):
                     invalid_paths.append(patch_path)
                     continue
+
+                if patch_path == FALLBACK_RUNTIME_PATH and patch_path in tracked_files:
+                    repetitive_fallback_paths.append(patch_path)
+                    continue
+
+                if self._is_repeat_blocked_target(patch_path, recently_blocked):
+                    repeated_blocked_paths.append(patch_path)
+                    continue
+
                 if self._is_runtime_helper_shrink_replace(repo_root, patch):
                     shrink_replace_paths.append(patch_path)
                     continue
+
                 if not self._regex_patch_matches_current_file(repo_root, patch):
                     missing_regex_anchor_paths.append(patch_path)
 
             if invalid_paths:
                 removed_notes.append(
                     f"Blocked self-evolution action with non-tracked, banned, or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
+                )
+                continue
+
+            if repetitive_fallback_paths:
+                removed_notes.append(
+                    f"Blocked repetitive fallback-helper farming: {action.title} -> {', '.join(repetitive_fallback_paths)}"
+                )
+                continue
+
+            if repeated_blocked_paths:
+                removed_notes.append(
+                    f"Blocked retry of recently-failed target: {action.title} -> {', '.join(repeated_blocked_paths)}"
                 )
                 continue
 
@@ -635,6 +724,8 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
                 "Do not broaden scope when verification is failing.",
                 "Do not shrink-replace an existing runtime helper file.",
                 "Do not propose regex_replace unless the pattern exists in the current file.",
+                "Do not retry recently blocked targets immediately.",
+                "Do not keep farming reviewer_fallback.py after it already exists.",
             ],
         )
 
@@ -655,6 +746,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             "Keep the change bounded and verification-driven.",
             "Do not use replace_file to shrink an existing runtime helper.",
             "Do not use regex_replace unless the pattern matches the current file.",
+            "Do not retry recently blocked targets immediately.",
         ]
 
         return PlannedWorkItem(
@@ -760,6 +852,8 @@ Rules:
 - Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
 - CRITICAL: if an allowlisted runtime helper file already exists, do not propose replace_file with smaller content.
 - CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
+- CRITICAL: do not retry the same target if it was recently blocked for shrink-replace or missing regex anchor.
+- CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -892,6 +986,8 @@ Repository snapshot:
                     "Prefer allowlisted runtime helper paths for observability improvements. "
                     "For an existing runtime helper file, do not use replace_file with smaller content. "
                     "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
+                    "Do not retry recently blocked targets. "
+                    "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -907,6 +1003,7 @@ Repository snapshot:
             review.self_evolution_actions,
             tracked_files,
             repo_root,
+            memory_snapshot,
         )
         review.self_evolution_actions = filtered_actions
         if action_notes:
