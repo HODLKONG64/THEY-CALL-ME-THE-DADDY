@@ -11,7 +11,7 @@ from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
-from .models import MetricsLedgerEntry, RunRecord
+from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
@@ -141,12 +141,17 @@ class DaddyEngine:
                 )
                 continue
 
+            patch_fingerprint = self.memory.fingerprint(
+                f"{patch.path}:{patch.description}:{result['new_hash']}"
+            )
+
             self.memory.record_patch(
                 run_id,
                 mode,
                 patch.path,
                 patch.description,
                 policy.route,
+                patch_fingerprint=patch_fingerprint,
             )
 
             applied.append(
@@ -209,6 +214,7 @@ class DaddyEngine:
         risk = getattr(review, "risk_level", "") if review is not None else ""
         summary = getattr(record, "summary", "") or "Automated bounded patch set."
         total_delta = self._total_byte_delta_from_record(record)
+        self_evolution = getattr(record, "self_evolution", None)
 
         body_lines = [
             "## Daddy automated patch",
@@ -220,12 +226,26 @@ class DaddyEngine:
             f"- Verification success: `{record.success}`",
             f"- Patch count: `{len(getattr(record, 'patches_applied', []) or [])}`",
             f"- Byte delta: `{total_delta}`",
-            "",
-            "### Summary",
-            summary,
-            "",
-            "### Changed files",
         ]
+
+        if self_evolution is not None:
+            body_lines.extend(
+                [
+                    f"- Self-evolution attempted: `{getattr(self_evolution, 'attempted', False)}`",
+                    f"- Self-evolution applied: `{getattr(self_evolution, 'applied', False)}`",
+                    f"- Self-evolution route: `{getattr(self_evolution, 'route', '')}`",
+                ]
+            )
+
+        body_lines.extend(
+            [
+                "",
+                "### Summary",
+                summary,
+                "",
+                "### Changed files",
+            ]
+        )
 
         if changed_files:
             body_lines.extend([f"- `{path}`" for path in changed_files])
@@ -276,6 +296,53 @@ class DaddyEngine:
             return False, "no_changed_files"
 
         return True, "ok"
+
+    def _build_self_evolution_record(
+        self,
+        *,
+        review,
+        policy_route: str,
+        patches: list,
+        applied_patches: list,
+        trace: list,
+    ) -> SelfEvolutionExecution:
+        patch_failures = [
+            event for event in trace
+            if isinstance(event, dict) and event.get("event") == "patch_apply_failed"
+        ]
+        notes = [str(note) for note in getattr(review, "execution_notes", []) or []]
+
+        if patch_failures:
+            notes.extend(
+                [
+                    f"{event.get('path', '')}: {event.get('error', '')}"
+                    for event in patch_failures
+                ]
+            )
+
+        attempted = bool(patches)
+        applied = bool(applied_patches)
+
+        if applied:
+            summary = "Applied bounded self-evolution patch set."
+        elif attempted and patch_failures:
+            summary = "Self-evolution attempted but all proposed patches were blocked."
+        elif attempted:
+            summary = "Self-evolution attempted but no patches were applied."
+        else:
+            summary = "No executable self-evolution action was available."
+
+        return SelfEvolutionExecution(
+            enabled=bool(getattr(self.settings, "enable_self_evolution", True)),
+            attempted=attempted,
+            applied=applied,
+            route=policy_route,
+            summary=summary,
+            reasons=notes,
+            proposed_count=len(getattr(review, "self_evolution_actions", []) or []),
+            applied_count=len(applied_patches),
+            patches=list(applied_patches),
+        )
 
     def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str, prepared_branch: str | None = None) -> None:
         changed_files = self._changed_files_from_record(record)
@@ -406,6 +473,7 @@ class DaddyEngine:
 
         record = RunRecord(run_id=run_id, command=self.settings.command)
         record.repo_fingerprint = self.repo_fingerprint()
+        record.attempt_count = 1
 
         latest = self.memory.latest_review()
 
@@ -433,6 +501,16 @@ class DaddyEngine:
                 ],
             }
         )
+
+        if getattr(review, "architecture_plans", None):
+            record.trace.append(
+                {
+                    "event": "architecture_plans_present",
+                    "count": len(review.architecture_plans),
+                    "titles": [getattr(plan, "title", "") for plan in review.architecture_plans],
+                    "note": "Architecture plans are recorded but not auto-applied in the build lane.",
+                }
+            )
 
         patches = []
         prepared_branch: str | None = None
@@ -493,6 +571,14 @@ class DaddyEngine:
 
             record.success = False
             record.summary = f"build: failed ({result.returncode}) but continuing"
+
+        record.self_evolution = self._build_self_evolution_record(
+            review=review,
+            policy_route=policy_route,
+            patches=patches,
+            applied_patches=record.patches_applied,
+            trace=record.trace,
+        )
 
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:
