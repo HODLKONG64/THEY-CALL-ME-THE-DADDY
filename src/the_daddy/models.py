@@ -224,3 +224,7 @@ class MemoryState(BaseModel):
     patch_provenance: list[PatchProvenance] = Field(default_factory=list)
     learning_weights: LearningWeights = Field(default_factory=LearningWeights)
     last_saved_at: str = Field(default_factory=utc_now_iso)
+
+
+# Legacy compat for older tests/imports
+FailurePattern = FailurePatternRecord
