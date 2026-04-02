@@ -253,19 +253,14 @@ class WakeReviewer:
 
         if "wake_review_contract_test" in overlap:
             return True
-
         if "self_evolution_action_test" in overlap and "test" in overlap:
             return True
-
         if {"test", "wake_review", "review_contract"} <= overlap:
             return True
-
         if {"test", "self_evolution", "action_requirement"} <= overlap:
             return True
-
         if {"rollback", "observability"} <= overlap:
             return True
-
         if "trace_observability" in overlap:
             return True
 
@@ -367,11 +362,9 @@ class WakeReviewer:
             return True
         if self._has_banned_test_title(getattr(action, "description", "")):
             return True
-
         for patch in action.patches or []:
             if self._is_banned_test_path(getattr(patch, "path", "")):
                 return True
-
         return False
 
     def _is_repetitive_test_action(self, action: SelfEvolutionAction, tracked_files: list[str]) -> bool:
@@ -413,19 +406,14 @@ class WakeReviewer:
 
         if not normalized:
             return False
-
         if normalized in BANNED_SELF_EVOLUTION_PATHS:
             return False
-
         if self._is_banned_invented_filename(normalized, tracked_files):
             return False
-
         if normalized in tracked_files:
             return True
-
         if normalized in SAFE_NEW_FILE_ALLOWLIST:
             return True
-
         return False
 
     def _existing_file_text(self, repo_root: Path, path: str) -> str:
@@ -438,20 +426,13 @@ class WakeReviewer:
         text = self._existing_file_text(repo_root, path)
         return len(text.encode("utf-8", errors="ignore"))
 
-    def _is_runtime_helper_shrink_replace(self, repo_root: Path, patch: PatchAction) -> bool:
+    def _is_existing_runtime_helper_replace(self, repo_root: Path, patch: PatchAction) -> bool:
         normalized = self._normalize_path(getattr(patch, "path", ""))
         if normalized not in ALLOWLISTED_RUNTIME_HELPERS:
             return False
         if getattr(patch, "operation", "") != "replace_file":
             return False
-
-        old_bytes = self._existing_file_bytes(repo_root, normalized)
-        new_content = getattr(patch, "new_content", None)
-        if old_bytes <= 0 or new_content is None:
-            return False
-
-        new_bytes = len(new_content.encode("utf-8", errors="ignore"))
-        return new_bytes < old_bytes
+        return (repo_root / normalized).exists()
 
     def _regex_patch_matches_current_file(self, repo_root: Path, patch: PatchAction) -> bool:
         if getattr(patch, "operation", "") != "regex_replace":
@@ -516,17 +497,14 @@ class WakeReviewer:
 
         return blocked
 
-    def _is_repeat_blocked_target(
-        self,
-        path: str,
-        recently_blocked: dict[str, list[str]],
-    ) -> bool:
+    def _is_repeat_blocked_target(self, path: str, recently_blocked: dict[str, list[str]]) -> bool:
         normalized = self._normalize_path(path)
         reasons = recently_blocked.get(normalized, [])
         if not reasons:
             return False
 
         hot_reasons = (
+            "replace on existing runtime helper",
             "shrink-replace",
             "pattern does not match",
             "regex_replace action whose pattern does not match",
@@ -549,19 +527,15 @@ class WakeReviewer:
 
         for action in actions:
             if self._is_banned_test_action(action):
-                removed_notes.append(
-                    f"Blocked permanently banned test-loop action: {action.title}"
-                )
+                removed_notes.append(f"Blocked permanently banned test-loop action: {action.title}")
                 continue
 
             if self._is_repetitive_test_action(action, tracked_files):
-                removed_notes.append(
-                    f"Suppressed repetitive test-only self-evolution action: {action.title}"
-                )
+                removed_notes.append(f"Suppressed repetitive test-only self-evolution action: {action.title}")
                 continue
 
             invalid_paths: list[str] = []
-            shrink_replace_paths: list[str] = []
+            existing_replace_paths: list[str] = []
             missing_regex_anchor_paths: list[str] = []
             repeated_blocked_paths: list[str] = []
             repetitive_fallback_paths: list[str] = []
@@ -581,8 +555,8 @@ class WakeReviewer:
                     repeated_blocked_paths.append(patch_path)
                     continue
 
-                if self._is_runtime_helper_shrink_replace(repo_root, patch):
-                    shrink_replace_paths.append(patch_path)
+                if self._is_existing_runtime_helper_replace(repo_root, patch):
+                    existing_replace_paths.append(patch_path)
                     continue
 
                 if not self._regex_patch_matches_current_file(repo_root, patch):
@@ -606,9 +580,9 @@ class WakeReviewer:
                 )
                 continue
 
-            if shrink_replace_paths:
+            if existing_replace_paths:
                 removed_notes.append(
-                    f"Blocked shrink-replace action against existing runtime helper: {action.title} -> {', '.join(shrink_replace_paths)}"
+                    f"Blocked replace_file on existing runtime helper: {action.title} -> {', '.join(existing_replace_paths)}"
                 )
                 continue
 
@@ -622,11 +596,7 @@ class WakeReviewer:
 
         return kept, removed_notes
 
-    def _force_allowlisted_action_only(
-        self,
-        review: ArchitectureReview,
-        repo_root: Path,
-    ) -> ArchitectureReview:
+    def _force_allowlisted_action_only(self, review: ArchitectureReview, repo_root: Path) -> ArchitectureReview:
         proactive_action = self._proactive_runtime_action(repo_root)
         run_health_action = self._run_health_action(repo_root)
         digest_action = self._error_digest_action(repo_root)
@@ -856,7 +826,7 @@ def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, 
                 "Prefer bounded code patches over doc-only churn.",
                 "Prefer allowlisted runtime helpers when reviewer drift is detected.",
                 "Do not broaden scope when verification is failing.",
-                "Do not shrink-replace an existing runtime helper file.",
+                "Do not use replace_file on an existing runtime helper.",
                 "Do not propose regex_replace unless the pattern exists in the current file.",
                 "Do not retry recently blocked targets immediately.",
                 "Do not keep farming reviewer_fallback.py after it already exists.",
@@ -878,7 +848,7 @@ def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, 
         notes = [
             "Derived from reviewer-proposed self-evolution action.",
             "Keep the change bounded and verification-driven.",
-            "Do not use replace_file to shrink an existing runtime helper.",
+            "Do not use replace_file on an existing runtime helper.",
             "Do not use regex_replace unless the pattern matches the current file.",
             "Do not retry recently blocked targets immediately.",
         ]
@@ -984,11 +954,11 @@ Rules:
 - NEVER invent a new module name like logging_utils.py, reviewer.py, helper.py, utils.py, or similar unless that exact path already exists in tracked_files.
 - If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
 - Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
-- CRITICAL: if an allowlisted runtime helper file already exists, do not propose replace_file with smaller content.
+- CRITICAL: if an allowlisted runtime helper file already exists, do not use replace_file against it.
 - CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
-- CRITICAL: do not retry the same target if it was recently blocked for shrink-replace or missing regex anchor.
+- CRITICAL: do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink-replace, or missing regex anchor.
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
-- Prefer a fresh allowlisted helper like run_health.py or error_digest.py before repeating stale runtime-helper ideas.
+- Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -1129,11 +1099,11 @@ Repository snapshot:
                     "Do not invent new file targets unless they are explicitly allowlisted runtime helper paths. "
                     "Do not target banned self-evolution paths. "
                     "Prefer allowlisted runtime helper paths for observability improvements. "
-                    "For an existing runtime helper file, do not use replace_file with smaller content. "
+                    "For an existing runtime helper file, do not use replace_file. "
                     "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
-                    "Prefer a fresh allowlisted helper like run_health.py or error_digest.py before repeating stale helper ideas. "
+                    "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -1190,23 +1160,17 @@ Repository snapshot:
             proactive_action = self._proactive_runtime_action(repo_root)
             if proactive_action is not None:
                 review.self_evolution_actions = [proactive_action]
-                review.execution_notes.append(
-                    "Proactive runtime improvement injected while repo is green."
-                )
+                review.execution_notes.append("Proactive runtime improvement injected while repo is green.")
             else:
                 run_health_action = self._run_health_action(repo_root)
                 if run_health_action is not None:
                     review.self_evolution_actions = [run_health_action]
-                    review.execution_notes.append(
-                        "Run-health runtime improvement injected while repo is green."
-                    )
+                    review.execution_notes.append("Run-health runtime improvement injected while repo is green.")
                 else:
                     digest_action = self._error_digest_action(repo_root)
                     if digest_action is not None:
                         review.self_evolution_actions = [digest_action]
-                        review.execution_notes.append(
-                            "Error-digest runtime improvement injected while repo is green."
-                        )
+                        review.execution_notes.append("Error-digest runtime improvement injected while repo is green.")
                     else:
                         fallback_action = self._fallback_patch_action(repo_root)
                         if fallback_action is not None:
