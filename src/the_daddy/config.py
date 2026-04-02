@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     max_attempts: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_ATTEMPTS", "4")))
     run_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("DADDY_RUN_TIMEOUT_SECONDS", "1200")))
     max_file_bytes: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_FILE_BYTES", "120000")))
+    max_depth: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_DEPTH", "3")))
     allow_extensions: list[str] = Field(
         default_factory=lambda: [".py", ".md", ".txt", ".yml", ".yaml", ".json", ".toml"]
     )
