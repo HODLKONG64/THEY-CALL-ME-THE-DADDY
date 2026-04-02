@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -32,6 +31,20 @@ def _print_run_summary(record) -> None:
         "repo_fingerprint": getattr(record, "repo_fingerprint", {}) or {},
         "verification": getattr(record, "verification", None),
     }
+
+    self_evolution = getattr(record, "self_evolution", None)
+    if self_evolution is not None:
+        payload["self_evolution"] = {
+            "enabled": getattr(self_evolution, "enabled", False),
+            "attempted": getattr(self_evolution, "attempted", False),
+            "applied": getattr(self_evolution, "applied", False),
+            "route": getattr(self_evolution, "route", ""),
+            "summary": getattr(self_evolution, "summary", ""),
+            "reasons": getattr(self_evolution, "reasons", []) or [],
+            "proposed_count": getattr(self_evolution, "proposed_count", 0),
+            "applied_count": getattr(self_evolution, "applied_count", 0),
+            "patches": getattr(self_evolution, "patches", []) or [],
+        }
 
     architecture_review = getattr(record, "architecture_review", None)
     if architecture_review is not None:
