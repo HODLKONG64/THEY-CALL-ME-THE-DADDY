@@ -39,6 +39,9 @@ BANNED_TEST_TITLE_PATTERNS = (
 PROACTIVE_RUNTIME_PATH = "src/the_daddy/runtime/trace_summary.py"
 FALLBACK_RUNTIME_PATH = "src/the_daddy/runtime/reviewer_fallback.py"
 ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
+BANNED_SELF_EVOLUTION_PATHS = {
+    "src/the_daddy/runtime/command_runner.py",
+}
 
 SAFE_NEW_FILE_ALLOWLIST = {
     PROACTIVE_RUNTIME_PATH,
@@ -366,6 +369,9 @@ class WakeReviewer:
         if not normalized:
             return False
 
+        if normalized in BANNED_SELF_EVOLUTION_PATHS:
+            return False
+
         if normalized in tracked_files:
             return True
 
@@ -403,7 +409,7 @@ class WakeReviewer:
 
             if invalid_paths:
                 removed_notes.append(
-                    f"Blocked self-evolution action with non-tracked or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
+                    f"Blocked self-evolution action with non-tracked, banned, or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
                 )
                 continue
 
@@ -572,6 +578,7 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
         repo_json = json.dumps(repo_snapshot, indent=2)[:26000]
 
         allowlisted_new_files = "\n".join(f"  * {path}" for path in sorted(SAFE_NEW_FILE_ALLOWLIST))
+        banned_paths = "\n".join(f"  * {path}" for path in sorted(BANNED_SELF_EVOLUTION_PATHS))
 
         return f"""You are the wake-review agent for a bounded self-maintenance repository.
 
@@ -609,6 +616,8 @@ Rules:
   * an existing tracked file from the repository snapshot, or
   * one of these allowlisted new files only:
 {allowlisted_new_files}
+- CRITICAL: NEVER target these banned self-evolution paths:
+{banned_paths}
 - NEVER invent a new module name like logging_utils.py, reviewer.py, helper.py, utils.py, or similar unless that exact path already exists in tracked_files.
 - If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
@@ -739,6 +748,7 @@ Repository snapshot:
                     "Avoid repetitive low-value test or backlog churn. "
                     "Never propose wake-review invariant/output/contract tests or self-evolution existence tests. "
                     "Do not invent new file targets unless they are explicitly allowlisted runtime helper paths. "
+                    "Do not target banned self-evolution paths. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
