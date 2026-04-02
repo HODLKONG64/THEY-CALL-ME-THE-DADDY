@@ -16,6 +16,29 @@ from ..models import (
 from .openai_client import OpenAIJSONClient
 
 
+BANNED_TEST_PATH_PATTERNS = {
+    "tests/test_wake_review_invariant.py",
+    "tests/test_wake_review_invariants.py",
+    "tests/test_wake_review_output.py",
+    "tests/test_wake_review_contract.py",
+    "tests/test_self_evolution.py",
+}
+
+BANNED_TEST_TITLE_PATTERNS = (
+    "wake-review invariant",
+    "wake review invariant",
+    "wake-review output",
+    "wake review output",
+    "wake-review contract",
+    "wake review contract",
+    "self-evolution action existence",
+    "self evolution action existence",
+    "safe self-evolution action existence",
+)
+
+PROACTIVE_TEST_PATH = "tests/test_file_tools_guards.py"
+
+
 class WakeReviewer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -268,6 +291,26 @@ class WakeReviewer:
             return False
         return all((patch.path or "").startswith("tests/") for patch in action.patches)
 
+    def _is_banned_test_path(self, path: str) -> bool:
+        normalized = (path or "").strip().replace("\\", "/").lower()
+        return normalized in BANNED_TEST_PATH_PATTERNS
+
+    def _has_banned_test_title(self, text: str) -> bool:
+        normalized = self._normalize_phrase(text)
+        return any(pattern in normalized for pattern in BANNED_TEST_TITLE_PATTERNS)
+
+    def _is_banned_test_action(self, action: SelfEvolutionAction) -> bool:
+        if self._has_banned_test_title(getattr(action, "title", "")):
+            return True
+        if self._has_banned_test_title(getattr(action, "description", "")):
+            return True
+
+        for patch in action.patches or []:
+            if self._is_banned_test_path(getattr(patch, "path", "")):
+                return True
+
+        return False
+
     def _is_repetitive_test_action(self, action: SelfEvolutionAction, tracked_files: list[str]) -> bool:
         if not self._is_test_only_action(action):
             return False
@@ -304,11 +347,18 @@ class WakeReviewer:
         removed_notes: list[str] = []
 
         for action in actions:
+            if self._is_banned_test_action(action):
+                removed_notes.append(
+                    f"Blocked permanently banned test-loop action: {action.title}"
+                )
+                continue
+
             if self._is_repetitive_test_action(action, tracked_files):
                 removed_notes.append(
                     f"Suppressed repetitive test-only self-evolution action: {action.title}"
                 )
                 continue
+
             kept.append(action)
 
         return kept, removed_notes
@@ -357,13 +407,11 @@ class WakeReviewer:
         return None
 
     def _proactive_guard_test_action(self, repo_root: Path) -> SelfEvolutionAction | None:
-        target = repo_root / "tests" / "test_file_tools_guards.py"
+        target = repo_root / PROACTIVE_TEST_PATH
         if target.exists():
             return None
 
-        new_content = """from pathlib import Path
-
-import pytest
+        new_content = """import pytest
 
 from the_daddy.models import PatchAction
 from the_daddy.runtime.file_tools import apply_patch_action
@@ -411,7 +459,7 @@ def test_apply_patch_action_rejects_protected_core_file(tmp_path):
             risk="safe",
             patches=[
                 PatchAction(
-                    path="tests/test_file_tools_guards.py",
+                    path=PROACTIVE_TEST_PATH,
                     operation="replace_file",
                     new_content=new_content,
                     description="Add proactive regression tests for file_tools safety guards.",
@@ -515,12 +563,20 @@ Rules:
 - Keep build_actions concrete, file-aware, and aligned to the self_evolution_actions when present.
 - Do not invent architecture work just to fill the field.
 - Avoid repetitive low-value maintenance loops.
-- Do not propose a new regression test if a materially similar wake-review or output-invariant test already exists in tests/.
+- NEVER propose any wake-review invariant test, wake-review output test, wake-review contract test, or self-evolution action existence test.
+- NEVER propose tests targeting:
+  * tests/test_wake_review_invariant.py
+  * tests/test_wake_review_invariants.py
+  * tests/test_wake_review_output.py
+  * tests/test_wake_review_contract.py
+  * tests/test_self_evolution.py
+- Do not propose a new regression test if a materially similar test already exists in tests/.
 - Do not repeat backlog items that are already present in memory unless there is genuinely new evidence.
-- Treat these as equivalent low-value duplicates when the repo is already green:
+- Treat these as permanently banned low-value loops:
   * wake-review invariant test
   * wake-review output test
-  * safe self-evolution action existence test
+  * wake-review contract test
+  * self-evolution action existence test
 - Prefer source/runtime fixes over another tiny documentation or test-only loop when the system is already green.
 - Even when the repo is green, proactively propose one bounded safety, observability, or regression-hardening improvement if a non-repetitive one exists.
 
@@ -620,7 +676,7 @@ Repository snapshot:
 
         return ArchitectureReview(
             diagnosis="Fallback review generated",
-            system_intent="Keep the agent bounded, testable, patch-capable, and proactive.",
+            system_intent="Keep the agent bounded, testable, patch-capable, proactive, and anti-loop.",
             strengths=["Repository is reachable and reviewer fallback is active."],
             weaknesses=[reason],
             recommendations=["Stabilise reviewer schema and runtime alignment."],
@@ -648,7 +704,7 @@ Repository snapshot:
                     "When you propose a self-evolution action, include a matching build_action. "
                     "Only include architecture_plans when clearly justified by a repo-wide structural issue. "
                     "Avoid repetitive low-value test or backlog churn. "
-                    "Treat wake-review invariant tests, wake-review output tests, and self-evolution action existence tests as the same maintenance loop unless there is new evidence. "
+                    "Never propose wake-review invariant/output/contract tests or self-evolution existence tests. "
                     "When the repo is green, still look for one bounded proactive improvement that hardens safety, tests, or observability."
                 ),
                 prompt=prompt,
