@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 def utc_now_iso() -> str:
@@ -40,37 +40,6 @@ class SelfEvolutionAction(BaseModel):
     patches: list[PatchAction] = Field(default_factory=list)
 
 
-class ArchitecturePlan(BaseModel):
-    title: str
-    summary: str
-    rationale: str = ""
-    route: Literal["branch", "recommend"] = "branch"
-    files_touched: list[str] = Field(default_factory=list)
-    patch_bundle: list[PatchAction] = Field(default_factory=list)
-    proof_requirements: list[str] = Field(default_factory=lambda: [
-        "tests pass",
-        "no import errors",
-        "no policy violations",
-    ])
-    status: Literal["proposed", "active", "blocked", "complete"] = "proposed"
-    created_at: str = Field(default_factory=utc_now_iso)
-    updated_at: str = Field(default_factory=utc_now_iso)
-
-
-class PlannedWorkItem(BaseModel):
-    work_id: str
-    title: str
-    description: str
-    mode: Literal["repair", "build", "architecture"] = "build"
-    state: Literal["proposed", "active", "blocked", "complete"] = "proposed"
-    priority: int = 0
-    route: Literal["safe", "branch", "recommend"] = "safe"
-    related_files: list[str] = Field(default_factory=list)
-    notes: list[str] = Field(default_factory=list)
-    created_at: str = Field(default_factory=utc_now_iso)
-    updated_at: str = Field(default_factory=utc_now_iso)
-
-
 class ArchitectureReview(BaseModel):
     diagnosis: str
     system_intent: str
@@ -79,8 +48,6 @@ class ArchitectureReview(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
     backlog_items: list[str] = Field(default_factory=list)
     self_evolution_actions: list[SelfEvolutionAction] = Field(default_factory=list)
-    build_actions: list[PlannedWorkItem] = Field(default_factory=list)
-    architecture_plans: list[ArchitecturePlan] = Field(default_factory=list)
     execution_notes: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     reviewed_at: str = Field(default_factory=utc_now_iso)
@@ -125,60 +92,12 @@ class VettingDecision(BaseModel):
 
 
 class AgentReputation(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    agent_id: str = Field(validation_alias=AliasChoices("agent_id", "agent_name"))
-    trust_score: int = Field(default=50, validation_alias=AliasChoices("trust_score", "score"))
-    accepted_count: int = Field(default=0, validation_alias=AliasChoices("accepted_count", "accepted"))
-    staged_count: int = 0
-    rejected_count: int = Field(default=0, validation_alias=AliasChoices("rejected_count", "rejected"))
+    agent_id: str
+    score: int = 0
+    accepted: int = 0
+    rejected: int = 0
     impact: Literal["low", "medium", "high"] = "low"
     updated_at: str = Field(default_factory=utc_now_iso)
-
-
-Reputation = AgentReputation
-VetDecision = VettingDecision
-
-
-class FailurePatternRecord(BaseModel):
-    signature: str
-    success_count: int = 0
-    failure_count: int = 0
-    last_route: str = ""
-    last_summary: str = ""
-    related_files: list[str] = Field(default_factory=list)
-    updated_at: str = Field(default_factory=utc_now_iso)
-
-
-class LearningWeights(BaseModel):
-    repeated_failure_weight: float = 2.0
-    repeated_success_weight: float = 1.5
-    stale_advice_decay: float = 0.9
-    reviewer_outcome_weight: float = 1.25
-    per_file_patch_success_weight: float = 1.5
-
-
-class PatchProvenance(BaseModel):
-    run_id: str
-    mode: Literal["repair", "build", "architecture"] = "repair"
-    path: str
-    description: str = ""
-    source: Literal["diagnoser", "reviewer", "planner", "architecture_lane"] = "reviewer"
-    route: Literal["safe", "branch", "recommend"] = "safe"
-    created_at: str = Field(default_factory=utc_now_iso)
-
-
-class MetricsLedgerEntry(BaseModel):
-    run_id: str
-    mode: Literal["repair", "build", "architecture"] = "repair"
-    success: bool = False
-    review_risk: str = ""
-    policy_route: str = ""
-    patch_count: int = 0
-    self_evolution_count: int = 0
-    build_actions_count: int = 0
-    architecture_plans_count: int = 0
-    created_at: str = Field(default_factory=utc_now_iso)
 
 
 class RunRecord(BaseModel):
@@ -189,7 +108,6 @@ class RunRecord(BaseModel):
     attempt_count: int = 0
     success: bool = False
     summary: str = ""
-    selected_mode: Literal["repair", "build", "architecture"] = "repair"
     architecture_review: ArchitectureReview | None = None
     self_evolution: SelfEvolutionExecution | None = None
     diagnostic_history: list[DiagnosticPlan] = Field(default_factory=list)
@@ -202,17 +120,13 @@ class RunRecord(BaseModel):
 
 
 class MemoryState(BaseModel):
-    schema_version: str = "3.0"
+    schema_version: str = "2.0"
     architecture_reviews: list[ArchitectureReview] = Field(default_factory=list)
     runs: list[RunRecord] = Field(default_factory=list)
     backlog: list[str] = Field(default_factory=list)
-    failure_patterns: dict[str, FailurePatternRecord] = Field(default_factory=dict)
+    failure_patterns: dict[str, Any] = Field(default_factory=dict)
     improvement_history: list[dict[str, Any]] = Field(default_factory=list)
     quarantine_events: list[dict[str, Any]] = Field(default_factory=list)
     reputations: dict[str, AgentReputation] = Field(default_factory=dict)
-    metrics_ledger: list[MetricsLedgerEntry] = Field(default_factory=list)
-    planned_work: list[PlannedWorkItem] = Field(default_factory=list)
-    architecture_queue: list[ArchitecturePlan] = Field(default_factory=list)
-    patch_provenance: list[PatchProvenance] = Field(default_factory=list)
-    learning_weights: LearningWeights = Field(default_factory=LearningWeights)
+    metrics_ledger: list[dict[str, Any]] = Field(default_factory=list)
     last_saved_at: str = Field(default_factory=utc_now_iso)

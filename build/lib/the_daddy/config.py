@@ -21,10 +21,6 @@ class Settings(BaseSettings):
     openai_model_vet: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_VET", "gpt-5.4-mini"))
     openai_model_light: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_LIGHT", "gpt-5.4-nano"))
 
-    # GitHub / PR lane
-    github_token: str = Field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
-    github_repo: str = Field(default_factory=lambda: os.getenv("GITHUB_REPO", ""))  # owner/repo
-
     # Runtime
     command: str = Field(default_factory=lambda: os.getenv("DADDY_COMMAND", "pytest -q"))
     maintenance_command: str = Field(default_factory=lambda: os.getenv("DADDY_MAINTENANCE_COMMAND", "pytest -q"))
@@ -36,7 +32,7 @@ class Settings(BaseSettings):
         default_factory=lambda: [".py", ".md", ".txt", ".yml", ".yaml", ".json", ".toml"]
     )
 
-    # Safe self-evolution lane
+    # Current safe self-evolution lane
     enable_self_evolution: bool = Field(
         default_factory=lambda: os.getenv("DADDY_ENABLE_SELF_EVOLUTION", "true").lower() == "true"
     )
@@ -45,7 +41,7 @@ class Settings(BaseSettings):
     )
     enable_patching: bool = Field(default_factory=lambda: os.getenv("DADDY_ENABLE_PATCHING", "true").lower() == "true")
 
-    # Architecture lane
+    # New architecture lane
     enable_architecture_lane: bool = Field(
         default_factory=lambda: os.getenv("DADDY_ENABLE_ARCHITECTURE_LANE", "true").lower() == "true"
     )
@@ -76,10 +72,6 @@ class Settings(BaseSettings):
     @property
     def has_openai(self) -> bool:
         return bool(self.openai_api_key.strip())
-
-    @property
-    def has_github(self) -> bool:
-        return bool(self.github_token.strip() and self.github_repo.strip())
 
 
 def get_settings() -> Settings:

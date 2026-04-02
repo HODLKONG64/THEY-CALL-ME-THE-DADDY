@@ -1,106 +1,59 @@
 from __future__ import annotations
 
-from typing import List
+from dataclasses import dataclass, field
 
-from ..models import (
-    ArchitecturePlan,
-    PlannedWorkItem,
-    SelfEvolutionAction,
-)
+from ..models import ArchitectureReview, MemoryState, PatchAction, SelfEvolutionExecution
+
+
+@dataclass
+class PlannedEvolution:
+    actions: list[PatchAction] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
 
 
 class ImprovementPlanner:
-    """
-    FINAL PLANNER (AGGRESSIVE MODE)
+    def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
+        added: list[str] = []
+        for item in [*review.backlog_items, *review.recommendations]:
+            if item not in memory.backlog:
+                memory.backlog.append(item)
+                added.append(item)
+        return added
 
-    This version forces:
-    - architecture mode when real patches exist
-    - no more passive build-only loops
-    """
+    def plan_self_evolution(self, review: ArchitectureReview, *, enabled: bool, max_actions: int) -> PlannedEvolution:
+        if not enabled:
+            return PlannedEvolution(reasons=["Self-evolution disabled by settings."])
+        if not review.self_evolution_actions:
+            return PlannedEvolution(reasons=["Wake audit produced no self-evolution actions."])
 
-    # =========================
-    # SELF EVOLUTION
-    # =========================
+        selected = review.self_evolution_actions[:max_actions]
+        reasons = []
+        if len(review.self_evolution_actions) > max_actions:
+            reasons.append(f"Capped self-evolution actions to {max_actions} items.")
+        reasons.extend(review.execution_notes)
+        return PlannedEvolution(actions=selected, reasons=reasons)
 
-    def plan_self_evolution(self, actions: List[SelfEvolutionAction]) -> List[SelfEvolutionAction]:
-        safe = []
-
-        for action in actions:
-            if action.risk == "safe" and action.patches:
-                safe.append(action)
-
-        return safe[:5]  # slightly more aggressive
-
-    # =========================
-    # BUILD THREAD CONTROL
-    # =========================
-
-    def select_build_work(self, planned_work: List[PlannedWorkItem]) -> PlannedWorkItem | None:
-        if not planned_work:
-            return None
-
-        candidates = [w for w in planned_work if w.state in ("proposed", "active")]
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda x: (x.priority, x.created_at))
-
-        return candidates[0]
-
-    # =========================
-    # ARCHITECTURE ESCALATION
-    # =========================
-
-    def should_trigger_architecture(self, memory) -> bool:
-        failure_patterns = memory.ranked_failure_patterns()
-
-        if not failure_patterns:
-            return False
-
-        top = failure_patterns[0]
-
-        # still keep safety fallback
-        if top.failure_count >= 3:
-            return True
-
-        return False
-
-    def select_architecture_plan(self, plans: List[ArchitecturePlan]) -> ArchitecturePlan | None:
-        if not plans:
-            return None
-
-        for plan in plans:
-            if plan.status == "proposed":
-                return plan
-
-        return None
-
-    # =========================
-    # MODE DECISION (FINAL FIX)
-    # =========================
-
-    def decide_mode(self, memory, review) -> str:
-        """
-        FINAL MODE SWITCH
-
-        🔥 THIS IS THE KEY CHANGE:
-        FORCE architecture when real patch bundles exist
-        """
-
-        # 🚀 FORCE ARCHITECTURE WHEN PATCHES EXIST
-        has_arch_patches = any(
-            plan.patch_bundle for plan in review.architecture_plans
+    def build_execution_result(
+        self,
+        *,
+        enabled: bool,
+        attempted: bool,
+        applied: bool,
+        route: str,
+        summary: str,
+        reasons: list[str],
+        proposed_count: int,
+        applied_count: int,
+        patches: list[dict],
+    ) -> SelfEvolutionExecution:
+        return SelfEvolutionExecution(
+            enabled=enabled,
+            attempted=attempted,
+            applied=applied,
+            route=route,
+            summary=summary,
+            reasons=reasons,
+            proposed_count=proposed_count,
+            applied_count=applied_count,
+            patches=patches,
         )
-
-        if has_arch_patches:
-            return "architecture"
-
-        # fallback logic (kept for stability)
-        if memory.get_active_work():
-            return "build"
-
-        if review.build_actions:
-            return "build"
-
-        return "repair"

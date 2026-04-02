@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 def utc_now_iso() -> str:
@@ -122,6 +122,11 @@ class VettingDecision(BaseModel):
     risk: Literal["low", "medium", "high"] = "medium"
     reputation_delta: int = 0
     notes: list[str] = Field(default_factory=list)
+
+    @field_validator("route", mode="before")
+    @classmethod
+    def _normalize_legacy_route(cls, value: Any) -> Any:
+        return "safe" if value == "accept" else value
 
 
 class AgentReputation(BaseModel):
