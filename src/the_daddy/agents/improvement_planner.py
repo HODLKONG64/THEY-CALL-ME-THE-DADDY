@@ -46,6 +46,10 @@ class ImprovementPlanner:
                 continue
             if getattr(patch, "operation", None) not in {"replace_file", "regex_replace"}:
                 continue
+            if patch.operation == "replace_file" and not patch.new_content:
+                continue
+            if patch.operation == "regex_replace" and (not patch.pattern or not patch.replacement):
+                continue
             normalized.append(patch)
         return normalized
 
