@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,125 @@ class WakeReviewer:
             return path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             return ""
+
+    def _normalize_phrase(self, text: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+        return re.sub(r"\s+", " ", cleaned)
+
+    def _tokenize_test_stem(self, path: str) -> set[str]:
+        stem = Path(path).stem.lower()
+        parts = re.split(r"[^a-z0-9]+", stem)
+        stopwords = {
+            "test",
+            "tests",
+            "wake",
+            "review",
+            "output",
+            "outputs",
+            "contract",
+            "contracts",
+            "safe",
+            "action",
+            "actions",
+            "build",
+            "plan",
+            "plans",
+            "invariant",
+            "invariants",
+            "regression",
+        }
+        return {part for part in parts if part and part not in stopwords}
+
+    def _existing_backlog_phrases(self, memory_snapshot: dict[str, Any]) -> set[str]:
+        phrases: set[str] = set()
+
+        for item in memory_snapshot.get("backlog", []) or []:
+            normalized = self._normalize_phrase(str(item))
+            if normalized:
+                phrases.add(normalized)
+
+        reviews = memory_snapshot.get("architecture_reviews", []) or []
+        for review in reviews[-6:]:
+            if not isinstance(review, dict):
+                continue
+            for item in review.get("backlog_items", []) or []:
+                normalized = self._normalize_phrase(str(item))
+                if normalized:
+                    phrases.add(normalized)
+
+        return phrases
+
+    def _filter_repetitive_backlog_items(
+        self,
+        items: list[str],
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[list[str], list[str]]:
+        existing = self._existing_backlog_phrases(memory_snapshot)
+        kept: list[str] = []
+        seen: set[str] = set()
+        removed: list[str] = []
+
+        for item in items:
+            normalized = self._normalize_phrase(str(item))
+            if not normalized:
+                continue
+            if normalized in seen or normalized in existing:
+                removed.append(str(item))
+                continue
+            seen.add(normalized)
+            kept.append(str(item))
+
+        return kept, removed
+
+    def _is_test_only_action(self, action: SelfEvolutionAction) -> bool:
+        if not action.patches:
+            return False
+        return all((patch.path or "").startswith("tests/") for patch in action.patches)
+
+    def _is_repetitive_test_action(self, action: SelfEvolutionAction, tracked_files: list[str]) -> bool:
+        if not self._is_test_only_action(action):
+            return False
+
+        tracked_tests = [path for path in tracked_files if path.startswith("tests/")]
+
+        for patch in action.patches:
+            target = patch.path or ""
+            if target in tracked_tests:
+                return True
+
+            target_tokens = self._tokenize_test_stem(target)
+            if not target_tokens:
+                continue
+
+            for existing in tracked_tests:
+                existing_tokens = self._tokenize_test_stem(existing)
+                if not existing_tokens:
+                    continue
+
+                overlap = len(target_tokens & existing_tokens)
+                smallest = min(len(target_tokens), len(existing_tokens))
+                if smallest > 0 and overlap >= smallest:
+                    return True
+
+        return False
+
+    def _filter_low_value_actions(
+        self,
+        actions: list[SelfEvolutionAction],
+        tracked_files: list[str],
+    ) -> tuple[list[SelfEvolutionAction], list[str]]:
+        kept: list[SelfEvolutionAction] = []
+        removed_notes: list[str] = []
+
+        for action in actions:
+            if self._is_repetitive_test_action(action, tracked_files):
+                removed_notes.append(
+                    f"Suppressed repetitive test-only self-evolution action: {action.title}"
+                )
+                continue
+            kept.append(action)
+
+        return kept, removed_notes
 
     def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / "src" / "the_daddy" / "merge_rules.py"
@@ -171,8 +291,12 @@ class WakeReviewer:
             status="proposed",
         )
 
-    def _build_prompt(self, memory_snapshot: dict[str, Any], repo_root: Path, recent_summary: str) -> str:
-        repo_snapshot = self._repo_snapshot(repo_root)
+    def _build_prompt(
+        self,
+        memory_snapshot: dict[str, Any],
+        repo_snapshot: dict[str, Any],
+        recent_summary: str,
+    ) -> str:
         memory_json = json.dumps(memory_snapshot, indent=2)[:18000]
         repo_json = json.dumps(repo_snapshot, indent=2)[:26000]
 
@@ -190,6 +314,10 @@ Rules:
 - If there is no justified architecture plan, return an empty architecture_plans array.
 - Keep build_actions concrete, file-aware, and aligned to the self_evolution_actions when present.
 - Do not invent architecture work just to fill the field.
+- Avoid repetitive low-value maintenance loops.
+- Do not propose a new regression test if a materially similar wake-review or output-invariant test already exists in tests/.
+- Do not repeat backlog items that are already present in memory unless there is genuinely new evidence.
+- Prefer source/runtime fixes over another tiny documentation or test-only loop when the system is already green.
 
 Required JSON shape:
 {{
@@ -293,7 +421,8 @@ Repository snapshot:
         if self.client is None:
             return self._fallback_review(repo_root, "OpenAI client unavailable.")
 
-        prompt = self._build_prompt(memory_snapshot, repo_root, recent_summary)
+        repo_snapshot = self._repo_snapshot(repo_root)
+        prompt = self._build_prompt(memory_snapshot, repo_snapshot, recent_summary)
 
         try:
             data = self.client.generate_json(
@@ -302,7 +431,8 @@ Repository snapshot:
                     "You are a strict JSON-only architecture reviewer. "
                     "Return only a valid JSON object matching the provided schema. "
                     "When you propose a self-evolution action, include a matching build_action. "
-                    "Only include architecture_plans when clearly justified by a repo-wide structural issue."
+                    "Only include architecture_plans when clearly justified by a repo-wide structural issue. "
+                    "Avoid repetitive low-value test or backlog churn."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
@@ -311,6 +441,23 @@ Repository snapshot:
         except Exception as exc:
             print(f"[REVIEWER ERROR] {type(exc).__name__}: {exc}", flush=True)
             return self._fallback_review(repo_root, f"Reviewer model call failed: {type(exc).__name__}: {exc}")
+
+        tracked_files = repo_snapshot.get("tracked_files", []) or []
+        filtered_actions, action_notes = self._filter_low_value_actions(
+            review.self_evolution_actions,
+            tracked_files,
+        )
+        review.self_evolution_actions = filtered_actions
+        if action_notes:
+            review.execution_notes.extend(action_notes)
+
+        filtered_backlog, removed_backlog = self._filter_repetitive_backlog_items(
+            review.backlog_items,
+            memory_snapshot,
+        )
+        review.backlog_items = filtered_backlog
+        if removed_backlog:
+            review.execution_notes.append("Suppressed repetitive backlog items already present in memory.")
 
         if not review.build_actions:
             derived_action = self._derive_build_action(review)
