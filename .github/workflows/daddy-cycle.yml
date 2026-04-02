@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "0 */12 * * *"
 
+permissions:
+  contents: write
+
 jobs:
   run-daddy:
     runs-on: ubuntu-latest
