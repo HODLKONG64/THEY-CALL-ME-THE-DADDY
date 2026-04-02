@@ -13,12 +13,11 @@ from .config import Settings, get_settings
 from .logging_utils import write_local_summary
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
-from .models import ArchitectureReview, CommandResult, ExternalProposal, RunRecord, utc_now_iso
+from .models import ArchitectureReview, ExternalProposal, RunRecord, PatchAction, utc_now_iso
 from .policy import classify_patch_risk
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action, find_referenced_files, gather_file_context
 from .telemetry import TraceBuffer
-
 
 KEY_FINGERPRINT_FILES = [
     "README.md",
@@ -80,6 +79,13 @@ class DaddyEngine:
         )
         return review
 
+    def _flatten_self_evolution_patches(self, actions) -> list[PatchAction]:
+        patches: list[PatchAction] = []
+        for action in actions:
+            for patch in getattr(action, "patches", []) or []:
+                patches.append(patch)
+        return patches
+
     def _execute_self_evolution(self, review: ArchitectureReview, trace: TraceBuffer):
         planned = self.improvement_planner.plan_self_evolution(
             review,
@@ -101,7 +107,28 @@ class DaddyEngine:
             )
 
         trace.add("self_evolution.planned", proposed_count=proposed_count)
-        policy = classify_patch_risk(planned.actions)
+
+        flattened_patches = self._flatten_self_evolution_patches(planned.actions)
+        if not flattened_patches:
+            reasons = [*planned.reasons, "Self-evolution actions were present but contained no patch payloads."]
+            self.memory.record_improvement_result(
+                "Wake review self-evolution",
+                applied=False,
+                payload={"route": "none", "reasons": reasons, "proposed_count": proposed_count},
+            )
+            return self.improvement_planner.build_execution_result(
+                enabled=self.settings.enable_self_evolution,
+                attempted=True,
+                applied=False,
+                route="none",
+                summary="Self-evolution actions contained no patch payloads.",
+                reasons=reasons,
+                proposed_count=proposed_count,
+                applied_count=0,
+                patches=[],
+            )
+
+        policy = classify_patch_risk(flattened_patches)
         trace.add("self_evolution.policy", route=policy.route, passed=policy.passed)
 
         if not policy.passed or policy.route != "safe":
@@ -124,13 +151,19 @@ class DaddyEngine:
             )
 
         patches = []
-        for change in planned.actions:
+        for change in flattened_patches:
             patches.append(apply_patch_action(self.settings.target_root, change, self.settings.allow_extensions))
+
         reasons = [*planned.reasons, *policy.reasons]
         self.memory.record_improvement_result(
             "Wake review self-evolution",
             applied=True,
-            payload={"route": policy.route, "reasons": reasons, "proposed_count": proposed_count, "patches": patches},
+            payload={
+                "route": policy.route,
+                "reasons": reasons,
+                "proposed_count": proposed_count,
+                "patches": patches,
+            },
         )
         trace.add("self_evolution.applied", applied_count=len(patches))
         return self.improvement_planner.build_execution_result(
@@ -150,15 +183,13 @@ class DaddyEngine:
         trace = TraceBuffer()
         record = RunRecord(run_id=run_id, command=self.settings.command)
         record.repo_fingerprint = self.repo_fingerprint()
-        trace.add("run.start", run_id=run_id, command=self.settings.command, repo_fingerprint=record.repo_fingerprint)
+        trace.add("run.start", run_id=run_id, command=self.settings.command)
 
         review = self.architecture_review(trace)
         record.architecture_review = review
         if review:
             record.backlog_updates = self.improvement_planner.merge_review_into_backlog(self.memory.state, review)
             record.self_evolution = self._execute_self_evolution(review, trace)
-            if record.self_evolution and record.self_evolution.patches:
-                record.rollback_manifest = [item.get("rollback", {}) for item in record.self_evolution.patches]
             self.memory.save()
 
         prior_attempts = []
@@ -220,7 +251,6 @@ class DaddyEngine:
                 for change in plan.changes:
                     patch_events.append(apply_patch_action(self.settings.target_root, change, self.settings.allow_extensions))
                 record.patches_applied.extend(patch_events)
-                record.rollback_manifest.extend([item.get("rollback", {}) for item in patch_events])
                 self.memory.record_failure_pattern(
                     signature,
                     {"attempt": attempt, "diagnosis": plan.diagnosis, "patches": patch_events},
@@ -234,13 +264,14 @@ class DaddyEngine:
                 break
 
         if last_result is not None:
-            record.verification = CommandResult.model_validate(last_result.model_dump() if hasattr(last_result, 'model_dump') else last_result)
+            record.verification = last_result
         if not record.summary:
             record.summary = "Run finished." if record.success else "Run finished without a successful repair."
         record.finished_at = utc_now_iso()
         record.trace = trace.export()
 
         self.memory.add_run(record)
+        self.memory.save()
         write_local_summary(record.summary, self.settings.local_state_dir)
         return record
 
@@ -262,4 +293,5 @@ class DaddyEngine:
             decision["reputation"] = rep.model_dump(mode="json")
         event["decision"] = decision
         self.memory.add_quarantine_event(event)
+        self.memory.save()
         return event
