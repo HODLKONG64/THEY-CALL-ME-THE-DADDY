@@ -5,6 +5,7 @@ src/the_daddy/cli.py
 src/the_daddy/config.py
 src/the_daddy/dashboard.py
 src/the_daddy/engine.py
+src/the_daddy/git_tools.py
 src/the_daddy/logging_utils.py
 src/the_daddy/models.py
 src/the_daddy/policy.py
