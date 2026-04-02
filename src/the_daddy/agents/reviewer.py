@@ -7,7 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from ..config import Settings
-from ..models import ArchitectureReview, SelfEvolutionAction
+from ..models import ArchitectureReview, PatchAction, SelfEvolutionAction
 
 
 class WakeReviewer:
@@ -17,124 +17,192 @@ class WakeReviewer:
 
     def _repo_snapshot(self, repo_root: Path) -> dict[str, Any]:
         tracked: list[str] = []
+        preview_files: list[dict[str, str]] = []
+
         for path in sorted(repo_root.rglob("*")):
             if not path.is_file():
                 continue
+
             rel = str(path.relative_to(repo_root))
             if any(part in {".git", ".venv", "__pycache__", "doctor_local", ".pytest_cache"} for part in path.parts):
                 continue
+
             tracked.append(rel)
-            if len(tracked) >= 120:
+            if len(preview_files) < 20 and path.suffix in {".py", ".md", ".yml", ".yaml", ".toml", ".json"}:
+                try:
+                    preview_files.append(
+                        {
+                            "path": rel,
+                            "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:2000],
+                        }
+                    )
+                except Exception:
+                    continue
+
+            if len(tracked) >= 150:
                 break
 
-        key_files: dict[str, str] = {}
-        for rel in [
-            "README.md",
-            "ARCHITECTURE.md",
-            ".github/workflows/daddy-cycle.yml",
-            "src/the_daddy/engine.py",
-            "src/the_daddy/policy.py",
-            "src/the_daddy/models.py",
-            "src/the_daddy/memory/repository.py",
-        ]:
-            p = repo_root / rel
-            if p.exists() and p.is_file():
-                key_files[rel] = p.read_text(encoding="utf-8", errors="ignore")[:12000]
-
-        return {"tracked_files": tracked, "key_files": key_files}
-
-    def review(self, memory_snapshot: dict[str, Any], repo_root: Path, recent_summary: str = "") -> ArchitectureReview:
-        snapshot = self._repo_snapshot(repo_root)
-        schema = {
-            "type": "object",
-            "properties": {
-                "diagnosis": {"type": "string"},
-                "system_intent": {"type": "string"},
-                "strengths": {"type": "array", "items": {"type": "string"}},
-                "weaknesses": {"type": "array", "items": {"type": "string"}},
-                "recommendations": {"type": "array", "items": {"type": "string"}},
-                "backlog_items": {"type": "array", "items": {"type": "string"}},
-                "self_evolution_actions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "description": {"type": "string"},
-                            "risk": {"type": "string", "enum": ["safe", "branch", "recommend"]},
-                            "patches": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "path": {"type": "string"},
-                                        "operation": {"type": "string", "enum": ["replace_file", "regex_replace"]},
-                                        "new_content": {"type": ["string", "null"]},
-                                        "pattern": {"type": ["string", "null"]},
-                                        "replacement": {"type": ["string", "null"]},
-                                        "description": {"type": "string"},
-                                    },
-                                    "required": ["path", "operation", "new_content", "pattern", "replacement", "description"],
-                                    "additionalProperties": False,
-                                },
-                            },
-                        },
-                        "required": ["title", "description", "risk", "patches"],
-                        "additionalProperties": False,
-                    },
-                },
-                "execution_notes": {"type": "array", "items": {"type": "string"}},
-                "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
-            },
-            "required": [
-                "diagnosis",
-                "system_intent",
-                "strengths",
-                "weaknesses",
-                "recommendations",
-                "backlog_items",
-                "self_evolution_actions",
-                "execution_notes",
-                "risk_level",
-            ],
-            "additionalProperties": False,
+        return {
+            "tracked_files": tracked,
+            "preview_files": preview_files,
         }
 
-        prompt = (
-            "You are the wake reviewer for a bounded self-evolving repo maintenance system. "
-            "You must review the actual repo snapshot and always return at least one safe self_evolution_action. "
-            "Safe actions must only touch docs, architecture notes, tests, or additive metadata guards. "
-            "Do not touch secrets, dependency lists, destructive commands, or broad rewrites. "
-            "Return structured JSON only."
+    def _fallback_action(self, repo_root: Path) -> SelfEvolutionAction:
+        architecture_path = repo_root / "ARCHITECTURE.md"
+        marker = (
+            "\n\n## Wake Review Auto-Improvement Notes\n"
+            "- The system should always emit at least one safe, bounded self-evolution patch when no higher-confidence code patch is available.\n"
+            "- Safe auto-applied patches should be documentation-only unless the reviewer can produce explicit low-risk PatchAction objects.\n"
         )
 
-        user_content = {
-            "recent_summary": recent_summary,
-            "memory_snapshot": memory_snapshot,
-            "repo_snapshot": snapshot,
-            "required_behavior": [
-                "Always produce at least one self_evolution_action.",
-                "At least one action must be safe and auto-applicable.",
-                "Prefer documentation, tests, schema guards, provenance notes, rollback metadata, or metrics ledger scaffolding.",
-                "Do not propose empty action arrays.",
-            ],
-        }
+        if architecture_path.exists():
+            try:
+                current = architecture_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                current = ""
+            if "## Wake Review Auto-Improvement Notes" not in current:
+                return SelfEvolutionAction(
+                    title="Document safe self-evolution fallback",
+                    description="Append a bounded wake-review note to architecture docs so the system records a safe improvement even when no code patch is confidently available.",
+                    risk="safe",
+                    patches=[
+                        PatchAction(
+                            path="ARCHITECTURE.md",
+                            operation="replace_file",
+                            new_content=current + marker,
+                            description="Append safe self-evolution fallback notes to architecture documentation.",
+                        )
+                    ],
+                )
+
+        readme_path = repo_root / "README.md"
+        readme = ""
+        if readme_path.exists():
+            try:
+                readme = readme_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                readme = ""
+        if "Wake-review safe patch fallback" not in readme:
+            return SelfEvolutionAction(
+                title="Document wake-review patch fallback in README",
+                description="Add a small README note documenting that wake review should emit at least one safe patch when no stronger patch is available.",
+                risk="safe",
+                patches=[
+                    PatchAction(
+                        path="README.md",
+                        operation="replace_file",
+                        new_content=readme + "\n\n### Wake-review safe patch fallback\nThe wake reviewer should emit at least one safe bounded patch whenever it cannot confidently produce a higher-impact code fix.\n",
+                        description="Append bounded wake-review fallback note to README.",
+                    )
+                ],
+            )
+
+        return SelfEvolutionAction(
+            title="No-op safe fallback unavailable",
+            description="No safe documentation target was available for fallback patching.",
+            risk="recommend",
+            patches=[],
+        )
+
+    def _build_prompt(self, memory_snapshot: dict[str, Any], repo_root: Path, recent_summary: str) -> str:
+        repo_snapshot = self._repo_snapshot(repo_root)
+        memory_json = json.dumps(memory_snapshot, indent=2)[:18000]
+        repo_json = json.dumps(repo_snapshot, indent=2)[:18000]
+
+        return f"""You are the wake-review architecture agent for a bounded defensive repository-maintenance system.
+
+Your job on every run:
+1. audit the current repository and memory state
+2. identify structural strengths and weaknesses
+3. recommend improvements
+4. produce at least one bounded self-evolution action whenever a safe explicit patch can be proposed
+
+Critical rule:
+- DO NOT return empty self_evolution_actions unless there is truly no safe bounded patch possible.
+- Prefer documentation or comments over risky code edits when confidence is limited.
+- Every self_evolution_action must contain explicit PatchAction objects in the field `patches`.
+- A SelfEvolutionAction is NOT a patch by itself. The engine executes the nested `patches`.
+- Safe patches must be small, bounded, and low-risk.
+- Allowed safe targets include README.md, ARCHITECTURE.md, comments, docs, and narrow defensive metadata tweaks.
+- Avoid secrets, destructive shell commands, policy bypass, or broad rewrites.
+- If you propose code changes, keep them surgical and low-risk.
+
+Return valid JSON only using this exact schema:
+{{
+  "diagnosis": "string",
+  "system_intent": "string",
+  "strengths": ["string"],
+  "weaknesses": ["string"],
+  "recommendations": ["string"],
+  "backlog_items": ["string"],
+  "self_evolution_actions": [
+    {{
+      "title": "string",
+      "description": "string",
+      "risk": "safe",
+      "patches": [
+        {{
+          "path": "README.md",
+          "operation": "replace_file",
+          "new_content": "full file content here",
+          "pattern": null,
+          "replacement": null,
+          "description": "why this patch is needed"
+        }}
+      ]
+    }}
+  ],
+  "execution_notes": ["string"],
+  "risk_level": "low|medium|high",
+  "reviewed_at": "ISO timestamp string"
+}}
+
+Current memory snapshot:
+{memory_json}
+
+Recent summary:
+{recent_summary}
+
+Repository snapshot:
+{repo_json}
+"""
+
+    def _parse_response(self, text: str) -> dict[str, Any]:
+        text = text.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise
+            return json.loads(text[start : end + 1])
+
+    def review(self, memory_snapshot: dict[str, Any], repo_root: Path, recent_summary: str) -> ArchitectureReview:
+        prompt = self._build_prompt(memory_snapshot, repo_root, recent_summary)
 
         response = self.client.responses.create(
             model=self.settings.openai_model_review,
-            input=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(user_content)},
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "wake_review",
-                    "schema": schema,
-                    "strict": True,
-                }
-            },
+            input=prompt,
         )
-        payload = json.loads(response.output_text)
-        actions = [SelfEvolutionAction.model_validate(item) for item in payload.pop("self_evolution_actions")]
-        return ArchitectureReview.model_validate({**payload, "self_evolution_actions": actions})
+
+        data = self._parse_response(response.output_text)
+        review = ArchitectureReview.model_validate(data)
+
+        if not review.self_evolution_actions:
+            fallback = self._fallback_action(repo_root)
+            if fallback.patches:
+                review.self_evolution_actions = [fallback]
+                review.execution_notes.append(
+                    "Fallback safe patch injected because model returned no executable self-evolution patches."
+                )
+                if "Wake reviewer returned no executable patches." not in review.weaknesses:
+                    review.weaknesses.append("Wake reviewer returned no executable patches.")
+                if "Improve wake reviewer patch generation reliability." not in review.backlog_items:
+                    review.backlog_items.append("Improve wake reviewer patch generation reliability.")
+            else:
+                review.execution_notes.append(
+                    "No safe fallback patch could be generated after empty self-evolution output."
+                )
+
+        return review
