@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
-
 from ..config import Settings
 from ..models import (
     ArchitecturePlan,
@@ -14,12 +12,13 @@ from ..models import (
     PlannedWorkItem,
     SelfEvolutionAction,
 )
+from .openai_client import OpenAIJSONClient
 
 
 class WakeReviewer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.client = OpenAI(api_key=settings.openai_api_key) if settings.has_openai else None
+        self.client = OpenAIJSONClient(settings) if settings.has_openai else None
 
     def _repo_snapshot(self, repo_root: Path) -> dict[str, Any]:
         tracked: list[str] = []
@@ -79,7 +78,11 @@ class WakeReviewer:
         target = repo_root / "ARCHITECTURE.md"
         current = self._read_text(target)
         if current and "Wake reviewer fallback" not in current:
-            new_content = current.rstrip() + "\n\n## Wake reviewer fallback\n- A bounded patch fallback was injected because the model returned no executable patch.\n"
+            new_content = (
+                current.rstrip()
+                + "\n\n## Wake reviewer fallback\n"
+                + "- A bounded patch fallback was injected because the model returned no executable patch.\n"
+            )
             return SelfEvolutionAction(
                 title="Document reviewer fallback",
                 description="Fallback doc patch only when no bounded Python target is available.",
@@ -232,17 +235,6 @@ Repository snapshot:
 {repo_json}
 """
 
-    def _parse_response(self, text: str) -> dict[str, Any]:
-        text = text.strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                raise
-            return json.loads(text[start : end + 1])
-
     def _fallback_review(self, repo_root: Path, reason: str) -> ArchitectureReview:
         fallback_action = self._fallback_patch_action(repo_root)
         fallback_plan = self._default_architecture_plan(repo_root)
@@ -271,11 +263,12 @@ Repository snapshot:
         prompt = self._build_prompt(memory_snapshot, repo_root, recent_summary)
 
         try:
-            response = self.client.responses.create(
+            data = self.client.generate_json(
                 model=self.settings.openai_model_review,
-                input=prompt,
+                system="You are a strict JSON-only reviewer. Return only a JSON object that matches the provided schema.",
+                prompt=prompt,
+                schema=ArchitectureReview.model_json_schema(),
             )
-            data = self._parse_response(response.output_text)
             review = ArchitectureReview.model_validate(data)
         except Exception as exc:
             return self._fallback_review(repo_root, f"Reviewer model call failed: {type(exc).__name__}")
@@ -288,12 +281,16 @@ Repository snapshot:
             fallback_action = self._fallback_patch_action(repo_root)
             if fallback_action is not None:
                 review.self_evolution_actions = [fallback_action]
-                review.execution_notes.append("Fallback self-evolution patch injected because reviewer returned no executable patch.")
+                review.execution_notes.append(
+                    "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                )
 
         if not review.architecture_plans:
             fallback_plan = self._default_architecture_plan(repo_root)
             if fallback_plan is not None:
                 review.architecture_plans = [fallback_plan]
-                review.execution_notes.append("Fallback architecture plan injected because reviewer returned no branch patch bundle.")
+                review.execution_notes.append(
+                    "Fallback architecture plan injected because reviewer returned no branch patch bundle."
+                )
 
         return review
