@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now_iso() -> str:
@@ -44,6 +44,18 @@ class PatchAction(BaseModel):
     pattern: str | None = None
     replacement: str | None = None
     description: str = ""
+
+    @model_validator(mode="after")
+    def _validate_operation_payload(self) -> PatchAction:
+        if self.operation == "replace_file":
+            if not self.new_content:
+                raise ValueError("replace_file requires new_content")
+        elif self.operation == "regex_replace":
+            if not self.pattern:
+                raise ValueError("regex_replace requires pattern")
+            if not self.replacement:
+                raise ValueError("regex_replace requires replacement")
+        return self
 
 
 class FileSnapshot(BaseModel):
