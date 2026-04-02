@@ -61,20 +61,26 @@ class ImprovementPlanner:
             return value.model_copy(update={"patches": patches})
 
         if isinstance(value, dict):
-            normalized_payload = {
-                "title": value.get("title"),
-                "description": value.get("description"),
-                "risk": value.get("risk"),
-                "patches": [patch.model_dump() for patch in self._normalize_patches(value.get("patches"))],
-            }
-            try:
-                action = SelfEvolutionAction.model_validate(normalized_payload)
-            except ValidationError:
+            title = value.get("title")
+            description = value.get("description")
+            risk = value.get("risk")
+            patches = self._normalize_patches(value.get("patches"))
+
+            if not isinstance(title, str) or not title:
                 return None
-            patches = self._normalize_patches(getattr(action, "patches", None))
+            if not isinstance(description, str) or not description:
+                return None
+            if risk != "safe":
+                return None
             if not patches:
                 return None
-            return action.model_copy(update={"patches": patches})
+
+            return SelfEvolutionAction(
+                title=title,
+                description=description,
+                risk="safe",
+                patches=patches,
+            )
         return None
 
     def _normalize_self_evolution_actions(self, value: Any) -> list[SelfEvolutionAction]:
@@ -167,17 +173,4 @@ class ImprovementPlanner:
 
         return ranked[0].failure_count >= 3
 
-    def decide_mode(self, memory, review: ArchitectureReview) -> str:
-        state: MemoryState = memory.state if hasattr(memory, "state") else memory
-
-        architecture_plans = self._safe_list(getattr(review, "architecture_plans", None))
-        self_evolution_actions = self._normalize_self_evolution_actions(getattr(review, "self_evolution_actions", None))
-        planned_work = self._safe_list(getattr(state, "planned_work", None))
-
-        if architecture_plans and self.should_trigger_architecture(state):
-            return "architecture"
-        if self_evolution_actions:
-            return "build"
-        if self.select_build_work(planned_work):
-            return "build"
-        return "repair"
+    def decide_mode(self, memory, r
