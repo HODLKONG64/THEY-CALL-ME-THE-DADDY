@@ -226,5 +226,11 @@ class MemoryState(BaseModel):
     last_saved_at: str = Field(default_factory=utc_now_iso)
 
 
-# Legacy compat for older tests/imports
+# === LEGACY COMPAT (LOCKED IN) ===
 FailurePattern = FailurePatternRecord
+
+
+class PatchResult(BaseModel):
+    path: str = ""
+    description: str = ""
+    success: bool = True
