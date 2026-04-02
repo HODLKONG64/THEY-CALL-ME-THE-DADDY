@@ -58,6 +58,9 @@ jobs:
           git add README.md || true
           git add ARCHITECTURE.md || true
           git add .github/workflows/daddy-cycle.yml || true
+          git add .gitignore || true
+
+          git restore --staged build dist '*.egg-info' bool None str int float THEY-CALL-ME-THE-DADDY 2>/dev/null || true
 
           git diff --cached --quiet || git commit -m "auto: daddy evolution"
           git push
