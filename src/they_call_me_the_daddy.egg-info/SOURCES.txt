@@ -24,10 +24,10 @@ src/the_daddy/web/schemas.py
 src/they_call_me_the_daddy.egg-info/PKG-INFO
 src/they_call_me_the_daddy.egg-info/SOURCES.txt
 src/they_call_me_the_daddy.egg-info/dependency_links.txt
-src/they_call_me_the_daddy.egg-info/entry_points.txt
 src/they_call_me_the_daddy.egg-info/requires.txt
 src/they_call_me_the_daddy.egg-info/top_level.txt
 tests/test_file_tools.py
 tests/test_memory.py
+tests/test_monster_upgrade.py
 tests/test_policy.py
 tests/test_self_evolution.py
