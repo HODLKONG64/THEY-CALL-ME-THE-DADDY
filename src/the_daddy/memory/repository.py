@@ -25,11 +25,57 @@ class MemoryRepository:
         self.store = store
         self.state: MemoryState = self._load()
 
+    def _migrate_legacy_state(self, data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            return {}
+
+        failure_patterns = data.get("failure_patterns")
+        if isinstance(failure_patterns, dict):
+            fixed: dict[str, Any] = {}
+            for key, value in failure_patterns.items():
+                if isinstance(value, dict):
+                    item = dict(value)
+                    item.setdefault("signature", key)
+                    item.setdefault("success_count", 0)
+                    item.setdefault("failure_count", 0)
+                    item.setdefault("last_route", "")
+                    item.setdefault("last_summary", "")
+                    item.setdefault("related_files", [])
+                    item.setdefault("updated_at", _now())
+                    fixed[key] = item
+                else:
+                    fixed[key] = {
+                        "signature": key,
+                        "success_count": 0,
+                        "failure_count": 1,
+                        "last_route": "",
+                        "last_summary": str(value),
+                        "related_files": [],
+                        "updated_at": _now(),
+                    }
+            data["failure_patterns"] = fixed
+
+        data.setdefault("schema_version", "3.0")
+        data.setdefault("architecture_reviews", [])
+        data.setdefault("runs", [])
+        data.setdefault("backlog", [])
+        data.setdefault("improvement_history", [])
+        data.setdefault("quarantine_events", [])
+        data.setdefault("reputations", {})
+        data.setdefault("metrics_ledger", [])
+        data.setdefault("planned_work", [])
+        data.setdefault("architecture_queue", [])
+        data.setdefault("patch_provenance", [])
+        data.setdefault("learning_weights", {})
+        data.setdefault("last_saved_at", _now())
+        return data
+
     def _load(self) -> MemoryState:
         data = self.store.load()
         if not data:
             return MemoryState()
-        return MemoryState.model_validate(data)
+        migrated = self._migrate_legacy_state(data)
+        return MemoryState.model_validate(migrated)
 
     def save(self) -> None:
         self.state.last_saved_at = _now()
