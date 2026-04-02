@@ -23,6 +23,7 @@ BLOCKED_ROOT_FILENAMES = {
     "path",
     "Path",
     "THEY-CALL-ME-THE-DADDY",
+    "README_FIX.md",
 }
 
 BLOCKED_PATH_PARTS = {
@@ -30,6 +31,7 @@ BLOCKED_PATH_PARTS = {
     "dist",
     "__pycache__",
     ".egg-info",
+    "path",
 }
 
 
@@ -47,11 +49,15 @@ def _safe_target(root: Path, rel: str) -> Path:
 
     target = (root / cleaned).resolve()
     root_resolved = root.resolve()
+
+    # Ensure inside repo
     target.relative_to(root_resolved)
 
+    # 🔒 BLOCK ROOT JUNK FILES
     if target.parent == root_resolved and target.name in BLOCKED_ROOT_FILENAMES:
         raise ValueError(f"Blocked suspicious root filename: {target.name}")
 
+    # 🔒 BLOCK ARTIFACT / JUNK PATHS
     if any(part in BLOCKED_PATH_PARTS for part in target.parts):
         raise ValueError(f"Blocked artifact path: {cleaned}")
 
@@ -84,6 +90,7 @@ def gather_file_context(root: Path, files: list[Path], max_files: int = 8, max_b
     contexts = []
     for p in files[:max_files]:
         text = p.read_text(encoding="utf-8", errors="ignore")
+
         contexts.append(
             type(
                 "FileContext",
@@ -98,6 +105,7 @@ def gather_file_context(root: Path, files: list[Path], max_files: int = 8, max_b
                 },
             )()
         )
+
     return contexts
 
 
@@ -108,6 +116,7 @@ def apply_patch_action(root: Path, action: PatchAction, allow_extensions: Iterab
         raise ValueError(f"Extension not allowed: {target.suffix}")
 
     target.parent.mkdir(parents=True, exist_ok=True)
+
     old_content = target.read_text(encoding="utf-8", errors="ignore") if target.exists() else ""
     old_hash = hashlib.sha256(old_content.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -115,19 +124,23 @@ def apply_patch_action(root: Path, action: PatchAction, allow_extensions: Iterab
         if action.new_content is None:
             raise ValueError("replace_file missing new_content")
         new_content = action.new_content
+
     else:
         if action.pattern is None or action.replacement is None:
             raise ValueError("regex_replace missing pattern/replacement")
+
         new_content, count = re.subn(
             action.pattern,
             action.replacement,
             old_content,
             flags=re.MULTILINE | re.DOTALL,
         )
+
         if count == 0:
             raise ValueError(f"Pattern not found in {action.path}")
 
     target.write_text(new_content, encoding="utf-8")
+
     new_hash = hashlib.sha256(new_content.encode("utf-8", errors="ignore")).hexdigest()
 
     return {
