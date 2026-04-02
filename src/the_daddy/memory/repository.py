@@ -15,10 +15,8 @@ from ..models import (
     RunRecord,
 )
 
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
 
 class MemoryRepository:
     def __init__(self, store) -> None:
@@ -211,3 +209,24 @@ class MemoryRepository:
         self.state.quarantine_events.append(event)
         if len(self.state.quarantine_events) > 200:
             self.state.quarantine_events = self.state.quarantine_events[-200:]
+
+    def get_reputation(self, agent_name: str):
+        return self.state.reputations.get(agent_name)
+
+    def update_reputation(self, agent_name: str, decision) -> Any:
+        rep = self.state.reputations.get(agent_name)
+        if rep is None:
+            rep = self.state.reputations.__class__.model_fields if False else None
+        if rep is None:
+            from ..models import Reputation
+
+            rep = Reputation(agent_name=agent_name)
+
+        rep.trust_score = max(0, min(100, rep.trust_score + int(getattr(decision, "reputation_delta", 0))))
+        if getattr(decision, "accepted", False):
+            rep.accepted_count += 1
+        else:
+            rep.rejected_count += 1
+        rep.updated_at = _now()
+        self.state.reputations[agent_name] = rep
+        return rep
