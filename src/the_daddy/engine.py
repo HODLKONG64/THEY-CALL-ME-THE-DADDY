@@ -204,7 +204,11 @@ class DaddyEngine:
             if pr:
                 record.backlog_updates.append(f"PR created: {pr.get('html_url', '')}")
 
-        result = run_command(self.settings.command, cwd=self.settings.target_root)
+        result = run_command(
+            self.settings.command,
+            cwd=self.settings.target_root,
+            timeout_seconds=getattr(self.settings, "timeout_seconds", 300),
+        )
 
         record.verification = result
         record.success = result.returncode == 0
