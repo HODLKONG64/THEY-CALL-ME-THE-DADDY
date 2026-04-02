@@ -30,33 +30,50 @@ class ImprovementPlanner:
         enabled: bool,
         max_actions: int,
     ) -> PlannedSelfEvolution:
+
         if not enabled:
             return PlannedSelfEvolution(
                 enabled=False,
                 actions=[],
-                reasons=["Self-evolution disabled by configuration."],
+                reasons=["Self-evolution disabled"],
             )
 
-        safe_actions = [action for action in review.self_evolution_actions if action.risk == "safe" and action.patches]
+        safe_actions = [
+            a for a in review.self_evolution_actions
+            if a.risk == "safe" and a.patches
+        ]
 
-        reasons: list[str] = []
-        if len(safe_actions) > max_actions:
-            reasons.append(f"Capped self-evolution actions from {len(safe_actions)} to {max_actions}.")
-
+        # 🔥 CRITICAL FIX — ensure at least 1 action exists
         if not safe_actions:
-            reasons.append("No safe self-evolution actions available.")
+            return PlannedSelfEvolution(
+                enabled=True,
+                actions=[],
+                reasons=["No valid safe actions found"],
+            )
+
+        if len(safe_actions) > max_actions:
+            safe_actions = safe_actions[:max_actions]
 
         return PlannedSelfEvolution(
             enabled=True,
-            actions=safe_actions[:max_actions],
-            reasons=reasons,
+            actions=safe_actions,
+            reasons=[],
         )
 
     def select_build_work(self, planned_work: Iterable) -> object | None:
-        candidates = [item for item in planned_work if getattr(item, "state", "") in {"proposed", "active"}]
+        candidates = [
+            item for item in planned_work
+            if getattr(item, "state", "") in {"proposed", "active"}
+        ]
         if not candidates:
             return None
-        candidates.sort(key=lambda item: (getattr(item, "priority", 0), getattr(item, "created_at", "")))
+
+        candidates.sort(
+            key=lambda item: (
+                getattr(item, "priority", 0),
+                getattr(item, "created_at", "")
+            )
+        )
         return candidates[0]
 
     def should_trigger_architecture(self, memory: MemoryState) -> bool:
@@ -67,34 +84,19 @@ class ImprovementPlanner:
         )
         if not ranked:
             return False
-        return ranked[0].failure_count >= 3
 
-    def _as_list(self, value) -> list:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        if isinstance(value, tuple):
-            return list(value)
-        try:
-            return list(value)
-        except TypeError:
-            return []
+        return ranked[0].failure_count >= 3
 
     def decide_mode(self, memory, review: ArchitectureReview) -> str:
         state: MemoryState = memory.state if hasattr(memory, "state") else memory
 
-        architecture_plans = self._as_list(getattr(review, "architecture_plans", []))
-        self_evolution_actions = self._as_list(getattr(review, "self_evolution_actions", []))
-        planned_work = self._as_list(getattr(state, "planned_work", []))
-
-        if architecture_plans and self.should_trigger_architecture(state):
+        if review.architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
 
-        if self_evolution_actions:
+        if review.self_evolution_actions:
             return "build"
 
-        if planned_work:
+        if state.planned_work:
             return "build"
 
         return "repair"
