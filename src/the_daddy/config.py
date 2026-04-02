@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     def has_github(self) -> bool:
         return bool(self.github_token.strip() and self.github_repo.strip())
 
+    @property
+    def has_r2(self) -> bool:
+        return bool(
+            self.r2_endpoint_url.strip()
+            and self.r2_access_key_id.strip()
+            and self.r2_secret_access_key.strip()
+            and self.r2_bucket.strip()
+        )
+
 
 def get_settings() -> Settings:
     settings = Settings()

@@ -1,10 +1,7 @@
-from the_daddy.memory.repository import DaddyMemoryState, MEMORY_SCHEMA_VERSION, MemoryRepository
+from the_daddy.memory.repository import MemoryRepository
 
 
-def test_repository_exports_compat_symbols():
-    state = DaddyMemoryState()
-    assert state.schema_version == MEMORY_SCHEMA_VERSION
-
-    repo = MemoryRepository()
-    assert repo.state.schema_version == MEMORY_SCHEMA_VERSION
-    assert len(repo.fingerprint("abc")) == 64
+def test_memory_bootstrap():
+    repo = MemoryRepository(None)
+    state = repo.state
+    assert state.schema_version == "3.0"

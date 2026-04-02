@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import boto3
@@ -14,17 +13,9 @@ class R2Store:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.bucket = settings.r2_bucket
-        self.key = getattr(settings, "memory_file_name", "sam-memory.json")
+        self.key = settings.memory_file_name
         self.local_path = settings.local_state_dir / self.key
-
-        self.enabled = all(
-            [
-                settings.r2_endpoint_url,
-                settings.r2_access_key_id,
-                settings.r2_secret_access_key,
-                settings.r2_bucket,
-            ]
-        )
+        self.enabled = settings.has_r2
 
         self.client = None
         if self.enabled:
@@ -39,14 +30,16 @@ class R2Store:
     def _read_local(self) -> dict[str, Any]:
         try:
             if self.local_path.exists():
-                return json.loads(self.local_path.read_text(encoding="utf-8"))
+                data = json.loads(self.local_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
         except Exception:
             pass
         return {}
 
     def _write_local(self, data: dict[str, Any]) -> None:
         self.local_path.parent.mkdir(parents=True, exist_ok=True)
-        self.local_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self.local_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def load(self) -> dict[str, Any]:
         if not self.enabled or self.client is None:
@@ -79,7 +72,7 @@ class R2Store:
         if not self.enabled or self.client is None:
             return
 
-        body = json.dumps(data, indent=2).encode("utf-8")
+        body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
         try:
             self.client.put_object(
                 Bucket=self.bucket,

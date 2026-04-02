@@ -1,19 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import List
 
 from .models import PatchAction
-
-
-FORBIDDEN_SUBSTRINGS = [
-    "rm -rf",
-    "DROP TABLE",
-    "subprocess.Popen(",
-    "eval(",
-    "exec(",
-    "os.system(",
-]
 
 
 @dataclass
@@ -23,29 +13,23 @@ class PolicyResult:
     reasons: List[str]
 
 
-def classify_patch_risk(changes: Iterable[PatchAction]) -> PolicyResult:
-    changes = list(changes)
-    reasons: List[str] = []
-    route = "safe"
+SAFE_EXTENSIONS = {".py", ".md", ".yml", ".yaml", ".json", ".toml"}
+BLOCKED_KEYWORDS = {"rm -rf", "os.remove", "subprocess", "eval", "exec"}
 
-    if len(changes) > 8:
-        reasons.append("Too many file changes in one plan.")
-        route = "recommend"
-    for change in changes:
-        text = (change.new_content or "") + (change.replacement or "")
-        if any(bad in text for bad in FORBIDDEN_SUBSTRINGS):
-            reasons.append(f"Forbidden construct detected in {change.path}.")
-            return PolicyResult(False, "reject", reasons)
-        if change.path.startswith(".github/"):
-            reasons.append("Workflow changes are medium/high risk.")
-            route = "branch"
-        if change.path.endswith((".env", ".pem", ".key")):
-            reasons.append(f"Sensitive file target: {change.path}")
-            return PolicyResult(False, "reject", reasons)
-        if len(text.encode("utf-8")) > 200000:
-            reasons.append(f"Patch too large for {change.path}.")
-            route = "recommend"
 
-    if not reasons and route == "safe":
-        reasons.append("Patch set passed baseline policy.")
-    return PolicyResult(True, route, reasons)
+def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
+    reasons = []
+
+    for patch in patches:
+        if not any(patch.path.endswith(ext) for ext in SAFE_EXTENSIONS):
+            reasons.append(f"Unsafe extension: {patch.path}")
+
+        content = (patch.new_content or "") + (patch.pattern or "") + (patch.replacement or "")
+        for bad in BLOCKED_KEYWORDS:
+            if bad in content:
+                reasons.append(f"Blocked keyword detected: {bad}")
+
+    if reasons:
+        return PolicyResult(False, "reject", reasons)
+
+    return PolicyResult(True, "safe", [])

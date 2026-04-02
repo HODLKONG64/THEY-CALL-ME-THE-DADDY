@@ -1,7 +1,7 @@
 from the_daddy.config import Settings
 from the_daddy.memory.r2_store import R2Store
 from the_daddy.memory.repository import MemoryRepository
-from the_daddy.models import VetDecision
+from the_daddy.models import VettingDecision
 
 
 def test_reputation_updates_without_r2(tmp_path):
@@ -14,9 +14,9 @@ def test_reputation_updates_without_r2(tmp_path):
         r2_bucket="",
     )
     repo = MemoryRepository(R2Store(settings))
-    decision = VetDecision(
+    decision = VettingDecision(
         accepted=True,
-        route="accept",
+        route="safe",
         reason="fine",
         risk="low",
         reputation_delta=7,

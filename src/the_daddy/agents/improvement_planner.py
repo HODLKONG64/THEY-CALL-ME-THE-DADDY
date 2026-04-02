@@ -1,106 +1,84 @@
 from __future__ import annotations
 
-from typing import List
+from dataclasses import dataclass, field
+from typing import Iterable
 
-from ..models import (
-    ArchitecturePlan,
-    PlannedWorkItem,
-    SelfEvolutionAction,
-)
+from ..models import ArchitectureReview, MemoryState, SelfEvolutionAction
+
+
+@dataclass
+class PlannedSelfEvolution:
+    enabled: bool
+    actions: list[SelfEvolutionAction] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
 
 
 class ImprovementPlanner:
-    """
-    FINAL PLANNER (AGGRESSIVE MODE)
+    def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
+        additions: list[str] = []
 
-    This version forces:
-    - architecture mode when real patches exist
-    - no more passive build-only loops
-    """
+        for item in list(review.recommendations) + list(review.backlog_items):
+            if item and item not in memory.backlog:
+                memory.backlog.append(item)
+                additions.append(item)
 
-    # =========================
-    # SELF EVOLUTION
-    # =========================
+        return additions
 
-    def plan_self_evolution(self, actions: List[SelfEvolutionAction]) -> List[SelfEvolutionAction]:
-        safe = []
+    def plan_self_evolution(
+        self,
+        review: ArchitectureReview,
+        enabled: bool,
+        max_actions: int,
+    ) -> PlannedSelfEvolution:
+        if not enabled:
+            return PlannedSelfEvolution(
+                enabled=False,
+                actions=[],
+                reasons=["Self-evolution disabled by configuration."],
+            )
 
-        for action in actions:
-            if action.risk == "safe" and action.patches:
-                safe.append(action)
+        safe_actions = [action for action in review.self_evolution_actions if action.risk == "safe" and action.patches]
 
-        return safe[:5]  # slightly more aggressive
+        reasons: list[str] = []
+        if len(safe_actions) > max_actions:
+            reasons.append(f"Capped self-evolution actions from {len(safe_actions)} to {max_actions}.")
 
-    # =========================
-    # BUILD THREAD CONTROL
-    # =========================
+        if not safe_actions:
+            reasons.append("No safe self-evolution actions available.")
 
-    def select_build_work(self, planned_work: List[PlannedWorkItem]) -> PlannedWorkItem | None:
-        if not planned_work:
-            return None
-
-        candidates = [w for w in planned_work if w.state in ("proposed", "active")]
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda x: (x.priority, x.created_at))
-
-        return candidates[0]
-
-    # =========================
-    # ARCHITECTURE ESCALATION
-    # =========================
-
-    def should_trigger_architecture(self, memory) -> bool:
-        failure_patterns = memory.ranked_failure_patterns()
-
-        if not failure_patterns:
-            return False
-
-        top = failure_patterns[0]
-
-        # still keep safety fallback
-        if top.failure_count >= 3:
-            return True
-
-        return False
-
-    def select_architecture_plan(self, plans: List[ArchitecturePlan]) -> ArchitecturePlan | None:
-        if not plans:
-            return None
-
-        for plan in plans:
-            if plan.status == "proposed":
-                return plan
-
-        return None
-
-    # =========================
-    # MODE DECISION (FINAL FIX)
-    # =========================
-
-    def decide_mode(self, memory, review) -> str:
-        """
-        FINAL MODE SWITCH
-
-        🔥 THIS IS THE KEY CHANGE:
-        FORCE architecture when real patch bundles exist
-        """
-
-        # 🚀 FORCE ARCHITECTURE WHEN PATCHES EXIST
-        has_arch_patches = any(
-            plan.patch_bundle for plan in review.architecture_plans
+        return PlannedSelfEvolution(
+            enabled=True,
+            actions=safe_actions[:max_actions],
+            reasons=reasons,
         )
 
-        if has_arch_patches:
+    def select_build_work(self, planned_work: Iterable) -> object | None:
+        candidates = [item for item in planned_work if getattr(item, "state", "") in {"proposed", "active"}]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (getattr(item, "priority", 0), getattr(item, "created_at", "")))
+        return candidates[0]
+
+    def should_trigger_architecture(self, memory: MemoryState) -> bool:
+        ranked = sorted(
+            memory.failure_patterns.values(),
+            key=lambda item: (item.failure_count, item.updated_at),
+            reverse=True,
+        )
+        if not ranked:
+            return False
+        return ranked[0].failure_count >= 3
+
+    def decide_mode(self, memory, review: ArchitectureReview) -> str:
+        state: MemoryState = memory.state if hasattr(memory, "state") else memory
+
+        if review.architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
 
-        # fallback logic (kept for stability)
-        if memory.get_active_work():
+        if review.self_evolution_actions:
             return "build"
 
-        if review.build_actions:
+        if state.planned_work:
             return "build"
 
         return "repair"

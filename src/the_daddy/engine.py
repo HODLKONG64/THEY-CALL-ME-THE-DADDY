@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import time
 from datetime import datetime, timezone
 
 from .agents.diagnoser import Diagnoser
@@ -39,7 +38,7 @@ class DaddyEngine:
             github_repo=self.settings.github_repo,
         )
 
-    def repo_fingerprint(self):
+    def repo_fingerprint(self) -> dict[str, str]:
         try:
             head = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"],
@@ -50,11 +49,11 @@ class DaddyEngine:
             head = "unknown"
         return {"git_head": head}
 
-    def choose_mode(self, review):
+    def choose_mode(self, review) -> str:
         return self.planner.decide_mode(self.memory, review)
 
     def _apply_safe_patches(self, run_id: str, mode: str, patches: list):
-        applied = []
+        applied: list[dict] = []
         if not patches:
             return applied, "none"
 
@@ -64,7 +63,14 @@ class DaddyEngine:
 
         for patch in patches:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
-            self.memory.record_patch(run_id, mode, patch.path, patch.description, policy.route)
+            self.memory.record_patch(
+                run_id=run_id,
+                mode=mode,
+                path=patch.path,
+                description=patch.description,
+                route=policy.route,
+                source="reviewer",
+            )
             applied.append(
                 {
                     "path": patch.path,
@@ -72,6 +78,7 @@ class DaddyEngine:
                     "route": policy.route,
                 }
             )
+
         return applied, policy.route
 
     def _execute_architecture_pr(self, run_id: str, patches: list):
@@ -82,27 +89,22 @@ class DaddyEngine:
 
         for patch in patches:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
+            self.memory.record_patch(
+                run_id=run_id,
+                mode="architecture",
+                path=patch.path,
+                description=patch.description,
+                route="branch",
+                source="architecture_lane",
+            )
             safe_paths.add(patch.path)
-
-        marker_file = self.settings.target_root / "ARCHITECTURE.md"
-        try:
-            with open(marker_file, "a", encoding="utf-8") as f:
-                f.write(f"\n# AUTO-RUN {time.time()}\n")
-            safe_paths.add("ARCHITECTURE.md")
-        except Exception:
-            pass
 
         pr = self.git_tools.commit_push_open_pr(
             run_id=run_id,
             safe_paths=sorted(safe_paths),
             title=f"[AUTO] Architecture Update {run_id}",
-            body=f"""Auto-generated architecture upgrade.
-
-Files:
-{", ".join(sorted(safe_paths))}
-""",
+            body=f"Auto-generated architecture upgrade.\n\nFiles:\n{', '.join(sorted(safe_paths))}\n",
         )
-
         return pr
 
     def _attempt_auto_merge(self, pr: dict | None, record: RunRecord, policy_route: str):
@@ -142,12 +144,16 @@ Files:
         latest = self.memory.latest_review()
 
         review = self.reviewer.review(
-            memory_snapshot=self.memory.state.model_dump(mode="json"),
+            memory_snapshot=self.memory.snapshot(),
             repo_root=self.settings.target_root,
             recent_summary=(latest.diagnosis if latest else ""),
         )
 
         self.memory.add_architecture_review(review)
+        backlog_updates = self.planner.merge_review_into_backlog(self.memory.state, review)
+        if backlog_updates:
+            self.memory.add_backlog_items(backlog_updates)
+            record.backlog_updates.extend(backlog_updates)
 
         for item in review.build_actions:
             self.memory.add_planned_work(item)
@@ -163,24 +169,24 @@ Files:
             pending = self.memory.get_pending_architecture()
             patches = pending[0].patch_bundle if pending else []
         else:
+            planned = self.planner.plan_self_evolution(
+                review=review,
+                enabled=self.settings.enable_self_evolution and self.settings.enable_patching,
+                max_actions=self.settings.self_evolution_max_actions,
+            )
             patches = []
-            for action in review.self_evolution_actions:
+            for action in planned.actions:
                 patches.extend(action.patches)
 
         if mode == "architecture":
-            record.patches_applied = [
-                {"path": p.path, "description": p.description, "route": "branch"}
-                for p in patches
-            ]
+            record.patches_applied = [{"path": p.path, "description": p.description, "route": "branch"} for p in patches]
             policy_route = "branch"
-        else:
-            record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
-
-        pr = None
-        if mode == "architecture":
             pr = self._execute_architecture_pr(run_id, patches)
             if pr:
                 record.backlog_updates.append("PR created")
+        else:
+            record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
+            pr = None
 
         result = run_command(
             self.settings.command,
@@ -190,11 +196,15 @@ Files:
 
         record.verification = result
         record.success = result.returncode == 0
-        record.summary = "Success" if record.success else f"Failed ({result.returncode})"
+        record.summary = f"{mode}: success" if record.success else f"{mode}: failed ({result.returncode})"
 
         if not record.success:
-            sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
-            self.memory.record_failure_pattern(sig, {"route": mode, "diagnosis": "run failure"}, False)
+            sig = self.memory.fingerprint((result.stderr or result.stdout or "")[:2000])
+            self.memory.record_failure_pattern(
+                sig,
+                {"route": mode, "diagnosis": "run failure"},
+                success=False,
+            )
 
         if pr:
             self._attempt_auto_merge(pr, record, policy_route)
