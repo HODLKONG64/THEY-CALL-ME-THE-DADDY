@@ -61,6 +61,121 @@ class WakeReviewer:
         cleaned = re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
         return re.sub(r"\s+", " ", cleaned)
 
+    def _semantic_tokens(self, text: str) -> set[str]:
+        normalized = self._normalize_phrase(text)
+        parts = normalized.split()
+
+        canonical_map = {
+            "wake": "wake_review",
+            "review": "wake_review",
+            "output": "review_contract",
+            "outputs": "review_contract",
+            "contract": "review_contract",
+            "contracts": "review_contract",
+            "invariant": "review_contract",
+            "invariants": "review_contract",
+            "safe": "safety_rule",
+            "safely": "safety_rule",
+            "safety": "safety_rule",
+            "self": "self_evolution",
+            "evolution": "self_evolution",
+            "action": "action_requirement",
+            "actions": "action_requirement",
+            "exists": "existence_check",
+            "exist": "existence_check",
+            "existence": "existence_check",
+            "ensure": "existence_check",
+            "ensures": "existence_check",
+            "ensuring": "existence_check",
+            "require": "action_requirement",
+            "requires": "action_requirement",
+            "requirement": "action_requirement",
+            "requirements": "action_requirement",
+            "test": "test",
+            "tests": "test",
+            "regression": "regression_test",
+            "rollback": "rollback",
+            "rollback_metadata": "rollback",
+            "rollbackmanifest": "rollback",
+            "manifest": "rollback",
+            "metadata": "metadata",
+            "observability": "observability",
+            "visibility": "observability",
+            "alignment": "alignment",
+            "schema": "schema",
+        }
+
+        stopwords = {
+            "add",
+            "create",
+            "introduce",
+            "implement",
+            "improve",
+            "expand",
+            "cover",
+            "covers",
+            "covering",
+            "for",
+            "the",
+            "a",
+            "an",
+            "to",
+            "of",
+            "and",
+            "that",
+            "with",
+            "within",
+            "all",
+            "current",
+            "provided",
+            "based",
+            "ensure",
+            "ensures",
+            "ensuring",
+        }
+
+        tokens: set[str] = set()
+        for part in parts:
+            if not part or part in stopwords:
+                continue
+            tokens.add(canonical_map.get(part, part))
+
+        if "wake_review" in tokens and "review_contract" in tokens:
+            tokens.add("wake_review_contract_test")
+        if "test" in tokens and "self_evolution" in tokens and "action_requirement" in tokens:
+            tokens.add("self_evolution_action_test")
+        if "test" in tokens and "existence_check" in tokens:
+            tokens.add("existence_test")
+
+        return tokens
+
+    def _backlog_items_semantically_similar(self, left: str, right: str) -> bool:
+        left_tokens = self._semantic_tokens(left)
+        right_tokens = self._semantic_tokens(right)
+
+        if not left_tokens or not right_tokens:
+            return False
+
+        overlap = left_tokens & right_tokens
+
+        if "wake_review_contract_test" in overlap:
+            return True
+
+        if "self_evolution_action_test" in overlap and "test" in overlap:
+            return True
+
+        if {"test", "wake_review", "review_contract"} <= overlap:
+            return True
+
+        if {"test", "self_evolution", "action_requirement"} <= overlap:
+            return True
+
+        if {"rollback", "observability"} <= overlap:
+            return True
+
+        similarity = len(overlap) / max(1, min(len(left_tokens), len(right_tokens)))
+        return similarity >= 0.75
+
     def _tokenize_test_stem(self, path: str) -> set[str]:
         stem = Path(path).stem.lower()
         parts = re.split(r"[^a-z0-9]+", stem)
@@ -85,44 +200,56 @@ class WakeReviewer:
         }
         return {part for part in parts if part and part not in stopwords}
 
-    def _existing_backlog_phrases(self, memory_snapshot: dict[str, Any]) -> set[str]:
-        phrases: set[str] = set()
+    def _existing_backlog_items(self, memory_snapshot: dict[str, Any]) -> list[str]:
+        items: list[str] = []
 
         for item in memory_snapshot.get("backlog", []) or []:
-            normalized = self._normalize_phrase(str(item))
-            if normalized:
-                phrases.add(normalized)
+            text = str(item).strip()
+            if text:
+                items.append(text)
 
         reviews = memory_snapshot.get("architecture_reviews", []) or []
         for review in reviews[-6:]:
             if not isinstance(review, dict):
                 continue
             for item in review.get("backlog_items", []) or []:
-                normalized = self._normalize_phrase(str(item))
-                if normalized:
-                    phrases.add(normalized)
+                text = str(item).strip()
+                if text:
+                    items.append(text)
 
-        return phrases
+        return items
 
     def _filter_repetitive_backlog_items(
         self,
         items: list[str],
         memory_snapshot: dict[str, Any],
     ) -> tuple[list[str], list[str]]:
-        existing = self._existing_backlog_phrases(memory_snapshot)
+        existing_items = self._existing_backlog_items(memory_snapshot)
         kept: list[str] = []
-        seen: set[str] = set()
         removed: list[str] = []
 
         for item in items:
-            normalized = self._normalize_phrase(str(item))
-            if not normalized:
+            text = str(item).strip()
+            if not text:
                 continue
-            if normalized in seen or normalized in existing:
-                removed.append(str(item))
-                continue
-            seen.add(normalized)
-            kept.append(str(item))
+
+            duplicate = False
+
+            for prior in existing_items:
+                if self._backlog_items_semantically_similar(text, prior):
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                for prior in kept:
+                    if self._backlog_items_semantically_similar(text, prior):
+                        duplicate = True
+                        break
+
+            if duplicate:
+                removed.append(text)
+            else:
+                kept.append(text)
 
         return kept, removed
 
@@ -317,6 +444,10 @@ Rules:
 - Avoid repetitive low-value maintenance loops.
 - Do not propose a new regression test if a materially similar wake-review or output-invariant test already exists in tests/.
 - Do not repeat backlog items that are already present in memory unless there is genuinely new evidence.
+- Treat these as equivalent low-value duplicates when the repo is already green:
+  * wake-review invariant test
+  * wake-review output test
+  * safe self-evolution action existence test
 - Prefer source/runtime fixes over another tiny documentation or test-only loop when the system is already green.
 
 Required JSON shape:
@@ -432,7 +563,8 @@ Repository snapshot:
                     "Return only a valid JSON object matching the provided schema. "
                     "When you propose a self-evolution action, include a matching build_action. "
                     "Only include architecture_plans when clearly justified by a repo-wide structural issue. "
-                    "Avoid repetitive low-value test or backlog churn."
+                    "Avoid repetitive low-value test or backlog churn. "
+                    "Treat wake-review invariant tests, wake-review output tests, and self-evolution action existence tests as the same maintenance loop unless there is new evidence."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
