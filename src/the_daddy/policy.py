@@ -15,7 +15,6 @@ class PolicyResult:
 
 SAFE_EXTENSIONS = {".py", ".md", ".yml", ".yaml", ".json", ".toml"}
 
-# 🔒 HARD BLOCK — NEVER ALLOW THESE FILE NAMES
 BLOCKED_ROOT_FILENAMES = {
     "bool",
     "None",
@@ -32,7 +31,6 @@ BLOCKED_ROOT_FILENAMES = {
     "THEY-CALL-ME-THE-DADDY",
 }
 
-# 🔒 HARD BLOCK — NEVER ALLOW THESE PATH SEGMENTS
 BLOCKED_PATH_PARTS = {
     "build",
     "dist",
@@ -41,7 +39,6 @@ BLOCKED_PATH_PARTS = {
     "path",
 }
 
-# 🔒 DANGEROUS CODE PATTERNS
 BLOCKED_KEYWORDS = {
     "rm -rf",
     "os.remove",
@@ -51,13 +48,11 @@ BLOCKED_KEYWORDS = {
     "shutil.rmtree",
 }
 
-# 🔒 FORCE THESE FILES INTO PR FLOW ONLY
 FORCE_BRANCH_PATHS = [
     ".github/workflows/",
     ".github/actions/",
 ]
 
-# 🔒 PROTECTED CORE FILES
 PROTECTED_CORE_FILES = {
     "src/the_daddy/agents/reviewer.py",
     "src/the_daddy/engine.py",
