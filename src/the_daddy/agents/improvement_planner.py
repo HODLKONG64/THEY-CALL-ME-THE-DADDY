@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from ..models import ArchitectureReview, MemoryState, SelfEvolutionAction
+from ..models import ArchitectureReview, MemoryState, PatchAction, SelfEvolutionAction
 
 
 @dataclass
@@ -24,15 +24,33 @@ class ImprovementPlanner:
         except TypeError:
             return []
 
+    def _normalize_patches(self, value: Any) -> list[PatchAction]:
+        normalized: list[PatchAction] = []
+        for item in self._safe_list(value):
+            if not isinstance(item, PatchAction):
+                continue
+            if not getattr(item, "path", ""):
+                continue
+            if getattr(item, "operation", None) not in {"replace_file", "regex_replace"}:
+                continue
+            normalized.append(item)
+        return normalized
+
     def _normalize_self_evolution_actions(self, value: Any) -> list[SelfEvolutionAction]:
         normalized: list[SelfEvolutionAction] = []
         for item in self._safe_list(value):
             if not isinstance(item, SelfEvolutionAction):
                 continue
-            patches = self._safe_list(getattr(item, "patches", None))
+            if not isinstance(getattr(item, "title", None), str) or not item.title:
+                continue
+            if not isinstance(getattr(item, "description", None), str) or not item.description:
+                continue
+            if getattr(item, "risk", None) != "safe":
+                continue
+            patches = self._normalize_patches(getattr(item, "patches", None))
             if not patches:
                 continue
-            normalized.append(item)
+            normalized.append(item.model_copy(update={"patches": patches}))
         return normalized
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
@@ -62,8 +80,7 @@ class ImprovementPlanner:
                 reasons=["Self-evolution disabled"],
             )
 
-        raw_actions = self._normalize_self_evolution_actions(getattr(review, "self_evolution_actions", None))
-        safe_actions = [a for a in raw_actions if getattr(a, "risk", None) == "safe"]
+        safe_actions = self._normalize_self_evolution_actions(getattr(review, "self_evolution_actions", None))
 
         if not safe_actions:
             return PlannedSelfEvolution(
