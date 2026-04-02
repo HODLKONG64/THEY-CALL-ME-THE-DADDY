@@ -69,16 +69,32 @@ class ImprovementPlanner:
             return False
         return ranked[0].failure_count >= 3
 
+    def _as_list(self, value) -> list:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        try:
+            return list(value)
+        except TypeError:
+            return []
+
     def decide_mode(self, memory, review: ArchitectureReview) -> str:
         state: MemoryState = memory.state if hasattr(memory, "state") else memory
 
-        if review.architecture_plans and self.should_trigger_architecture(state):
+        architecture_plans = self._as_list(getattr(review, "architecture_plans", []))
+        self_evolution_actions = self._as_list(getattr(review, "self_evolution_actions", []))
+        planned_work = self._as_list(getattr(state, "planned_work", []))
+
+        if architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
 
-        if review.self_evolution_actions:
+        if self_evolution_actions:
             return "build"
 
-        if state.planned_work:
+        if planned_work:
             return "build"
 
         return "repair"
