@@ -53,8 +53,17 @@ class ImprovementPlanner:
         if isinstance(value, SelfEvolutionAction):
             return value
         if isinstance(value, dict):
+            normalized_patches = self._normalize_patches(value.get("patches"))
+            if not normalized_patches:
+                return None
+            normalized_payload = {
+                "title": value.get("title"),
+                "description": value.get("description"),
+                "risk": value.get("risk"),
+                "patches": [patch.model_dump() for patch in normalized_patches],
+            }
             try:
-                return SelfEvolutionAction.model_validate(value)
+                return SelfEvolutionAction.model_validate(normalized_payload)
             except ValidationError:
                 return None
         return None
