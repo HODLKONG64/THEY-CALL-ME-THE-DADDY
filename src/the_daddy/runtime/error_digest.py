@@ -4,7 +4,7 @@ from collections import Counter
 from typing import Any
 
 
-def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def summarize_errors_with_details(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     items = events or []
     counts = Counter()
     recent: list[dict[str, Any]] = []
