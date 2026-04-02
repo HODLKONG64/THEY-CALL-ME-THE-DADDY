@@ -157,8 +157,6 @@ class ArchitectureReview(BaseModel):
                 except Exception:
                     continue
 
-            # If caller supplied patches but none were valid, drop the whole action.
-            # This lets malformed entries exist in input without forcing build mode later.
             if patches_raw and not valid_patches:
                 continue
 
@@ -181,6 +179,7 @@ class DiagnosticPlan(BaseModel):
     why_this_failed: list[str] = Field(default_factory=list)
     changes: list[PatchAction] = Field(default_factory=list)
     post_fix_checks: list[str] = Field(default_factory=list)
+    test_suggestions: list[str] = Field(default_factory=list)
 
 
 class SelfEvolutionExecution(BaseModel):
@@ -311,7 +310,6 @@ class MemoryState(BaseModel):
     last_saved_at: str = Field(default_factory=utc_now_iso)
 
 
-# === LEGACY COMPAT (FINAL LOCK) ===
 FailurePattern = FailurePatternRecord
 
 
