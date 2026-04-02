@@ -116,7 +116,37 @@ class GitBranchExecutor:
         except Exception:
             return None
 
-    def commit_push_and_open_pr(
+    def merge_pull_request(self, pull_number: int, commit_title: str = "auto: daddy merge") -> dict | None:
+        if not self.github_token or not self.github_repo:
+            return None
+
+        url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
+        payload = json.dumps(
+            {
+                "commit_title": commit_title,
+                "merge_method": "squash",
+            }
+        ).encode("utf-8")
+
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            method="PUT",
+            headers={
+                "Authorization": f"Bearer {self.github_token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "daddy-agent",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    def commit_push_open_pr(
         self,
         run_id: str,
         safe_paths: Iterable[str],
