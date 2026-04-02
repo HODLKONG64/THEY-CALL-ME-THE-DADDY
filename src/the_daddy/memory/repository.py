@@ -60,20 +60,10 @@ class DaddyMemoryState:
     latest_run_summary: dict[str, Any] = field(default_factory=dict)
 
 
-# Alias used by newer code paths in parts of the repo.
 MemoryState = DaddyMemoryState
 
 
 class MemoryRepository:
-    """
-    Broad compatibility repository layer.
-
-    Supports:
-    - older tests importing DaddyMemoryState + MEMORY_SCHEMA_VERSION
-    - engine code calling fingerprint(...)
-    - store implementations exposing load()/save() or get()/put()
-    """
-
     def __init__(self, store: Any | None = None) -> None:
         self.store = store
         self._state = self._load_from_store()
@@ -89,7 +79,6 @@ class MemoryRepository:
         self._state = self._load_from_store()
         return self._state
 
-    # Compatibility alias
     def load(self) -> DaddyMemoryState:
         return self.load_state()
 
@@ -100,7 +89,6 @@ class MemoryRepository:
         self._save_to_store(self._state)
         return self._state
 
-    # Compatibility alias
     def save(self, state: DaddyMemoryState | dict[str, Any] | None = None) -> DaddyMemoryState:
         return self.save_state(state)
 
@@ -150,11 +138,7 @@ class MemoryRepository:
         self._state.architecture_queue.append(dict(plan))
         self.save_state()
 
-    def mark_failure_pattern(
-        self,
-        signature: str,
-        details: dict[str, Any] | None = None,
-    ) -> None:
+    def mark_failure_pattern(self, signature: str, details: dict[str, Any] | None = None) -> None:
         if not signature:
             return
         existing = dict(self._state.failure_patterns.get(signature, {}))
@@ -218,7 +202,16 @@ class MemoryRepository:
 
         merged: dict[str, Any] = asdict(DaddyMemoryState())
         merged.update(raw)
-        merged["schema_version"] = int(merged.get("schema_version") or MEMORY_SCHEMA_VERSION)
+
+        # ✅ FIXED BLOCK (ONLY CHANGE)
+        raw_version = merged.get("schema_version") or MEMORY_SCHEMA_VERSION
+        try:
+            if isinstance(raw_version, str) and "." in raw_version:
+                merged["schema_version"] = int(float(raw_version))
+            else:
+                merged["schema_version"] = int(raw_version)
+        except Exception:
+            merged["schema_version"] = int(MEMORY_SCHEMA_VERSION)
 
         # Defensive shape repairs
         for key in (
