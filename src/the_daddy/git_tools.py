@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import urllib.request
 from pathlib import Path
 from typing import Iterable
 
 
 class GitBranchExecutor:
-    def __init__(self, repo_root: Path | str = ".") -> None:
+    def __init__(self, repo_root: Path | str = ".", github_token: str = "", github_repo: str = "") -> None:
         self.repo_root = Path(repo_root).resolve()
+        self.github_token = github_token
+        self.github_repo = github_repo  # owner/repo
 
     def _run(self, *args: str) -> str:
         result = subprocess.run(
@@ -72,3 +76,60 @@ class GitBranchExecutor:
             return None
         self.push(branch_name)
         return branch_name
+
+    def create_pull_request(
+        self,
+        branch_name: str,
+        title: str,
+        body: str,
+        base_branch: str = "main",
+    ) -> dict | None:
+        if not self.github_token or not self.github_repo:
+            return None
+
+        url = f"https://api.github.com/repos/{self.github_repo}/pulls"
+        payload = json.dumps(
+            {
+                "title": title,
+                "head": branch_name,
+                "base": base_branch,
+                "body": body,
+                "draft": False,
+            }
+        ).encode("utf-8")
+
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.github_token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "daddy-agent",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    def commit_push_and_open_pr(
+        self,
+        run_id: str,
+        safe_paths: Iterable[str],
+        title: str,
+        body: str,
+        base_branch: str = "main",
+    ) -> dict | None:
+        branch_name = self.commit_safe_branch_changes(run_id, safe_paths)
+        if not branch_name:
+            return None
+        return self.create_pull_request(
+            branch_name=branch_name,
+            title=title,
+            body=body,
+            base_branch=base_branch,
+        )
