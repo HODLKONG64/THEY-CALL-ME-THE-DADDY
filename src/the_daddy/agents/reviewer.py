@@ -39,6 +39,7 @@ BANNED_TEST_TITLE_PATTERNS = (
 PROACTIVE_RUNTIME_PATH = "src/the_daddy/runtime/trace_summary.py"
 FALLBACK_RUNTIME_PATH = "src/the_daddy/runtime/reviewer_fallback.py"
 ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
+
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
 }
@@ -47,6 +48,20 @@ SAFE_NEW_FILE_ALLOWLIST = {
     PROACTIVE_RUNTIME_PATH,
     FALLBACK_RUNTIME_PATH,
     ARCHITECTURE_RUNTIME_PATH,
+}
+
+BANNED_INVENTED_MODULE_FILENAMES = {
+    "logging_utils.py",
+    "reviewer.py",
+    "helper.py",
+    "helpers.py",
+    "utils.py",
+    "utility.py",
+    "diagnostics.py",
+    "observability.py",
+    "telemetry.py",
+    "logger.py",
+    "logging.py",
 }
 
 
@@ -363,6 +378,13 @@ class WakeReviewer:
 
         return False
 
+    def _is_banned_invented_filename(self, path: str, tracked_files: list[str]) -> bool:
+        normalized = self._normalize_path(path)
+        if normalized in tracked_files:
+            return False
+        filename = Path(normalized).name.lower()
+        return filename in BANNED_INVENTED_MODULE_FILENAMES
+
     def _is_allowed_patch_path(self, path: str, tracked_files: list[str]) -> bool:
         normalized = self._normalize_path(path)
 
@@ -370,6 +392,9 @@ class WakeReviewer:
             return False
 
         if normalized in BANNED_SELF_EVOLUTION_PATHS:
+            return False
+
+        if self._is_banned_invented_filename(normalized, tracked_files):
             return False
 
         if normalized in tracked_files:
@@ -416,6 +441,36 @@ class WakeReviewer:
             kept.append(action)
 
         return kept, removed_notes
+
+    def _force_allowlisted_action_only(
+        self,
+        review: ArchitectureReview,
+        repo_root: Path,
+    ) -> ArchitectureReview:
+        proactive_action = self._proactive_runtime_action(repo_root)
+        fallback_action = self._fallback_patch_action(repo_root)
+
+        if proactive_action is not None:
+            review.self_evolution_actions = [proactive_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted proactive runtime helper."
+            )
+            return review
+
+        if fallback_action is not None:
+            review.self_evolution_actions = [fallback_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted fallback runtime helper."
+            )
+            return review
+
+        review.self_evolution_actions = []
+        review.execution_notes.append(
+            "Reviewer output drifted onto invalid targets and no allowlisted helper remained available."
+        )
+        return review
 
     def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / "src" / "the_daddy" / "runtime" / "reviewer_fallback.py"
@@ -496,12 +551,13 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             priority=1,
             route="safe",
             related_files=[
-                "src/the_daddy/engine.py",
-                "src/the_daddy/agents/improvement_planner.py",
-                "src/the_daddy/merge_rules.py",
+                "src/the_daddy/runtime/trace_summary.py",
+                "src/the_daddy/runtime/reviewer_fallback.py",
+                "src/the_daddy/runtime/architecture_probe.py",
             ],
             notes=[
                 "Prefer bounded code patches over doc-only churn.",
+                "Prefer allowlisted runtime helpers when reviewer drift is detected.",
                 "Do not broaden scope when verification is failing.",
             ],
         )
@@ -579,6 +635,7 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
 
         allowlisted_new_files = "\n".join(f"  * {path}" for path in sorted(SAFE_NEW_FILE_ALLOWLIST))
         banned_paths = "\n".join(f"  * {path}" for path in sorted(BANNED_SELF_EVOLUTION_PATHS))
+        banned_filenames = "\n".join(f"  * {name}" for name in sorted(BANNED_INVENTED_MODULE_FILENAMES))
 
         return f"""You are the wake-review agent for a bounded self-maintenance repository.
 
@@ -618,8 +675,11 @@ Rules:
 {allowlisted_new_files}
 - CRITICAL: NEVER target these banned self-evolution paths:
 {banned_paths}
+- CRITICAL: NEVER invent these module filenames unless that exact full path already exists in tracked_files:
+{banned_filenames}
 - NEVER invent a new module name like logging_utils.py, reviewer.py, helper.py, utils.py, or similar unless that exact path already exists in tracked_files.
 - If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
+- Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -749,6 +809,7 @@ Repository snapshot:
                     "Never propose wake-review invariant/output/contract tests or self-evolution existence tests. "
                     "Do not invent new file targets unless they are explicitly allowlisted runtime helper paths. "
                     "Do not target banned self-evolution paths. "
+                    "Prefer allowlisted runtime helper paths for observability improvements. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -775,6 +836,20 @@ Repository snapshot:
         review.backlog_items = filtered_backlog
         if removed_backlog:
             review.execution_notes.append("Suppressed repetitive backlog items already present in memory.")
+
+        if review.self_evolution_actions:
+            only_allowlisted_or_tracked = True
+            for action in review.self_evolution_actions:
+                for patch in action.patches or []:
+                    patch_path = self._normalize_path(getattr(patch, "path", ""))
+                    if not self._is_allowed_patch_path(patch_path, tracked_files):
+                        only_allowlisted_or_tracked = False
+                        break
+                if not only_allowlisted_or_tracked:
+                    break
+
+            if not only_allowlisted_or_tracked:
+                review = self._force_allowlisted_action_only(review, repo_root)
 
         if not review.build_actions:
             derived_action = self._derive_build_action(review)
