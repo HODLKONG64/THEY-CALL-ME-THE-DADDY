@@ -57,18 +57,46 @@ FORCE_BRANCH_PATHS = [
     ".github/actions/",
 ]
 
+# 🔒 PROTECTED CORE FILES
+PROTECTED_CORE_FILES = {
+    "src/the_daddy/agents/reviewer.py",
+    "src/the_daddy/engine.py",
+    "src/the_daddy/models.py",
+    "src/the_daddy/policy.py",
+    "src/the_daddy/scoring.py",
+    "src/the_daddy/merge_rules.py",
+    "src/the_daddy/git_tools.py",
+}
+
+# ✅ ONLY THESE NEW FILES MAY BE CREATED BY SAFE SELF-EVOLUTION
+SAFE_NEW_FILE_ALLOWLIST = {
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+}
+
+
+def _normalize_path(path: str) -> str:
+    normalized = (path or "").strip().replace("\\", "/")
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
 
 def _is_workflow_file(path: str) -> bool:
-    return any(path.startswith(p) for p in FORCE_BRANCH_PATHS)
+    normalized = _normalize_path(path)
+    return any(normalized.startswith(p) for p in FORCE_BRANCH_PATHS)
 
 
 def _is_blocked_path(path: str) -> list[str]:
-    reasons = []
+    reasons: list[str] = []
+    normalized = _normalize_path(path)
+    parts = normalized.split("/")
 
-    parts = path.replace("\\", "/").split("/")
-
-    if len(parts) == 1 and path in BLOCKED_ROOT_FILENAMES:
-        reasons.append(f"Blocked root filename: {path}")
+    if len(parts) == 1 and normalized in BLOCKED_ROOT_FILENAMES:
+        reasons.append(f"Blocked root filename: {normalized}")
 
     for part in parts:
         if part in BLOCKED_PATH_PARTS:
@@ -77,12 +105,45 @@ def _is_blocked_path(path: str) -> list[str]:
     return reasons
 
 
+def _looks_like_hallucinated_path(path: str) -> bool:
+    normalized = _normalize_path(path)
+
+    # The real reviewer file lives in agents/reviewer.py.
+    # Block invented near-miss paths like src/the_daddy/reviewer.py.
+    if normalized == "src/the_daddy/reviewer.py":
+        return True
+
+    # Runtime helpers are allowed, protected files are handled elsewhere.
+    if normalized.startswith("src/the_daddy/runtime/"):
+        return False
+    if normalized in PROTECTED_CORE_FILES:
+        return False
+
+    # Under src/the_daddy/, brand new top-level modules are too risky.
+    # Safe lane should not invent arbitrary modules beside known package layout.
+    if normalized.startswith("src/the_daddy/"):
+        remainder = normalized[len("src/the_daddy/"):]
+        if "/" not in remainder:
+            return True
+
+    return False
+
+
+def _is_safe_new_file_target(path: str) -> bool:
+    normalized = _normalize_path(path)
+    return normalized in SAFE_NEW_FILE_ALLOWLIST
+
+
 def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
     reasons: list[str] = []
     route = "safe"
 
     for patch in patches:
-        path = patch.path.strip()
+        path = _normalize_path(patch.path)
+
+        if not path:
+            reasons.append("Empty patch path")
+            continue
 
         # 🔒 PATH BLOCKING
         reasons.extend(_is_blocked_path(path))
@@ -100,6 +161,15 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
         # 🔒 WORKFLOW FILES → FORCE PR
         if _is_workflow_file(path):
             route = "branch"
+
+        # 🔒 HALLUCINATED / NEAR-MISS PATHS
+        if _looks_like_hallucinated_path(path):
+            reasons.append(f"Blocked hallucinated or near-miss path: {path}")
+
+        # 🔒 SAFE LANE MAY ONLY CREATE KNOWN RUNTIME HELPERS
+        if patch.operation == "replace_file":
+            if path.startswith("src/the_daddy/runtime/") and not _is_safe_new_file_target(path):
+                reasons.append(f"Blocked unapproved new runtime helper path: {path}")
 
     if reasons:
         return PolicyResult(False, "reject", reasons)
