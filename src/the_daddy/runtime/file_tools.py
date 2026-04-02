@@ -42,6 +42,7 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/scoring.py",
     "src/the_daddy/merge_rules.py",
     "src/the_daddy/git_tools.py",
+    "src/the_daddy/runtime/command_runner.py",
 }
 
 SAFE_NEW_FILE_ALLOWLIST = {
@@ -63,20 +64,15 @@ def _normalize_path(rel: str) -> str:
 def _looks_like_hallucinated_path(path: str) -> bool:
     normalized = _normalize_path(path)
 
-    # Explicit near-miss path that should never be generated.
     if normalized == "src/the_daddy/reviewer.py":
         return True
 
-    # Existing protected files are handled elsewhere.
     if normalized in PROTECTED_CORE_FILES:
         return False
 
-    # Runtime paths are not inherently hallucinated.
-    # New runtime file creation is handled later by the allowlist check in apply_patch_action.
     if normalized.startswith("src/the_daddy/runtime/"):
         return False
 
-    # Arbitrary new top-level modules under src/the_daddy/ are suspicious.
     if normalized.startswith("src/the_daddy/"):
         remainder = normalized[len("src/the_daddy/"):]
         if "/" not in remainder:
