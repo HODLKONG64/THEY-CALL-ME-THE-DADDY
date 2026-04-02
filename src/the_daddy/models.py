@@ -255,6 +255,7 @@ class PatchProvenance(BaseModel):
     mode: Literal["repair", "build", "architecture"] = "repair"
     path: str
     description: str = ""
+    patch_fingerprint: str = ""
     source: Literal["diagnoser", "reviewer", "planner", "architecture_lane"] = "reviewer"
     route: Literal["safe", "branch", "recommend"] = "safe"
     created_at: str = Field(default_factory=utc_now_iso)
