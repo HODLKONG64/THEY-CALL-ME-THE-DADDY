@@ -9,6 +9,11 @@ from ..models import (
     MemoryState,
     AgentReputation,
     VettingDecision,
+    FailurePatternRecord,
+    PlannedWorkItem,
+    ArchitecturePlan,
+    PatchProvenance,
+    MetricsLedgerEntry,
 )
 
 
@@ -31,7 +36,6 @@ class MemoryRepository:
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
 
-    # ---------- FIX: ADD FINGERPRINT ----------
     def fingerprint(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -57,14 +61,25 @@ class MemoryRepository:
             if item not in self.state.backlog:
                 self.state.backlog.append(item)
 
-    # --- failure patterns ---
+    # --- failure patterns (with weighting) ---
 
     def record_failure_pattern(self, key: str, data: Dict[str, Any], success: bool) -> None:
-        self.state.failure_patterns[key] = {
-            "data": data,
-            "success": success,
-            "updated_at": self._now(),
-        }
+        existing = self.state.failure_patterns.get(key)
+
+        if not existing:
+            existing = FailurePatternRecord(signature=key)
+
+        if success:
+            existing.success_count += 1
+        else:
+            existing.failure_count += 1
+
+        existing.last_summary = data.get("diagnosis", "")
+        existing.last_route = data.get("route", "")
+        existing.related_files = data.get("files", [])
+        existing.updated_at = self._now()
+
+        self.state.failure_patterns[key] = existing
 
     # --- improvement history ---
 
@@ -75,6 +90,52 @@ class MemoryRepository:
             "payload": payload,
             "timestamp": self._now(),
         })
+
+    # --- planned work (multi-cycle builds) ---
+
+    def add_planned_work(self, item: PlannedWorkItem) -> None:
+        self.state.planned_work.append(item)
+
+    def get_active_work(self) -> list[PlannedWorkItem]:
+        return [w for w in self.state.planned_work if w.state == "active"]
+
+    def update_work_state(self, work_id: str, state: str) -> None:
+        for w in self.state.planned_work:
+            if w.work_id == work_id:
+                w.state = state
+                w.updated_at = self._now()
+
+    # --- architecture queue ---
+
+    def add_architecture_plan(self, plan: ArchitecturePlan) -> None:
+        self.state.architecture_queue.append(plan)
+
+    def get_pending_architecture(self) -> list[ArchitecturePlan]:
+        return [p for p in self.state.architecture_queue if p.status == "proposed"]
+
+    def update_architecture_status(self, title: str, status: str) -> None:
+        for p in self.state.architecture_queue:
+            if p.title == title:
+                p.status = status
+                p.updated_at = self._now()
+
+    # --- patch provenance ---
+
+    def record_patch(self, run_id: str, mode: str, path: str, description: str, route: str):
+        self.state.patch_provenance.append(
+            PatchProvenance(
+                run_id=run_id,
+                mode=mode,
+                path=path,
+                description=description,
+                route=route,
+            )
+        )
+
+    # --- metrics ledger ---
+
+    def record_metrics(self, entry: MetricsLedgerEntry) -> None:
+        self.state.metrics_ledger.append(entry)
 
     # --- quarantine ---
 
