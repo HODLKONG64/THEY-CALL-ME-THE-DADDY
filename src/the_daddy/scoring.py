@@ -78,6 +78,7 @@ ALLOWLISTED_RUNTIME_HELPERS = {
     "src/the_daddy/runtime/trace_summary.py",
     "src/the_daddy/runtime/reviewer_fallback.py",
     "src/the_daddy/runtime/architecture_probe.py",
+    "src/the_daddy/runtime/error_digest.py",
 }
 
 LOW_VALUE_PATTERNS = [
@@ -93,6 +94,8 @@ DIVERSITY_TARGETS = [
     "merge",
     "policy",
     "diagnoser",
+    "digest",
+    "error",
 ]
 
 
