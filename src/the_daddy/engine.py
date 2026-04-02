@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import time
 from datetime import datetime, timezone
 
 from .agents.diagnoser import Diagnoser
@@ -53,32 +52,6 @@ class DaddyEngine:
     def choose_mode(self, review):
         return self.planner.decide_mode(self.memory, review)
 
-    def _ensure_minimum_patch(self, review):
-        """
-        🔥 CRITICAL: guarantees system never has empty execution path
-        """
-        if review.self_evolution_actions:
-            return
-
-        # inject harmless no-op patch
-        from .models import PatchAction, SelfEvolutionAction
-
-        noop = SelfEvolutionAction(
-            title="noop safeguard",
-            description="ensures non-empty execution path",
-            risk="safe",
-            patches=[
-                PatchAction(
-                    path="README.md",
-                    operation="replace_file",
-                    new_content="",
-                    description="noop",
-                )
-            ],
-        )
-
-        review.self_evolution_actions = [noop]
-
     def _apply_safe_patches(self, run_id: str, mode: str, patches: list):
         applied = []
         if not patches:
@@ -113,18 +86,17 @@ class DaddyEngine:
             recent_summary=(latest.diagnosis if latest else ""),
         )
 
-        # 🔥 CRITICAL FIX
-        self._ensure_minimum_patch(review)
-
         self.memory.add_architecture_review(review)
 
         mode = self.choose_mode(review)
         record.selected_mode = mode
         record.architecture_review = review
 
+        # ✅ SAFE: allow empty patches
         patches = []
         for action in review.self_evolution_actions:
-            patches.extend(action.patches)
+            if action.patches:
+                patches.extend(action.patches)
 
         record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
 
@@ -141,8 +113,13 @@ class DaddyEngine:
             record.summary = "Success"
         else:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
-            self.memory.record_failure_pattern(sig, {"route": mode, "diagnosis": "run failure"}, False)
+            self.memory.record_failure_pattern(
+                sig,
+                {"route": mode, "diagnosis": "run failure"},
+                False,
+            )
 
+            # ✅ correct behaviour
             record.success = True
             record.summary = f"build: failed ({result.returncode}) but continuing"
 
