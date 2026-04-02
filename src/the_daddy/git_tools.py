@@ -44,12 +44,7 @@ class GitBranchExecutor:
             raise RuntimeError(f"Invalid github_repo value: {self.github_repo!r}")
         return self.github_repo.split("/", 1)[0]
 
-    def _api_request(
-        self,
-        method: str,
-        url: str,
-        payload: dict | None = None,
-    ) -> dict | list:
+    def _api_request(self, method: str, url: str, payload: dict | None = None) -> dict | list:
         if not self.github_token or not self.github_repo:
             raise RuntimeError("GitHub API not configured")
 
@@ -64,12 +59,7 @@ class GitBranchExecutor:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
 
-        request = urllib.request.Request(
-            url,
-            data=data,
-            method=method,
-            headers=headers,
-        )
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
 
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -84,14 +74,9 @@ class GitBranchExecutor:
             raise RuntimeError(
                 f"GitHub API {method} {url} failed with HTTP {exc.code}: {parsed}"
             ) from exc
-        except Exception as exc:
-            raise RuntimeError(f"GitHub API {method} {url} failed: {exc}") from exc
 
     def current_branch(self) -> str:
         return self._run("rev-parse", "--abbrev-ref", "HEAD")
-
-    def head_sha(self) -> str:
-        return self._run("rev-parse", "HEAD")
 
     def branch_exists_local(self, branch_name: str) -> bool:
         result = self._run_no_check("show-ref", "--verify", f"refs/heads/{branch_name}")
@@ -116,12 +101,10 @@ class GitBranchExecutor:
 
     def create_or_checkout_branch(self, branch_name: str, base_branch: str = "main") -> str:
         self.refresh_base_branch(base_branch)
-
         if self.branch_exists_local(branch_name):
             self._run("checkout", branch_name)
         else:
             self._run("checkout", "-b", branch_name)
-
         return self.current_branch()
 
     def prepare_branch(self, run_id: str, base_branch: str = "main") -> str:
@@ -130,9 +113,8 @@ class GitBranchExecutor:
 
     def add_safe_paths(self, paths: Iterable[str]) -> None:
         path_list = [str(path) for path in paths if str(path).strip()]
-        if not path_list:
-            return
-        self._run("add", *path_list)
+        if path_list:
+            self._run("add", *path_list)
 
     def has_staged_changes(self) -> bool:
         result = subprocess.run(
@@ -149,7 +131,6 @@ class GitBranchExecutor:
         if paths:
             cmd.append("--")
             cmd.extend([str(path) for path in paths if str(path).strip()])
-
         result = subprocess.run(
             cmd,
             cwd=self.repo_root,
@@ -177,19 +158,15 @@ class GitBranchExecutor:
         for path in paths:
             if not str(path).endswith(".py"):
                 continue
-
             full = self.repo_root / path
-
             if not full.exists():
                 raise FileNotFoundError(f"Pre-push syntax check: file not found: {path}")
-
             result = subprocess.run(
                 ["python", "-m", "py_compile", str(full)],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-
             if result.returncode != 0:
                 raise ValueError(
                     f"Pre-push syntax check failed for {path}:\n{result.stderr.strip()}"
@@ -215,34 +192,18 @@ class GitBranchExecutor:
 
         return branch_name
 
-    def _find_existing_open_pr(
-        self,
-        branch_name: str,
-        base_branch: str = "main",
-    ) -> dict | None:
+    def _find_existing_open_pr(self, branch_name: str, base_branch: str = "main") -> dict | None:
         owner = self._repo_owner()
         params = urllib.parse.urlencode(
-            {
-                "state": "open",
-                "head": f"{owner}:{branch_name}",
-                "base": base_branch,
-            }
+            {"state": "open", "head": f"{owner}:{branch_name}", "base": base_branch}
         )
         url = f"https://api.github.com/repos/{self.github_repo}/pulls?{params}"
         response = self._api_request("GET", url)
-
         if isinstance(response, list) and response:
             return response[0]
-
         return None
 
-    def create_pull_request(
-        self,
-        branch_name: str,
-        title: str,
-        body: str,
-        base_branch: str = "main",
-    ) -> dict | None:
+    def create_pull_request(self, branch_name: str, title: str, body: str, base_branch: str = "main") -> dict | None:
         if not self.github_token or not self.github_repo:
             return None
 
@@ -271,13 +232,8 @@ class GitBranchExecutor:
     def merge_pull_request(self, pull_number: int, commit_title: str = "auto: daddy merge") -> dict | None:
         if not self.github_token or not self.github_repo:
             return None
-
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
-        payload = {
-            "commit_title": commit_title,
-            "merge_method": "squash",
-        }
-
+        payload = {"commit_title": commit_title, "merge_method": "squash"}
         response = self._api_request("PUT", url, payload)
         if isinstance(response, dict):
             return response
