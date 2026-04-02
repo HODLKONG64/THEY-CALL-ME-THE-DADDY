@@ -82,11 +82,24 @@ class DaddyEngine:
             return applied, rollback_manifest, scoring["recommended_route"]
 
         for patch in patches:
-            result = apply_patch_action(
-                self.settings.target_root,
-                patch,
-                self.settings.allow_extensions,
-            )
+            try:
+                result = apply_patch_action(
+                    self.settings.target_root,
+                    patch,
+                    self.settings.allow_extensions,
+                )
+            except Exception as exc:
+                self.memory.record_failure_pattern(
+                    self.memory.fingerprint(f"{patch.path}:{type(exc).__name__}:{str(exc)}"),
+                    {
+                        "route": mode,
+                        "diagnosis": "patch application rejected",
+                        "summary": str(exc),
+                        "related_files": [getattr(patch, "path", "")],
+                    },
+                    False,
+                )
+                continue
 
             self.memory.record_patch(
                 run_id,
