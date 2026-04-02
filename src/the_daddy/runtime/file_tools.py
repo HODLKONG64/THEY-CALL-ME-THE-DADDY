@@ -68,7 +68,14 @@ def find_referenced_files(output: str, root: Path, allow_extensions: Iterable[st
     found: list[Path] = []
     exts = tuple(allow_extensions)
 
-    for match in re.findall(r"([A-Za-z0-9_./\\-]+\.(?:py|md|yml|yaml|json|txt|toml))", output):
+    normalized_exts = [ext.lstrip(".") for ext in exts if isinstance(ext, str) and ext.strip()]
+    if not normalized_exts:
+        return found
+
+    ext_pattern = "|".join(re.escape(ext) for ext in normalized_exts)
+    pattern = rf"([A-Za-z0-9_./\\-]+\.(?:{ext_pattern}))"
+
+    for match in re.findall(pattern, output):
         try:
             p = _safe_target(root, match)
         except Exception:
