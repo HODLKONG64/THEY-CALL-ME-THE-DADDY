@@ -411,17 +411,15 @@ class WakeReviewer:
 
         return False
 
-    def _existing_file_bytes(self, repo_root: Path, path: str) -> int:
+    def _existing_file_text(self, repo_root: Path, path: str) -> str:
         normalized = self._normalize_path(path)
         if not normalized:
-            return 0
-        target = repo_root / normalized
-        try:
-            if target.exists() and target.is_file():
-                return len(target.read_text(encoding="utf-8", errors="ignore").encode("utf-8"))
-        except Exception:
-            return 0
-        return 0
+            return ""
+        return self._read_text(repo_root / normalized)
+
+    def _existing_file_bytes(self, repo_root: Path, path: str) -> int:
+        text = self._existing_file_text(repo_root, path)
+        return len(text.encode("utf-8", errors="ignore"))
 
     def _is_runtime_helper_shrink_replace(self, repo_root: Path, patch: PatchAction) -> bool:
         normalized = self._normalize_path(getattr(patch, "path", ""))
@@ -437,6 +435,27 @@ class WakeReviewer:
 
         new_bytes = len(new_content.encode("utf-8", errors="ignore"))
         return new_bytes < old_bytes
+
+    def _regex_patch_matches_current_file(self, repo_root: Path, patch: PatchAction) -> bool:
+        if getattr(patch, "operation", "") != "regex_replace":
+            return True
+
+        normalized = self._normalize_path(getattr(patch, "path", ""))
+        if not normalized:
+            return False
+
+        pattern = getattr(patch, "pattern", None)
+        if not pattern:
+            return False
+
+        existing_text = self._existing_file_text(repo_root, normalized)
+        if not existing_text:
+            return False
+
+        try:
+            return re.search(pattern, existing_text, flags=re.MULTILINE | re.DOTALL) is not None
+        except re.error:
+            return False
 
     def _filter_low_value_actions(
         self,
@@ -462,6 +481,8 @@ class WakeReviewer:
 
             invalid_paths: list[str] = []
             shrink_replace_paths: list[str] = []
+            missing_regex_anchor_paths: list[str] = []
+
             for patch in action.patches or []:
                 patch_path = self._normalize_path(getattr(patch, "path", ""))
                 if not self._is_allowed_patch_path(patch_path, tracked_files):
@@ -469,6 +490,9 @@ class WakeReviewer:
                     continue
                 if self._is_runtime_helper_shrink_replace(repo_root, patch):
                     shrink_replace_paths.append(patch_path)
+                    continue
+                if not self._regex_patch_matches_current_file(repo_root, patch):
+                    missing_regex_anchor_paths.append(patch_path)
 
             if invalid_paths:
                 removed_notes.append(
@@ -479,6 +503,12 @@ class WakeReviewer:
             if shrink_replace_paths:
                 removed_notes.append(
                     f"Blocked shrink-replace action against existing runtime helper: {action.title} -> {', '.join(shrink_replace_paths)}"
+                )
+                continue
+
+            if missing_regex_anchor_paths:
+                removed_notes.append(
+                    f"Blocked regex_replace action whose pattern does not match current file: {action.title} -> {', '.join(missing_regex_anchor_paths)}"
                 )
                 continue
 
@@ -604,6 +634,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
                 "Prefer allowlisted runtime helpers when reviewer drift is detected.",
                 "Do not broaden scope when verification is failing.",
                 "Do not shrink-replace an existing runtime helper file.",
+                "Do not propose regex_replace unless the pattern exists in the current file.",
             ],
         )
 
@@ -623,6 +654,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             "Derived from reviewer-proposed self-evolution action.",
             "Keep the change bounded and verification-driven.",
             "Do not use replace_file to shrink an existing runtime helper.",
+            "Do not use regex_replace unless the pattern matches the current file.",
         ]
 
         return PlannedWorkItem(
@@ -727,7 +759,7 @@ Rules:
 - If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
 - Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
 - CRITICAL: if an allowlisted runtime helper file already exists, do not propose replace_file with smaller content.
-- CRITICAL: for an existing runtime helper file, either use regex_replace or leave self_evolution_actions empty.
+- CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -859,7 +891,7 @@ Repository snapshot:
                     "Do not target banned self-evolution paths. "
                     "Prefer allowlisted runtime helper paths for observability improvements. "
                     "For an existing runtime helper file, do not use replace_file with smaller content. "
-                    "For an existing runtime helper file, prefer regex_replace or no action. "
+                    "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
