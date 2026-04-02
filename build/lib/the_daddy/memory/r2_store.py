@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ..config import Settings
 
@@ -14,16 +14,27 @@ class R2Store:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.bucket = settings.r2_bucket
-        self.key = "sam-memory.json"
-        self.local_path = settings.local_state_dir / "sam-memory.json"
+        self.key = getattr(settings, "memory_file_name", "sam-memory.json")
+        self.local_path = settings.local_state_dir / self.key
 
-        self.s3 = boto3.client(
-            "s3",
-            endpoint_url=settings.r2_endpoint_url,
-            aws_access_key_id=settings.r2_access_key_id,
-            aws_secret_access_key=settings.r2_secret_access_key,
-            region_name=settings.r2_region,
+        self.enabled = all(
+            [
+                settings.r2_endpoint_url,
+                settings.r2_access_key_id,
+                settings.r2_secret_access_key,
+                settings.r2_bucket,
+            ]
         )
+
+        self.client = None
+        if self.enabled:
+            self.client = boto3.client(
+                "s3",
+                endpoint_url=settings.r2_endpoint_url,
+                aws_access_key_id=settings.r2_access_key_id,
+                aws_secret_access_key=settings.r2_secret_access_key,
+                region_name=settings.r2_region,
+            )
 
     def _read_local(self) -> dict[str, Any]:
         try:
@@ -38,25 +49,43 @@ class R2Store:
         self.local_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def load(self) -> dict[str, Any]:
+        if not self.enabled or self.client is None:
+            return self._read_local()
+
         try:
-            response = self.s3.get_object(Bucket=self.bucket, Key=self.key)
-            body = response["Body"].read().decode("utf-8")
-            data = json.loads(body)
-            self._write_local(data)
-            return data
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "NoSuchKey":
+            response = self.client.get_object(Bucket=self.bucket, Key=self.key)
+            raw = response["Body"].read().decode("utf-8")
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                self._write_local(data)
+                return data
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in {"NoSuchKey", "404", "NoSuchBucket"}:
                 return self._read_local()
+        except (BotoCoreError, json.JSONDecodeError, UnicodeDecodeError):
             return self._read_local()
         except Exception:
             return self._read_local()
 
+        return self._read_local()
+
     def save(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            raise TypeError("R2Store.save expects a dict")
+
         self._write_local(data)
-        body = json.dumps(data, indent=2)
-        self.s3.put_object(
-            Bucket=self.bucket,
-            Key=self.key,
-            Body=body.encode("utf-8"),
-            ContentType="application/json",
-        )
+
+        if not self.enabled or self.client is None:
+            return
+
+        body = json.dumps(data, indent=2).encode("utf-8")
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self.key,
+                Body=body,
+                ContentType="application/json",
+            )
+        except Exception:
+            return

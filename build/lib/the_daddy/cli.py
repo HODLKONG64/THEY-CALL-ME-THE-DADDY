@@ -1,60 +1,75 @@
 from __future__ import annotations
 
-import argparse
 import json
+import sys
 from pathlib import Path
 
+from .config import get_settings
 from .engine import DaddyEngine
-from .logging_utils import console
-from .models import ExternalProposal
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="daddy", description="The Daddy debugging swarm")
-    sub = parser.add_subparsers(dest="command", required=True)
+def _json_default(obj):
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json")
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-    sub.add_parser("run", help="Run full wake-review-debug cycle")
 
-    submit = sub.add_parser("submit-proposal", help="Submit unknown external agent proposal for vetting")
-    submit.add_argument("--agent-id", required=True)
-    submit.add_argument("--file", required=True, help="Path to proposal JSON file")
-    submit.add_argument("--title", default="External proposal")
-    submit.add_argument("--summary", default="Imported from file")
+def _print_run_summary(record) -> None:
+    payload = {
+        "run_id": record.run_id,
+        "command": record.command,
+        "selected_mode": getattr(record, "selected_mode", "unknown"),
+        "success": record.success,
+        "summary": record.summary,
+        "patch_count": len(getattr(record, "patches_applied", []) or []),
+        "backlog_updates": getattr(record, "backlog_updates", []) or [],
+        "repo_fingerprint": getattr(record, "repo_fingerprint", {}) or {},
+        "verification": getattr(record, "verification", None),
+    }
 
-    inspect = sub.add_parser("memory", help="Print current memory snapshot")
-    inspect.add_argument("--pretty", action="store_true")
+    architecture_review = getattr(record, "architecture_review", None)
+    if architecture_review is not None:
+        payload["architecture_review"] = {
+            "risk_level": getattr(architecture_review, "risk_level", ""),
+            "self_evolution_actions": len(getattr(architecture_review, "self_evolution_actions", []) or []),
+            "build_actions": len(getattr(architecture_review, "build_actions", []) or []),
+            "architecture_plans": len(getattr(architecture_review, "architecture_plans", []) or []),
+            "execution_notes": getattr(architecture_review, "execution_notes", []) or [],
+            "backlog_items": getattr(architecture_review, "backlog_items", []) or [],
+        }
 
-    return parser
+        plans = getattr(architecture_review, "architecture_plans", []) or []
+        if plans:
+            payload["architecture_plan_titles"] = [getattr(p, "title", "") for p in plans]
+            payload["architecture_plan_patch_counts"] = [
+                len(getattr(p, "patch_bundle", []) or []) for p in plans
+            ]
+
+    print(json.dumps(payload, indent=2, default=_json_default))
 
 
 def main() -> int:
-    args = build_parser().parse_args()
-    engine = DaddyEngine()
+    settings = get_settings()
 
-    if args.command == "run":
-        record = engine.run()
-        console.print_json(data=record.model_dump(mode="json"))
-        return 0 if record.success else 1
+    if len(sys.argv) < 2:
+        print("Usage: python -m src.the_daddy.cli run", file=sys.stderr)
+        return 2
 
-    if args.command == "submit-proposal":
-        payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
-        proposal = ExternalProposal(
-            agent_id=args.agent_id,
-            title=args.title,
-            summary=args.summary,
-            payload=payload,
-            proposed_changes=payload.get("proposed_changes", []) if isinstance(payload, dict) else [],
-        )
-        result = engine.vet_external_proposal(proposal)
-        console.print_json(data=result)
-        return 0
+    command = sys.argv[1].strip().lower()
 
-    if args.command == "memory":
-        data = engine.memory.state.model_dump(mode="json")
-        if args.pretty:
-            console.print_json(data=data)
-        else:
-            print(json.dumps(data))
-        return 0
+    if command != "run":
+        print(f"Unknown command: {command}", file=sys.stderr)
+        return 2
 
-    return 1
+    engine = DaddyEngine(settings)
+    record = engine.run()
+
+    _print_run_summary(record)
+
+    return 0 if getattr(record, "success", False) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 def utc_now_iso() -> str:
@@ -125,12 +125,19 @@ class VettingDecision(BaseModel):
 
 
 class AgentReputation(BaseModel):
-    agent_id: str
-    score: int = 0
-    accepted: int = 0
-    rejected: int = 0
+    model_config = ConfigDict(populate_by_name=True)
+
+    agent_id: str = Field(validation_alias=AliasChoices("agent_id", "agent_name"))
+    trust_score: int = Field(default=50, validation_alias=AliasChoices("trust_score", "score"))
+    accepted_count: int = Field(default=0, validation_alias=AliasChoices("accepted_count", "accepted"))
+    staged_count: int = 0
+    rejected_count: int = Field(default=0, validation_alias=AliasChoices("rejected_count", "rejected"))
     impact: Literal["low", "medium", "high"] = "low"
     updated_at: str = Field(default_factory=utc_now_iso)
+
+
+Reputation = AgentReputation
+VetDecision = VettingDecision
 
 
 class FailurePatternRecord(BaseModel):
