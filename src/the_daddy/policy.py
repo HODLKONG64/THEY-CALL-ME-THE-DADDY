@@ -68,13 +68,6 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/git_tools.py",
 }
 
-# ✅ ONLY THESE NEW FILES MAY BE CREATED BY SAFE SELF-EVOLUTION
-SAFE_NEW_FILE_ALLOWLIST = {
-    "src/the_daddy/runtime/trace_summary.py",
-    "src/the_daddy/runtime/reviewer_fallback.py",
-    "src/the_daddy/runtime/architecture_probe.py",
-}
-
 
 def _normalize_path(path: str) -> str:
     normalized = (path or "").strip().replace("\\", "/")
@@ -108,30 +101,21 @@ def _is_blocked_path(path: str) -> list[str]:
 def _looks_like_hallucinated_path(path: str) -> bool:
     normalized = _normalize_path(path)
 
-    # The real reviewer file lives in agents/reviewer.py.
-    # Block invented near-miss paths like src/the_daddy/reviewer.py.
+    # Block invented near-miss path.
     if normalized == "src/the_daddy/reviewer.py":
         return True
 
-    # Runtime helpers are allowed, protected files are handled elsewhere.
-    if normalized.startswith("src/the_daddy/runtime/"):
-        return False
+    # Protected files are handled elsewhere.
     if normalized in PROTECTED_CORE_FILES:
         return False
 
-    # Under src/the_daddy/, brand new top-level modules are too risky.
-    # Safe lane should not invent arbitrary modules beside known package layout.
+    # Arbitrary new top-level modules under src/the_daddy/ are suspicious.
     if normalized.startswith("src/the_daddy/"):
         remainder = normalized[len("src/the_daddy/"):]
         if "/" not in remainder:
             return True
 
     return False
-
-
-def _is_safe_new_file_target(path: str) -> bool:
-    normalized = _normalize_path(path)
-    return normalized in SAFE_NEW_FILE_ALLOWLIST
 
 
 def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
@@ -165,11 +149,6 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
         # 🔒 HALLUCINATED / NEAR-MISS PATHS
         if _looks_like_hallucinated_path(path):
             reasons.append(f"Blocked hallucinated or near-miss path: {path}")
-
-        # 🔒 SAFE LANE MAY ONLY CREATE KNOWN RUNTIME HELPERS
-        if patch.operation == "replace_file":
-            if path.startswith("src/the_daddy/runtime/") and not _is_safe_new_file_target(path):
-                reasons.append(f"Blocked unapproved new runtime helper path: {path}")
 
     if reasons:
         return PolicyResult(False, "reject", reasons)
