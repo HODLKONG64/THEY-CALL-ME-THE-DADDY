@@ -3,43 +3,69 @@ from types import SimpleNamespace
 from the_daddy.agents.improvement_planner import ImprovementPlanner
 
 
-class DummyMemory:
-    def __init__(self, planned_work=None, failure_patterns=None):
-        self.planned_work = [] if planned_work is None else planned_work
-        self.failure_patterns = {} if failure_patterns is None else failure_patterns
+class _FailurePattern:
+    def __init__(self, failure_count, updated_at="2026-01-01T00:00:00+00:00"):
+        self.failure_count = failure_count
+        self.updated_at = updated_at
 
 
-def test_decide_mode_prefers_repair_when_review_fields_are_missing_lists():
+def _memory(*, planned_work=None, failure_patterns=None):
+    return SimpleNamespace(
+        planned_work=[] if planned_work is None else planned_work,
+        failure_patterns={} if failure_patterns is None else failure_patterns,
+    )
+
+
+def _review(*, self_evolution_actions=None, architecture_plans=None):
+    return SimpleNamespace(
+        self_evolution_actions=[] if self_evolution_actions is None else self_evolution_actions,
+        architecture_plans=[] if architecture_plans is None else architecture_plans,
+    )
+
+
+def test_decide_mode_prefers_architecture_when_plans_exist_and_failure_threshold_met():
     planner = ImprovementPlanner()
-    memory = DummyMemory(planned_work=[])
-    review = SimpleNamespace(architecture_plans=[], self_evolution_actions=[])
+    memory = _memory(failure_patterns={"hotspot": _FailurePattern(3)})
+    review = _review(architecture_plans=[{"title": "plan"}])
+
+    assert planner.decide_mode(memory, review) == "architecture"
+
+
+def test_decide_mode_prefers_build_when_safe_review_work_exists():
+    planner = ImprovementPlanner()
+    memory = _memory()
+    review = _review(self_evolution_actions=[{"title": "safe action"}])
+
+    assert planner.decide_mode(memory, review) == "build"
+
+
+def test_decide_mode_prefers_build_when_planned_work_exists_without_review_actions():
+    planner = ImprovementPlanner()
+    memory = _memory(planned_work=[{"title": "queued"}])
+    review = _review()
+
+    assert planner.decide_mode(memory, review) == "build"
+
+
+def test_decide_mode_falls_back_to_repair_when_review_fields_are_none():
+    planner = ImprovementPlanner()
+    memory = _memory()
+    review = SimpleNamespace(self_evolution_actions=None, architecture_plans=None)
 
     assert planner.decide_mode(memory, review) == "repair"
 
 
-def test_decide_mode_uses_build_when_safe_review_actions_exist_even_if_memory_is_minimal():
+def test_decide_mode_falls_back_to_repair_for_scalar_placeholder_review_fields():
     planner = ImprovementPlanner()
-    memory = DummyMemory()
-    review = SimpleNamespace(
-        architecture_plans=[],
-        self_evolution_actions=[SimpleNamespace(risk="safe", patches=[object()])],
-    )
+    memory = _memory()
+    review = SimpleNamespace(self_evolution_actions=False, architecture_plans=0)
 
-    assert planner.decide_mode(memory, review) == "build"
+    assert planner.decide_mode(memory, review) == "repair"
 
 
-def test_decide_mode_uses_build_when_memory_has_planned_work_and_review_is_empty():
+def test_decide_mode_ignores_architecture_plan_when_failure_threshold_not_met():
     planner = ImprovementPlanner()
-    memory = DummyMemory(planned_work=[SimpleNamespace(state="proposed")])
-    review = SimpleNamespace(architecture_plans=[], self_evolution_actions=[])
+    memory = _memory(failure_patterns={"hotspot": _FailurePattern(2)})
+    review = _review(architecture_plans=[{"title": "plan"}])
 
-    assert planner.decide_mode(memory, review) == "build"
-
-
-def test_decide_mode_handles_wrapped_memory_state_shape():
-    planner = ImprovementPlanner()
-    state = DummyMemory(planned_work=[SimpleNamespace(state="active")])
-    wrapped_memory = SimpleNamespace(state=state)
-    review = SimpleNamespace(architecture_plans=[], self_evolution_actions=[])
-
-    assert planner.decide_mode(wrapped_memory, review) == "build"
+    assert planner.decide_mode(memory, review) == "repair"
