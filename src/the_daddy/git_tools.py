@@ -72,8 +72,6 @@ class GitBranchExecutor:
         return self.current_branch()
 
     def add_safe_paths(self, paths: Iterable[str]) -> None:
-        # Errors from git add are no longer silently swallowed.
-        # If staging fails the caller will see the exception.
         for path in paths:
             self._run("add", path)
 
@@ -105,31 +103,37 @@ class GitBranchExecutor:
         for path in paths:
             if not str(path).endswith(".py"):
                 continue
+
             full = self.repo_root / path
+
             if not full.exists():
                 raise FileNotFoundError(f"Pre-push syntax check: file not found: {path}")
+
             result = subprocess.run(
                 ["python", "-m", "py_compile", str(full)],
                 capture_output=True,
                 text=True,
             )
+
             if result.returncode != 0:
                 raise ValueError(
-                    f"Pre-push syntax check failed for {path}:
-{result.stderr.strip()}"
+                    f"Pre-push syntax check failed for {path}:\\n{result.stderr.strip()}"
                 )
 
     def commit_safe_branch_changes(self, run_id: str, safe_paths: Iterable[str]) -> str | None:
         paths = list(safe_paths)
         branch_name = self.branch_for_architecture_run(run_id)
+
         self.create_or_checkout_branch(branch_name)
         self.add_safe_paths(paths)
+
         committed = self.commit(f"auto: daddy architecture plan {run_id}")
         if not committed:
             return None
-        # Syntax-check all .py files before pushing
+
         self._verify_py_files(paths)
         self.push(branch_name)
+
         return branch_name
 
     def create_pull_request(
@@ -143,6 +147,7 @@ class GitBranchExecutor:
             return None
 
         url = f"https://api.github.com/repos/{self.github_repo}/pulls"
+
         payload = json.dumps(
             {
                 "title": title,
@@ -176,6 +181,7 @@ class GitBranchExecutor:
             return None
 
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
+
         payload = json.dumps(
             {
                 "commit_title": commit_title,
@@ -210,8 +216,10 @@ class GitBranchExecutor:
         base_branch: str = "main",
     ) -> dict | None:
         branch_name = self.commit_safe_branch_changes(run_id, safe_paths)
+
         if not branch_name:
             return None
+
         return self.create_pull_request(
             branch_name=branch_name,
             title=title,
