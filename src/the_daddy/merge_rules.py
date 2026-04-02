@@ -53,3 +53,5 @@ class AutoMergeJudge:
             reasons.append(f"Unsafe files touched: {', '.join(unsafe)}")
 
         return (len(reasons) == 0, reasons)
+
+# daddy-review-guard
