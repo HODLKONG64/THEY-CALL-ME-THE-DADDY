@@ -25,10 +25,32 @@ class DaddyEngine:
         self.settings = settings or get_settings()
         self.store = R2Store(self.settings)
         self.memory = MemoryRepository(self.store)
+
         self.reviewer = WakeReviewer(self.settings)
         self.planner = ImprovementPlanner()
         self.diagnoser = Diagnoser(self.settings)
-        self.git_tools = GitBranchExecutor(self.settings.target_root)
+
+        # 👇 NEW: Git tools with PR support
+        self.git_tools = GitBranchExecutor(
+            repo_root=self.settings.target_root,
+            github_token=self.settings.openai_api_key,  # reuse env (we’ll improve later if needed)
+            github_repo=self._detect_repo(),
+        )
+
+    def _detect_repo(self) -> str:
+        try:
+            url = subprocess.check_output(
+                ["git", "config", "--get", "remote.origin.url"],
+                cwd=self.settings.target_root,
+                text=True,
+            ).strip()
+
+            # supports https + ssh
+            if "github.com" in url:
+                return url.split("github.com/")[1].replace(".git", "")
+        except Exception:
+            pass
+        return ""
 
     def repo_fingerprint(self):
         try:
@@ -69,10 +91,7 @@ class DaddyEngine:
             )
         return applied
 
-    def _stage_architecture_branch(self, run_id: str):
-        if not self.settings.enable_architecture_lane:
-            return None
-
+    def _execute_architecture_pr(self, run_id: str):
         pending = self.memory.get_pending_architecture()
         if not pending:
             return None
@@ -83,25 +102,47 @@ class DaddyEngine:
             return None
 
         safe_paths = set()
+
         for patch in plan.patch_bundle:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
             safe_paths.add(patch.path)
 
-        branch_name = self.git_tools.commit_safe_branch_changes(run_id, sorted(safe_paths))
-        if branch_name:
-            self.memory.update_architecture_status(plan.title, "active")
-            return {
-                "title": plan.title,
-                "branch": branch_name,
-                "route": plan.route,
-                "files": sorted(safe_paths),
-            }
+        pr = self.git_tools.commit_push_and_open_pr(
+            run_id=run_id,
+            safe_paths=sorted(safe_paths),
+            title=f"[AUTO] {plan.title}",
+            body=f"""
+Auto-generated architecture upgrade.
 
-        return None
+### Summary
+{plan.summary}
+
+### Rationale
+{plan.rationale}
+
+### Files Changed
+{", ".join(safe_paths)}
+
+### Safety
+- bounded patch set
+- no infra changes
+- no secrets
+""",
+        )
+
+        if pr:
+            self.memory.update_architecture_status(plan.title, "active")
+
+        return pr
 
     def run(self):
         run_id = make_run_id()
-        record = RunRecord(run_id=run_id, command=self.settings.command)
+
+        record = RunRecord(
+            run_id=run_id,
+            command=self.settings.command,
+        )
+
         record.repo_fingerprint = self.repo_fingerprint()
 
         review = self.reviewer.review(
@@ -109,8 +150,10 @@ class DaddyEngine:
             repo_root=self.settings.target_root,
             recent_summary="",
         )
+
         self.memory.add_architecture_review(review)
 
+        # store build + architecture ideas
         for item in review.build_actions:
             self.memory.add_planned_work(item)
 
@@ -120,33 +163,37 @@ class DaddyEngine:
         mode = self.choose_mode()
         record.selected_mode = mode
 
-        flat_patches = []
+        # flatten patches
+        patches = []
         for action in review.self_evolution_actions:
-            flat_patches.extend(action.patches)
+            patches.extend(action.patches)
 
-        record.patches_applied.extend(self._apply_safe_patches(run_id, mode, flat_patches))
+        record.patches_applied.extend(
+            self._apply_safe_patches(run_id, mode, patches)
+        )
 
-        architecture_branch = None
+        # 👇 NEW: architecture → PR
+        pr = None
         if mode == "architecture":
-            architecture_branch = self._stage_architecture_branch(run_id)
-            if architecture_branch:
-                record.backlog_updates.append(
-                    f"Architecture branch created: {architecture_branch['branch']} for plan {architecture_branch['title']}"
-                )
+            pr = self._execute_architecture_pr(run_id)
+            if pr:
+                record.backlog_updates.append(f"PR created: {pr.get('html_url', '')}")
 
+        # run tests
         result = run_command(self.settings.command, cwd=self.settings.target_root)
+
         record.verification = result
         record.success = result.returncode == 0
         record.summary = (
-            f"Command succeeded on attempt 1."
-            if record.success
-            else f"Command failed with return code {result.returncode}."
+            "Success" if record.success else f"Failed ({result.returncode})"
         )
 
+        # failure learning
         if not record.success:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
-            self.memory.record_failure_pattern(sig, {"diagnosis": "run failure", "route": mode}, False)
+            self.memory.record_failure_pattern(sig, {"route": mode}, False)
 
+        # metrics
         self.memory.record_metrics(
             MetricsLedgerEntry(
                 run_id=run_id,
@@ -163,4 +210,5 @@ class DaddyEngine:
 
         self.memory.add_run(record)
         self.memory.save()
+
         return record
