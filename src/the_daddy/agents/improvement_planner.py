@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..models import ArchitectureReview, MemoryState, SelfEvolutionAction
 
@@ -14,11 +14,24 @@ class PlannedSelfEvolution:
 
 
 class ImprovementPlanner:
+    def _safe_list(self, value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, (str, bytes, dict)):
+            return []
+        try:
+            return list(value)
+        except TypeError:
+            return []
+
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
 
-        for item in list(review.recommendations) + list(review.backlog_items):
-            if item and item not in memory.backlog:
+        recommendations = self._safe_list(getattr(review, "recommendations", None))
+        backlog_items = self._safe_list(getattr(review, "backlog_items", None))
+
+        for item in recommendations + backlog_items:
+            if isinstance(item, str) and item and item not in memory.backlog:
                 memory.backlog.append(item)
                 additions.append(item)
 
@@ -38,12 +51,12 @@ class ImprovementPlanner:
                 reasons=["Self-evolution disabled"],
             )
 
+        raw_actions = self._safe_list(getattr(review, "self_evolution_actions", None))
         safe_actions = [
-            a for a in review.self_evolution_actions
-            if a.risk == "safe" and a.patches
+            a for a in raw_actions
+            if getattr(a, "risk", None) == "safe" and getattr(a, "patches", None)
         ]
 
-        # 🔥 CRITICAL FIX — ensure at least 1 action exists
         if not safe_actions:
             return PlannedSelfEvolution(
                 enabled=True,
@@ -62,7 +75,7 @@ class ImprovementPlanner:
 
     def select_build_work(self, planned_work: Iterable) -> object | None:
         candidates = [
-            item for item in planned_work
+            item for item in self._safe_list(planned_work)
             if getattr(item, "state", "") in {"proposed", "active"}
         ]
         if not candidates:
@@ -90,13 +103,17 @@ class ImprovementPlanner:
     def decide_mode(self, memory, review: ArchitectureReview) -> str:
         state: MemoryState = memory.state if hasattr(memory, "state") else memory
 
-        if review.architecture_plans and self.should_trigger_architecture(state):
+        architecture_plans = self._safe_list(getattr(review, "architecture_plans", None))
+        self_evolution_actions = self._safe_list(getattr(review, "self_evolution_actions", None))
+        planned_work = self._safe_list(getattr(state, "planned_work", None))
+
+        if architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
 
-        if review.self_evolution_actions:
+        if self_evolution_actions:
             return "build"
 
-        if state.planned_work:
+        if planned_work:
             return "build"
 
         return "repair"
