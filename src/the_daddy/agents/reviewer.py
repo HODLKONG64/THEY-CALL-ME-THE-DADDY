@@ -28,18 +28,18 @@ class WakeReviewer:
                 continue
 
             tracked.append(rel)
-            if len(preview_files) < 30 and path.suffix in {".py", ".md", ".yml", ".yaml", ".toml", ".json"}:
+            if len(preview_files) < 40 and path.suffix in {".py", ".md", ".yml", ".yaml", ".toml", ".json"}:
                 try:
                     preview_files.append(
                         {
                             "path": rel,
-                            "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:4000],
+                            "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:6000],
                         }
                     )
                 except Exception:
                     continue
 
-            if len(tracked) >= 200:
+            if len(tracked) >= 250:
                 break
 
         return {
@@ -50,9 +50,10 @@ class WakeReviewer:
     def _fallback_action(self, repo_root: Path) -> SelfEvolutionAction:
         architecture_path = repo_root / "ARCHITECTURE.md"
         marker = (
-            "\n\n## Wake Review Auto-Improvement Notes\n"
-            "- The system should prefer bounded low-risk code patches when it can identify a concrete mismatch.\n"
-            "- If no low-risk code patch is available, the reviewer may emit a documentation patch instead of returning no action.\n"
+            "\n\n## Wake Review Aggressive Mode\n"
+            "- The wake reviewer is allowed to emit small multi-file defensive code patches when a concrete bounded improvement is visible.\n"
+            "- It should prefer executable code patches over documentation-only patches when confidence is medium or higher.\n"
+            "- It must still avoid broad rewrites, dependency explosions, secrets, infra changes, or unbounded autonomy.\n"
         )
 
         if architecture_path.exists():
@@ -60,17 +61,17 @@ class WakeReviewer:
                 current = architecture_path.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 current = ""
-            if "## Wake Review Auto-Improvement Notes" not in current:
+            if "## Wake Review Aggressive Mode" not in current:
                 return SelfEvolutionAction(
-                    title="Document safe code-patch fallback",
-                    description="Append a bounded wake-review note to architecture docs so the system records a safe improvement when no concrete low-risk code patch is available.",
+                    title="Document aggressive wake-review mode",
+                    description="Record the stronger code-patch posture in architecture docs when no bounded code patch is confidently available.",
                     risk="safe",
                     patches=[
                         PatchAction(
                             path="ARCHITECTURE.md",
                             operation="replace_file",
                             new_content=current + marker,
-                            description="Append safe code-patch fallback notes to architecture documentation.",
+                            description="Append aggressive wake-review operating notes to architecture documentation.",
                         )
                     ],
                 )
@@ -82,23 +83,23 @@ class WakeReviewer:
                 readme = readme_path.read_text(encoding="utf-8", errors="ignore")
             except Exception:
                 readme = ""
-        if "Wake-review safe code patch fallback" not in readme:
+        if "Wake-review aggressive mode" not in readme:
             return SelfEvolutionAction(
-                title="Document wake-review code-patch fallback in README",
-                description="Add a small README note documenting that wake review should emit a low-risk code patch when possible and a doc patch otherwise.",
+                title="Document aggressive wake-review mode in README",
+                description="Add a small README note documenting that wake review now prefers bounded executable code patches over documentation fallback.",
                 risk="safe",
                 patches=[
                     PatchAction(
                         path="README.md",
                         operation="replace_file",
-                        new_content=readme + "\n\n### Wake-review safe code patch fallback\nThe wake reviewer should emit a low-risk code patch when it can identify a concrete bounded improvement. If not, it should emit a documentation fallback rather than no patch.\n",
-                        description="Append bounded wake-review code-patch fallback note to README.",
+                        new_content=readme + "\n\n### Wake-review aggressive mode\nThe wake reviewer now prefers bounded executable code patches, including small multi-file defensive fixes, when a concrete low-risk improvement is visible.\n",
+                        description="Append aggressive wake-review note to README.",
                     )
                 ],
             )
 
         return SelfEvolutionAction(
-            title="No-op safe fallback unavailable",
+            title="No safe fallback available",
             description="No safe documentation target was available for fallback patching.",
             risk="recommend",
             patches=[],
@@ -106,35 +107,34 @@ class WakeReviewer:
 
     def _build_prompt(self, memory_snapshot: dict[str, Any], repo_root: Path, recent_summary: str) -> str:
         repo_snapshot = self._repo_snapshot(repo_root)
-        memory_json = json.dumps(memory_snapshot, indent=2)[:18000]
-        repo_json = json.dumps(repo_snapshot, indent=2)[:24000]
+        memory_json = json.dumps(memory_snapshot, indent=2)[:22000]
+        repo_json = json.dumps(repo_snapshot, indent=2)[:30000]
 
         return f"""You are the wake-review architecture agent for a bounded defensive repository-maintenance system.
 
-Your job on every run:
+You are operating in AGGRESSIVE BUT BOUNDED mode.
+
+Mission on every run:
 1. audit the current repository and memory state
-2. identify structural strengths and weaknesses
+2. identify structural weaknesses, repeated drift, and small concrete defects
 3. recommend improvements
-4. produce at least one bounded self-evolution action whenever a safe explicit patch can be proposed
+4. emit at least one executable self-evolution action whenever a safe bounded patch is possible
 
-Primary objective:
-- Prefer a REAL LOW-RISK CODE PATCH over a documentation patch when you can identify a concrete mismatch, missing method, naming inconsistency, small defensive guard, safe helper, or similar bounded improvement.
-- Only fall back to docs if you truly cannot justify a concrete low-risk code edit.
+Aggressive mode rules:
+- Prefer REAL CODE PATCHES over documentation patches.
+- You may emit SMALL MULTI-FILE PATCHES when they are tightly related and bounded.
+- You may align naming mismatches, add missing helpers, add tiny defensive guard clauses, add repo fingerprints, add persistence metadata, add circuit-breaker checks, add drift signals, add commit-gating helpers, or fix clearly visible schema mismatches.
+- Prefer medium-confidence bounded execution over passive advisory output.
+- Avoid broad rewrites, dependency explosions, secrets, destructive shell commands, policy bypass, infrastructure mutations, or speculative architecture replacement.
+- Keep every patch surgical, reviewable, and low-risk.
+- If a code patch is possible, do not choose a doc patch instead.
+- Only use documentation fallback when there is truly no concrete bounded code improvement visible.
 
-Critical rules:
-- DO NOT return empty self_evolution_actions unless there is truly no safe bounded patch possible.
-- Every self_evolution_action must contain explicit PatchAction objects in the field `patches`.
-- A SelfEvolutionAction is NOT a patch by itself. The engine executes the nested `patches`.
-- Prefer surgical code fixes in existing Python files when:
-  - a method name mismatch is visible
-  - a missing helper is obvious
-  - a return-shape mismatch is obvious
-  - a safe guard clause can prevent known runtime failure
-  - a tiny schema alignment fix is visible
-- Keep code patches SMALL and BOUNDED.
-- Avoid broad rewrites, secrets, destructive shell commands, policy bypass, dependency explosions, infra changes, or speculative architecture replacement.
-- If you propose code changes, keep them surgical and low-risk.
-- If you cannot justify a code patch, return a documentation fallback patch instead of no patch.
+Critical structure rules:
+- Every self_evolution_action must contain explicit PatchAction objects in the `patches` field.
+- A SelfEvolutionAction is not itself a patch.
+- Every replace_file action must include the full new file content.
+- Multi-file patches are allowed, but only if the files are directly connected to the same bounded fix.
 
 Return valid JSON only using this exact schema:
 {{
@@ -199,30 +199,41 @@ Repository snapshot:
         review = ArchitectureReview.model_validate(data)
 
         valid_actions: list[SelfEvolutionAction] = []
+        code_patch_found = False
+
         for action in review.self_evolution_actions:
-            if action.patches:
-                valid_actions.append(action)
+            if not action.patches:
+                continue
+            valid_actions.append(action)
+            for patch in action.patches:
+                if str(patch.path).endswith(".py"):
+                    code_patch_found = True
 
         if valid_actions:
             review.self_evolution_actions = valid_actions
-            review.execution_notes.append(
-                "Wake reviewer emitted executable self-evolution patches with code-first preference."
-            )
+            if code_patch_found:
+                review.execution_notes.append(
+                    "Wake reviewer emitted executable code patches in aggressive bounded mode."
+                )
+            else:
+                review.execution_notes.append(
+                    "Wake reviewer emitted executable patches, but they were not code patches."
+                )
             return review
 
         fallback = self._fallback_action(repo_root)
         if fallback.patches:
             review.self_evolution_actions = [fallback]
             review.execution_notes.append(
-                "Fallback safe patch injected because model returned no executable patches."
+                "Fallback patch injected because model returned no executable aggressive-mode patches."
             )
-            if "Wake reviewer returned no executable patches." not in review.weaknesses:
-                review.weaknesses.append("Wake reviewer returned no executable patches.")
-            if "Improve wake reviewer code-patch generation reliability." not in review.backlog_items:
-                review.backlog_items.append("Improve wake reviewer code-patch generation reliability.")
+            if "Wake reviewer returned no executable aggressive-mode patches." not in review.weaknesses:
+                review.weaknesses.append("Wake reviewer returned no executable aggressive-mode patches.")
+            if "Improve aggressive wake reviewer patch generation reliability." not in review.backlog_items:
+                review.backlog_items.append("Improve aggressive wake reviewer patch generation reliability.")
         else:
             review.execution_notes.append(
-                "No safe fallback patch could be generated after empty self-evolution output."
+                "No safe fallback patch could be generated after empty aggressive-mode output."
             )
 
         return review
