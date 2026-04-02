@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict
+import hashlib
 
 from ..models import (
     ArchitectureReview,
@@ -29,6 +30,10 @@ class MemoryRepository:
     def _now(self) -> str:
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
+
+    # ---------- FIX: ADD FINGERPRINT ----------
+    def fingerprint(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
     # --- architecture reviews ---
 
