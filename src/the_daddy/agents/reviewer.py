@@ -50,6 +50,12 @@ SAFE_NEW_FILE_ALLOWLIST = {
     ARCHITECTURE_RUNTIME_PATH,
 }
 
+ALLOWLISTED_RUNTIME_HELPERS = {
+    PROACTIVE_RUNTIME_PATH,
+    FALLBACK_RUNTIME_PATH,
+    ARCHITECTURE_RUNTIME_PATH,
+}
+
 BANNED_INVENTED_MODULE_FILENAMES = {
     "logging_utils.py",
     "reviewer.py",
@@ -405,10 +411,38 @@ class WakeReviewer:
 
         return False
 
+    def _existing_file_bytes(self, repo_root: Path, path: str) -> int:
+        normalized = self._normalize_path(path)
+        if not normalized:
+            return 0
+        target = repo_root / normalized
+        try:
+            if target.exists() and target.is_file():
+                return len(target.read_text(encoding="utf-8", errors="ignore").encode("utf-8"))
+        except Exception:
+            return 0
+        return 0
+
+    def _is_runtime_helper_shrink_replace(self, repo_root: Path, patch: PatchAction) -> bool:
+        normalized = self._normalize_path(getattr(patch, "path", ""))
+        if normalized not in ALLOWLISTED_RUNTIME_HELPERS:
+            return False
+        if getattr(patch, "operation", "") != "replace_file":
+            return False
+
+        old_bytes = self._existing_file_bytes(repo_root, normalized)
+        new_content = getattr(patch, "new_content", None)
+        if old_bytes <= 0 or new_content is None:
+            return False
+
+        new_bytes = len(new_content.encode("utf-8", errors="ignore"))
+        return new_bytes < old_bytes
+
     def _filter_low_value_actions(
         self,
         actions: list[SelfEvolutionAction],
         tracked_files: list[str],
+        repo_root: Path,
     ) -> tuple[list[SelfEvolutionAction], list[str]]:
         kept: list[SelfEvolutionAction] = []
         removed_notes: list[str] = []
@@ -427,14 +461,24 @@ class WakeReviewer:
                 continue
 
             invalid_paths: list[str] = []
+            shrink_replace_paths: list[str] = []
             for patch in action.patches or []:
                 patch_path = self._normalize_path(getattr(patch, "path", ""))
                 if not self._is_allowed_patch_path(patch_path, tracked_files):
                     invalid_paths.append(patch_path)
+                    continue
+                if self._is_runtime_helper_shrink_replace(repo_root, patch):
+                    shrink_replace_paths.append(patch_path)
 
             if invalid_paths:
                 removed_notes.append(
                     f"Blocked self-evolution action with non-tracked, banned, or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
+                )
+                continue
+
+            if shrink_replace_paths:
+                removed_notes.append(
+                    f"Blocked shrink-replace action against existing runtime helper: {action.title} -> {', '.join(shrink_replace_paths)}"
                 )
                 continue
 
@@ -559,6 +603,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
                 "Prefer bounded code patches over doc-only churn.",
                 "Prefer allowlisted runtime helpers when reviewer drift is detected.",
                 "Do not broaden scope when verification is failing.",
+                "Do not shrink-replace an existing runtime helper file.",
             ],
         )
 
@@ -577,6 +622,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
         notes = [
             "Derived from reviewer-proposed self-evolution action.",
             "Keep the change bounded and verification-driven.",
+            "Do not use replace_file to shrink an existing runtime helper.",
         ]
 
         return PlannedWorkItem(
@@ -680,6 +726,8 @@ Rules:
 - NEVER invent a new module name like logging_utils.py, reviewer.py, helper.py, utils.py, or similar unless that exact path already exists in tracked_files.
 - If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
 - Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
+- CRITICAL: if an allowlisted runtime helper file already exists, do not propose replace_file with smaller content.
+- CRITICAL: for an existing runtime helper file, either use regex_replace or leave self_evolution_actions empty.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -810,6 +858,8 @@ Repository snapshot:
                     "Do not invent new file targets unless they are explicitly allowlisted runtime helper paths. "
                     "Do not target banned self-evolution paths. "
                     "Prefer allowlisted runtime helper paths for observability improvements. "
+                    "For an existing runtime helper file, do not use replace_file with smaller content. "
+                    "For an existing runtime helper file, prefer regex_replace or no action. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -824,6 +874,7 @@ Repository snapshot:
         filtered_actions, action_notes = self._filter_low_value_actions(
             review.self_evolution_actions,
             tracked_files,
+            repo_root,
         )
         review.self_evolution_actions = filtered_actions
         if action_notes:
