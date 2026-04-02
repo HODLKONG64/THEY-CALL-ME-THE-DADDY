@@ -25,37 +25,27 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
 
 @dataclass
 class DaddyMemoryState:
-    """
-    Backward-compatible memory state used by both older tests and newer engine code.
-
-    This class intentionally keeps the shape broad and permissive so the repo can
-    evolve without breaking import-time expectations.
-    """
-
     schema_version: int = MEMORY_SCHEMA_VERSION
     created_at: str = field(default_factory=_utc_now)
     updated_at: str = field(default_factory=_utc_now)
 
-    # Core run history
     runs: list[dict[str, Any]] = field(default_factory=list)
     failures: list[dict[str, Any]] = field(default_factory=list)
     failure_patterns: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    # Reviews / planning
     architecture_reviews: list[dict[str, Any]] = field(default_factory=list)
     latest_architecture_review: dict[str, Any] = field(default_factory=dict)
     build_queue: list[dict[str, Any]] = field(default_factory=list)
     architecture_queue: list[dict[str, Any]] = field(default_factory=list)
     backlog: list[str] = field(default_factory=list)
 
-    # Self-improvement
     self_evolution_history: list[dict[str, Any]] = field(default_factory=list)
     proposed_builds: list[dict[str, Any]] = field(default_factory=list)
 
-    # ✅ FIX: NEW FIELD REQUIRED BY MEMORY
+    # keep known evolving fields (optional but safe)
     improvement_history: list[dict[str, Any]] = field(default_factory=list)
+    quarantine_events: list[dict[str, Any]] = field(default_factory=list)
 
-    # Reputation / agent intelligence
     reputations: dict[str, dict[str, Any]] = field(default_factory=dict)
     drift_warnings: list[dict[str, Any]] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
@@ -63,7 +53,6 @@ class DaddyMemoryState:
     latest_run_summary: dict[str, Any] = field(default_factory=dict)
 
 
-# Alias used by newer code paths
 MemoryState = DaddyMemoryState
 
 
@@ -142,11 +131,7 @@ class MemoryRepository:
         self._state.architecture_queue.append(dict(plan))
         self.save_state()
 
-    def mark_failure_pattern(
-        self,
-        signature: str,
-        details: dict[str, Any] | None = None,
-    ) -> None:
+    def mark_failure_pattern(self, signature: str, details: dict[str, Any] | None = None) -> None:
         if not signature:
             return
         existing = dict(self._state.failure_patterns.get(signature, {}))
@@ -211,7 +196,7 @@ class MemoryRepository:
         merged: dict[str, Any] = asdict(DaddyMemoryState())
         merged.update(raw)
 
-        # ✅ FIX: SAFE schema_version handling
+        # FIX 1: schema_version safe coercion
         raw_version = merged.get("schema_version") or MEMORY_SCHEMA_VERSION
         try:
             if isinstance(raw_version, str) and "." in raw_version:
@@ -221,7 +206,18 @@ class MemoryRepository:
         except Exception:
             merged["schema_version"] = int(MEMORY_SCHEMA_VERSION)
 
-        # Defensive shape repairs
+        # FIX 2: preserve unknown fields (do NOT lose evolution data)
+        allowed_fields = DaddyMemoryState.__dataclass_fields__.keys()
+        extra_fields = {k: v for k, v in merged.items() if k not in allowed_fields}
+
+        if extra_fields:
+            merged.setdefault("notes", {})
+            merged["notes"].setdefault("_extra", {})
+            merged["notes"]["_extra"].update(extra_fields)
+
+        filtered = {k: v for k, v in merged.items() if k in allowed_fields}
+
+        # Defensive repairs
         for key in (
             "runs",
             "failures",
@@ -233,8 +229,8 @@ class MemoryRepository:
             "proposed_builds",
             "drift_warnings",
         ):
-            if not isinstance(merged.get(key), list):
-                merged[key] = []
+            if not isinstance(filtered.get(key), list):
+                filtered[key] = []
 
         for key in (
             "failure_patterns",
@@ -244,10 +240,10 @@ class MemoryRepository:
             "notes",
             "latest_run_summary",
         ):
-            if not isinstance(merged.get(key), dict):
-                merged[key] = {}
+            if not isinstance(filtered.get(key), dict):
+                filtered[key] = {}
 
-        return DaddyMemoryState(**merged)
+        return DaddyMemoryState(**filtered)
 
     def _bump_metric(self, key: str, amount: int = 1) -> None:
         current = self._state.metrics.get(key, 0)
