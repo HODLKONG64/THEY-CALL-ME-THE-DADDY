@@ -42,6 +42,18 @@ def _print_run_summary(record) -> None:
             "execution_notes": getattr(architecture_review, "execution_notes", []) or [],
             "backlog_items": getattr(architecture_review, "backlog_items", []) or [],
         }
+        payload["proposed_self_evolution_actions"] = [
+            {
+                "title": getattr(action, "title", ""),
+                "description": getattr(action, "description", ""),
+                "risk": getattr(action, "risk", ""),
+                "patch_paths": [
+                    getattr(patch, "path", "")
+                    for patch in getattr(action, "patches", []) or []
+                ],
+            }
+            for action in getattr(architecture_review, "self_evolution_actions", []) or []
+        ]
 
         plans = getattr(architecture_review, "architecture_plans", []) or []
         if plans:
