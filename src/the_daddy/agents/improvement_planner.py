@@ -46,6 +46,10 @@ class ImprovementPlanner:
                 continue
             if getattr(patch, "operation", None) not in {"replace_file", "regex_replace"}:
                 continue
+            if patch.operation == "replace_file" and not patch.new_content:
+                continue
+            if patch.operation == "regex_replace" and (not patch.pattern or not patch.replacement):
+                continue
             normalized.append(patch)
         return normalized
 
@@ -146,7 +150,7 @@ class ImprovementPlanner:
 
         candidates.sort(
             key=lambda item: (
-                getattr(item, "priority", 0),
+                -getattr(item, "priority", 0),
                 getattr(item, "created_at", "")
             )
         )
@@ -173,7 +177,7 @@ class ImprovementPlanner:
         if architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
         if self_evolution_actions:
-            return "self_evolution"
+            return "build"
         if self.select_build_work(planned_work):
             return "build"
-        return "none"
+        return "repair"
