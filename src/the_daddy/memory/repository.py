@@ -16,6 +16,10 @@ from ..models import (
     RunRecord,
 )
 
+MEMORY_SCHEMA_VERSION = MemoryState.model_fields["schema_version"].default
+DaddyMemoryState = MemoryState
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
