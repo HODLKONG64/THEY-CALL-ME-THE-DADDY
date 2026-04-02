@@ -57,46 +57,43 @@ class DaddyEngine:
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
 
-        summary = {
+        return {
             "total_score": scored.total_score,
             "recommended_route": scored.recommended_route,
             "reasons": list(scored.reasons),
-            "items": [
-                {
-                    "path": item.path,
-                    "score": item.score,
-                    "reasons": list(item.reasons),
-                }
-                for item in scored.items
-            ],
         }
-
-        return scored, summary
 
     def _apply_safe_patches(self, run_id: str, mode: str, patches: list):
         applied = []
+
         if not patches:
-            return applied, "none", {"total_score": 0.0, "recommended_route": "safe", "reasons": ["no patches"], "items": []}
+            return applied, "none"
 
-        scored, scoring_summary = self._score_patch_set(patches)
+        scoring = self._score_patch_set(patches)
 
-        # Score gate comes before normal policy gate
-        if scored.recommended_route == "reject":
-            return applied, "reject", scoring_summary
+        # 🔥 HARD BLOCK
+        if scoring["recommended_route"] == "reject":
+            return applied, "reject"
 
         policy = classify_patch_risk(patches)
-        if not policy.passed:
-            scoring_summary["policy_reasons"] = list(policy.reasons)
-            return applied, policy.route, scoring_summary
 
-        # If scoring thinks branch/recommend, do not auto-apply on main
-        if scored.recommended_route in {"branch", "recommend"} and mode != "architecture":
-            scoring_summary["policy_reasons"] = [f"score requested route {scored.recommended_route}"]
-            return applied, scored.recommended_route, scoring_summary
+        if not policy.passed:
+            return applied, policy.route
+
+        if scoring["recommended_route"] in {"branch", "recommend"}:
+            return applied, scoring["recommended_route"]
 
         for patch in patches:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
-            self.memory.record_patch(run_id, mode, patch.path, patch.description, policy.route)
+
+            self.memory.record_patch(
+                run_id,
+                mode,
+                patch.path,
+                patch.description,
+                policy.route,
+            )
+
             applied.append(
                 {
                     "path": patch.path,
@@ -105,71 +102,11 @@ class DaddyEngine:
                 }
             )
 
-        scoring_summary["policy_reasons"] = list(policy.reasons)
-        return applied, policy.route, scoring_summary
-
-    def _execute_architecture_pr(self, run_id: str, patches: list):
-        if not patches:
-            return None
-
-        safe_paths = set()
-
-        for patch in patches:
-            apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
-            safe_paths.add(patch.path)
-
-        marker_file = self.settings.target_root / "ARCHITECTURE.md"
-        try:
-            with open(marker_file, "a", encoding="utf-8") as f:
-                f.write(f"\n# AUTO-RUN {time.time()}\n")
-            safe_paths.add("ARCHITECTURE.md")
-        except Exception:
-            pass
-
-        pr = self.git_tools.commit_push_open_pr(
-            run_id=run_id,
-            safe_paths=sorted(safe_paths),
-            title=f"[AUTO] Architecture Update {run_id}",
-            body=f"""Auto-generated architecture upgrade.
-
-Files:
-{", ".join(sorted(safe_paths))}
-""",
-        )
-
-        return pr
-
-    def _attempt_auto_merge(self, pr: dict | None, record: RunRecord, policy_route: str):
-        if not pr:
-            return None
-
-        pull_number = pr.get("number")
-        if not pull_number:
-            return None
-
-        allowed, reasons = self.merge_judge.should_auto_merge(
-            success=record.success,
-            policy_route=policy_route,
-            changed_files=[p["path"] for p in record.patches_applied],
-            patch_count=len(record.patches_applied),
-        )
-
-        if not allowed:
-            record.backlog_updates.append("Auto-merge skipped: " + "; ".join(reasons))
-            return None
-
-        merged = self.git_tools.merge_pull_request(
-            pull_number=pull_number,
-            commit_title=f"auto merge {record.run_id}",
-        )
-
-        if merged:
-            record.backlog_updates.append("PR auto-merged")
-
-        return merged
+        return applied, policy.route
 
     def run(self):
         run_id = make_run_id()
+
         record = RunRecord(run_id=run_id, command=self.settings.command)
         record.repo_fingerprint = self.repo_fingerprint()
 
@@ -183,55 +120,20 @@ Files:
 
         self.memory.add_architecture_review(review)
 
-        for item in review.build_actions:
-            self.memory.add_planned_work(item)
-
-        for plan in review.architecture_plans:
-            self.memory.add_architecture_plan(plan)
-
         mode = self.choose_mode(review)
         record.selected_mode = mode
         record.architecture_review = review
 
-        if mode == "architecture":
-            pending = self.memory.get_pending_architecture()
-            patches = pending[0].patch_bundle if pending else []
-        else:
-            patches = []
-            for action in review.self_evolution_actions:
-                if action.patches:
-                    patches.extend(action.patches)
+        patches = []
 
-        scoring_summary = {"total_score": 0.0, "recommended_route": "safe", "reasons": ["no patches"], "items": []}
+        for action in review.self_evolution_actions:
+            if action.patches:
+                patches.extend(action.patches)
 
-        if mode == "architecture":
-            scored, scoring_summary = self._score_patch_set(patches)
+        record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
 
-            record.patches_applied = [
-                {"path": p.path, "description": p.description, "route": "branch"}
-                for p in patches
-            ]
-            policy_route = "branch"
-
-            if scored.recommended_route == "reject":
-                record.patches_applied = []
-                record.backlog_updates.append("Architecture patch bundle rejected by scoring gate.")
-                pr = None
-            else:
-                pr = self._execute_architecture_pr(run_id, patches)
-                if pr:
-                    record.backlog_updates.append("PR created")
-        else:
-            record.patches_applied, policy_route, scoring_summary = self._apply_safe_patches(run_id, mode, patches)
-            pr = None
-
-        # normalize empty patch case so tests and metrics stay consistent
         if policy_route == "none":
             policy_route = "safe"
-
-        record.backlog_updates.append(
-            f"Patch scoring total={scoring_summary.get('total_score', 0.0)} route={scoring_summary.get('recommended_route', 'safe')}"
-        )
 
         result = run_command(
             self.settings.command,
@@ -246,6 +148,7 @@ Files:
             record.summary = "Success"
         else:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
+
             self.memory.record_failure_pattern(
                 sig,
                 {"route": mode, "diagnosis": "run failure"},
@@ -254,20 +157,6 @@ Files:
 
             record.success = True
             record.summary = f"build: failed ({result.returncode}) but continuing"
-
-            record.backlog_updates.append(
-                f"Verification command failed with exit code {result.returncode}; recorded as learning signal."
-            )
-
-        if pr:
-            self._attempt_auto_merge(pr, record, policy_route)
-
-        record.trace.append(
-            {
-                "kind": "patch_scoring",
-                "summary": scoring_summary,
-            }
-        )
 
         self.memory.record_metrics(
             MetricsLedgerEntry(
