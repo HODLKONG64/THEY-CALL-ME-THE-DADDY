@@ -38,3 +38,4 @@ tests/test_monster_upgrade.py
 tests/test_policy.py
 tests/test_repository_compat.py
 tests/test_self_evolution.py
+tests/test_wake_review_contract.py
