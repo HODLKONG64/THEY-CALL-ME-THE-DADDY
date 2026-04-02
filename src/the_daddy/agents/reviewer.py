@@ -103,6 +103,11 @@ class WakeReviewer:
             "visibility": "observability",
             "alignment": "alignment",
             "schema": "schema",
+            "protected": "protected_file",
+            "guard": "guard",
+            "guards": "guard",
+            "filetools": "file_tools",
+            "core": "protected_file",
         }
 
         stopwords = {
@@ -146,6 +151,8 @@ class WakeReviewer:
             tokens.add("self_evolution_action_test")
         if "test" in tokens and "existence_check" in tokens:
             tokens.add("existence_test")
+        if "test" in tokens and "protected_file" in tokens and "guard" in tokens:
+            tokens.add("protected_guard_test")
 
         return tokens
 
@@ -162,6 +169,9 @@ class WakeReviewer:
             return True
 
         if "self_evolution_action_test" in overlap and "test" in overlap:
+            return True
+
+        if "protected_guard_test" in overlap:
             return True
 
         if {"test", "wake_review", "review_contract"} <= overlap:
@@ -346,6 +356,69 @@ class WakeReviewer:
 
         return None
 
+    def _proactive_guard_test_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / "tests" / "test_file_tools_guards.py"
+        if target.exists():
+            return None
+
+        new_content = """from pathlib import Path
+
+import pytest
+
+from the_daddy.models import PatchAction
+from the_daddy.runtime.file_tools import apply_patch_action
+
+
+def test_apply_patch_action_rejects_tiny_replace_file(tmp_path):
+    root = tmp_path
+    target = root / "sample.py"
+    target.write_text("print('hello world')\\n" * 10, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="new_content too small"):
+        apply_patch_action(
+            root,
+            PatchAction(
+                path="sample.py",
+                operation="replace_file",
+                new_content="x=1\\n",
+                description="tiny replacement",
+            ),
+            [".py"],
+        )
+
+
+def test_apply_patch_action_rejects_protected_core_file(tmp_path):
+    root = tmp_path
+    protected = root / "src" / "the_daddy" / "engine.py"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text("def boot():\\n    return True\\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected core file"):
+        apply_patch_action(
+            root,
+            PatchAction(
+                path="src/the_daddy/engine.py",
+                operation="replace_file",
+                new_content="def hacked():\\n    return False\\n" + ("# guard\\n" * 10),
+                description="protected overwrite",
+            ),
+            [".py"],
+        )
+"""
+        return SelfEvolutionAction(
+            title="Add regression tests for patch safety guards",
+            description="Proactively add tests that lock in tiny replace-file rejection and protected core file protection.",
+            risk="safe",
+            patches=[
+                PatchAction(
+                    path="tests/test_file_tools_guards.py",
+                    operation="replace_file",
+                    new_content=new_content,
+                    description="Add proactive regression tests for file_tools safety guards.",
+                )
+            ],
+        )
+
     def _default_build_action(self) -> PlannedWorkItem:
         return PlannedWorkItem(
             work_id="build-thread-001",
@@ -449,6 +522,7 @@ Rules:
   * wake-review output test
   * safe self-evolution action existence test
 - Prefer source/runtime fixes over another tiny documentation or test-only loop when the system is already green.
+- Even when the repo is green, proactively propose one bounded safety, observability, or regression-hardening improvement if a non-repetitive one exists.
 
 Required JSON shape:
 {{
@@ -528,15 +602,25 @@ Repository snapshot:
 """
 
     def _fallback_review(self, repo_root: Path, reason: str) -> ArchitectureReview:
+        proactive_action = self._proactive_guard_test_action(repo_root)
         fallback_action = self._fallback_patch_action(repo_root)
         fallback_plan = self._default_architecture_plan(repo_root)
 
-        actions = [fallback_action] if fallback_action is not None else []
+        actions: list[SelfEvolutionAction] = []
+        if proactive_action is not None:
+            actions.append(proactive_action)
+        elif fallback_action is not None:
+            actions.append(fallback_action)
+
         plans = [fallback_plan] if fallback_plan is not None else []
+
+        execution_notes = ["Fallback review used because model output was unavailable or invalid."]
+        if proactive_action is not None:
+            execution_notes.append("Proactive safety-hardening patch injected while repo is otherwise healthy.")
 
         return ArchitectureReview(
             diagnosis="Fallback review generated",
-            system_intent="Keep the agent bounded, testable, and patch-capable.",
+            system_intent="Keep the agent bounded, testable, patch-capable, and proactive.",
             strengths=["Repository is reachable and reviewer fallback is active."],
             weaknesses=[reason],
             recommendations=["Stabilise reviewer schema and runtime alignment."],
@@ -544,7 +628,7 @@ Repository snapshot:
             self_evolution_actions=actions,
             build_actions=[self._default_build_action()],
             architecture_plans=plans,
-            execution_notes=["Fallback review used because model output was unavailable or invalid."],
+            execution_notes=execution_notes,
             risk_level="low",
         )
 
@@ -564,7 +648,8 @@ Repository snapshot:
                     "When you propose a self-evolution action, include a matching build_action. "
                     "Only include architecture_plans when clearly justified by a repo-wide structural issue. "
                     "Avoid repetitive low-value test or backlog churn. "
-                    "Treat wake-review invariant tests, wake-review output tests, and self-evolution action existence tests as the same maintenance loop unless there is new evidence."
+                    "Treat wake-review invariant tests, wake-review output tests, and self-evolution action existence tests as the same maintenance loop unless there is new evidence. "
+                    "When the repo is green, still look for one bounded proactive improvement that hardens safety, tests, or observability."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
@@ -601,12 +686,19 @@ Repository snapshot:
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
 
         if not review.self_evolution_actions:
-            fallback_action = self._fallback_patch_action(repo_root)
-            if fallback_action is not None:
-                review.self_evolution_actions = [fallback_action]
+            proactive_action = self._proactive_guard_test_action(repo_root)
+            if proactive_action is not None:
+                review.self_evolution_actions = [proactive_action]
                 review.execution_notes.append(
-                    "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                    "Proactive self-evolution patch injected to harden regression coverage while repo is green."
                 )
+            else:
+                fallback_action = self._fallback_patch_action(repo_root)
+                if fallback_action is not None:
+                    review.self_evolution_actions = [fallback_action]
+                    review.execution_notes.append(
+                        "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                    )
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
