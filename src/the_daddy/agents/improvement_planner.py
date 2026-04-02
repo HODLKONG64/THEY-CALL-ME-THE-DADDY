@@ -51,21 +51,26 @@ class ImprovementPlanner:
 
     def _coerce_self_evolution_action(self, value: Any) -> SelfEvolutionAction | None:
         if isinstance(value, SelfEvolutionAction):
-            return value
-        if isinstance(value, dict):
-            normalized_patches = self._normalize_patches(value.get("patches"))
-            if not normalized_patches:
+            patches = self._normalize_patches(getattr(value, "patches", None))
+            if not patches:
                 return None
+            return value.model_copy(update={"patches": patches})
+
+        if isinstance(value, dict):
             normalized_payload = {
                 "title": value.get("title"),
                 "description": value.get("description"),
                 "risk": value.get("risk"),
-                "patches": [patch.model_dump() for patch in normalized_patches],
+                "patches": [patch.model_dump() for patch in self._normalize_patches(value.get("patches"))],
             }
             try:
-                return SelfEvolutionAction.model_validate(normalized_payload)
+                action = SelfEvolutionAction.model_validate(normalized_payload)
             except ValidationError:
                 return None
+            patches = self._normalize_patches(getattr(action, "patches", None))
+            if not patches:
+                return None
+            return action.model_copy(update={"patches": patches})
         return None
 
     def _normalize_self_evolution_actions(self, value: Any) -> list[SelfEvolutionAction]:
@@ -167,11 +172,8 @@ class ImprovementPlanner:
 
         if architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
-
         if self_evolution_actions:
+            return "self_evolution"
+        if self.select_build_work(planned_work):
             return "build"
-
-        if planned_work:
-            return "build"
-
-        return "repair"
+        return "none"
