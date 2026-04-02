@@ -24,6 +24,17 @@ class ImprovementPlanner:
         except TypeError:
             return []
 
+    def _normalize_self_evolution_actions(self, value: Any) -> list[SelfEvolutionAction]:
+        normalized: list[SelfEvolutionAction] = []
+        for item in self._safe_list(value):
+            if not isinstance(item, SelfEvolutionAction):
+                continue
+            patches = self._safe_list(getattr(item, "patches", None))
+            if not patches:
+                continue
+            normalized.append(item)
+        return normalized
+
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
 
@@ -51,11 +62,8 @@ class ImprovementPlanner:
                 reasons=["Self-evolution disabled"],
             )
 
-        raw_actions = self._safe_list(getattr(review, "self_evolution_actions", None))
-        safe_actions = [
-            a for a in raw_actions
-            if getattr(a, "risk", None) == "safe" and getattr(a, "patches", None)
-        ]
+        raw_actions = self._normalize_self_evolution_actions(getattr(review, "self_evolution_actions", None))
+        safe_actions = [a for a in raw_actions if getattr(a, "risk", None) == "safe"]
 
         if not safe_actions:
             return PlannedSelfEvolution(
@@ -104,7 +112,7 @@ class ImprovementPlanner:
         state: MemoryState = memory.state if hasattr(memory, "state") else memory
 
         architecture_plans = self._safe_list(getattr(review, "architecture_plans", None))
-        self_evolution_actions = self._safe_list(getattr(review, "self_evolution_actions", None))
+        self_evolution_actions = self._normalize_self_evolution_actions(getattr(review, "self_evolution_actions", None))
         planned_work = self._safe_list(getattr(state, "planned_work", None))
 
         if architecture_plans and self.should_trigger_architecture(state):
