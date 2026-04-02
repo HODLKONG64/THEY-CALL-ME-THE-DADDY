@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import List, Optional
 
@@ -27,21 +30,58 @@ class GitBranchExecutor:
     def _safe_branch_name(self, run_id: str) -> str:
         return f"daddy/{run_id}"
 
+    def _github_request(self, method: str, url: str, payload: dict | None = None) -> Optional[dict]:
+        if not self.github_token or not self.github_repo:
+            return None
+
+        data = None
+        headers = {
+            "Authorization": f"token {self.github_token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "the-daddy-agent",
+        }
+
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(
+            url=url,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read().decode("utf-8")
+                if not raw.strip():
+                    return {}
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+        except urllib.error.HTTPError:
+            return None
+        except urllib.error.URLError:
+            return None
+        except Exception:
+            return None
+
     def prepare_branch(self, run_id: str) -> str:
         if not self._is_git_repo():
             raise RuntimeError("Not a git repository")
 
         branch = self._safe_branch_name(run_id)
 
-        # Always fetch latest
         self._run(["git", "fetch", "origin"])
-
-        # Checkout main safely (no hard reset to avoid data loss locally)
         self._run(["git", "checkout", "main"])
         self._run(["git", "pull", "origin", "main"])
 
-        # Create new branch from updated main
-        self._run(["git", "checkout", "-b", branch])
+        exists = self._run(["git", "rev-parse", "--verify", branch])
+        if exists.returncode == 0:
+            self._run(["git", "checkout", branch])
+            self._run(["git", "reset", "--soft", "main"])
+        else:
+            self._run(["git", "checkout", "-b", branch])
 
         return branch
 
@@ -49,24 +89,26 @@ class GitBranchExecutor:
         if not changed_files:
             return None
 
-        # Add only known changed files
         for path in changed_files:
             self._run(["git", "add", path])
 
-        # Check if anything is staged
         diff = self._run(["git", "diff", "--cached", "--name-only"])
         if not diff.stdout.strip():
             return None
 
         commit_message = f"auto: daddy patch {run_id}"
-        self._run(["git", "commit", "-m", commit_message])
+        commit = self._run(["git", "commit", "-m", commit_message])
+        if commit.returncode != 0:
+            return None
 
-        # Get current branch
         branch_result = self._run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
         branch = branch_result.stdout.strip()
+        if not branch:
+            return None
 
-        # Push branch
-        self._run(["git", "push", "-u", "origin", branch])
+        push = self._run(["git", "push", "-u", "origin", branch])
+        if push.returncode != 0:
+            return None
 
         return branch
 
@@ -78,51 +120,19 @@ class GitBranchExecutor:
         body: str,
         base_branch: str = "main",
     ) -> Optional[dict]:
-        if not self.github_token or not self.github_repo:
-            return None
-
-        import requests
-
         url = f"https://api.github.com/repos/{self.github_repo}/pulls"
-        headers = {
-            "Authorization": f"token {self.github_token}",
-            "Accept": "application/vnd.github+json",
-        }
-
         payload = {
             "title": title,
             "head": branch_name,
             "base": base_branch,
             "body": body,
         }
-
-        response = requests.post(url, json=payload, headers=headers)
-
-        if response.status_code not in (200, 201):
-            return None
-
-        return response.json()
+        return self._github_request("POST", url, payload)
 
     def merge_pull_request(self, pull_number: int, commit_title: str) -> Optional[dict]:
-        if not self.github_token or not self.github_repo:
-            return None
-
-        import requests
-
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
-        headers = {
-            "Authorization": f"token {self.github_token}",
-            "Accept": "application/vnd.github+json",
-        }
-
         payload = {
             "commit_title": commit_title,
             "merge_method": "squash",
         }
-
-        response = requests.put(url, json=payload, headers=headers)
-
-        if response.status_code not in (200, 201):
-            return None
-
-        return response.json()
+        return self._github_request("PUT", url, payload)
