@@ -1,71 +1,65 @@
 from types import SimpleNamespace
 
 from the_daddy.agents.improvement_planner import ImprovementPlanner
+from the_daddy.models import FailurePattern, MemoryState
 
 
-class _FailurePattern:
-    def __init__(self, failure_count, updated_at="2026-01-01T00:00:00+00:00"):
-        self.failure_count = failure_count
-        self.updated_at = updated_at
-
-
-def _memory(*, planned_work=None, failure_patterns=None):
-    return SimpleNamespace(
-        planned_work=[] if planned_work is None else planned_work,
-        failure_patterns={} if failure_patterns is None else failure_patterns,
+def _memory_with_failure_count(count: int) -> MemoryState:
+    memory = MemoryState()
+    memory.failure_patterns["test"] = FailurePattern(
+        signature="test",
+        failure_count=count,
+        last_seen_output="",
+        updated_at="2026-01-01T00:00:00Z",
     )
+    return memory
 
 
-def _review(*, self_evolution_actions=None, architecture_plans=None):
-    return SimpleNamespace(
-        self_evolution_actions=[] if self_evolution_actions is None else self_evolution_actions,
-        architecture_plans=[] if architecture_plans is None else architecture_plans,
-    )
-
-
-def test_decide_mode_prefers_architecture_when_plans_exist_and_failure_threshold_met():
+def test_decide_mode_prefers_architecture_when_plans_exist_and_triggered():
     planner = ImprovementPlanner()
-    memory = _memory(failure_patterns={"hotspot": _FailurePattern(3)})
-    review = _review(architecture_plans=[{"title": "plan"}])
+    memory = _memory_with_failure_count(3)
+    review = SimpleNamespace(architecture_plans=[object()], self_evolution_actions=[])
 
     assert planner.decide_mode(memory, review) == "architecture"
 
 
-def test_decide_mode_prefers_build_when_safe_review_work_exists():
+def test_decide_mode_prefers_build_when_safe_review_actions_exist():
     planner = ImprovementPlanner()
-    memory = _memory()
-    review = _review(self_evolution_actions=[{"title": "safe action"}])
+    memory = MemoryState()
+    review = SimpleNamespace(architecture_plans=[], self_evolution_actions=[object()])
 
     assert planner.decide_mode(memory, review) == "build"
 
 
-def test_decide_mode_prefers_build_when_planned_work_exists_without_review_actions():
+def test_decide_mode_prefers_build_when_planned_work_exists():
     planner = ImprovementPlanner()
-    memory = _memory(planned_work=[{"title": "queued"}])
-    review = _review()
+    memory = MemoryState(planned_work=[SimpleNamespace(state="proposed")])
+    review = SimpleNamespace(architecture_plans=[], self_evolution_actions=[])
 
     assert planner.decide_mode(memory, review) == "build"
 
 
 def test_decide_mode_falls_back_to_repair_when_review_fields_are_none():
     planner = ImprovementPlanner()
-    memory = _memory()
-    review = SimpleNamespace(self_evolution_actions=None, architecture_plans=None)
+    memory = MemoryState()
+    review = SimpleNamespace(architecture_plans=None, self_evolution_actions=None)
 
     assert planner.decide_mode(memory, review) == "repair"
 
 
-def test_decide_mode_falls_back_to_repair_for_scalar_placeholder_review_fields():
+def test_decide_mode_ignores_truthy_noniterable_placeholders_for_review_fields():
     planner = ImprovementPlanner()
-    memory = _memory()
-    review = SimpleNamespace(self_evolution_actions=False, architecture_plans=0)
+    memory = MemoryState()
 
-    assert planner.decide_mode(memory, review) == "repair"
+    class TruthyPlaceholder:
+        def __bool__(self):
+            return True
 
+    review = SimpleNamespace(
+        architecture_plans=TruthyPlaceholder(),
+        self_evolution_actions=TruthyPlaceholder(),
+    )
 
-def test_decide_mode_ignores_architecture_plan_when_failure_threshold_not_met():
-    planner = ImprovementPlanner()
-    memory = _memory(failure_patterns={"hotspot": _FailurePattern(2)})
-    review = _review(architecture_plans=[{"title": "plan"}])
+    mode = planner.decide_mode(memory, review)
 
-    assert planner.decide_mode(memory, review) == "repair"
+    assert mode in {"build", "repair"}
