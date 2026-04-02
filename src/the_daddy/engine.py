@@ -84,6 +84,8 @@ class DaddyEngine:
             return None
 
         safe_paths = set()
+
+        # 🔥 APPLY PATCHES ONLY HERE (ON BRANCH)
         for patch in plan.patch_bundle:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
             safe_paths.add(patch.path)
@@ -112,6 +114,7 @@ class DaddyEngine:
 
         if pr:
             self.memory.update_architecture_status(plan.title, "active")
+
         return pr
 
     def _attempt_auto_merge(self, pr: dict | None, record: RunRecord, policy_route: str):
@@ -140,8 +143,10 @@ class DaddyEngine:
             pull_number=pull_number,
             commit_title=f"auto: daddy merge {record.run_id}",
         )
+
         if merged:
             record.backlog_updates.append(f"PR auto-merged: {pr.get('html_url', '')}")
+
         return merged
 
     def run(self):
@@ -150,11 +155,13 @@ class DaddyEngine:
         record.repo_fingerprint = self.repo_fingerprint()
 
         latest = self.memory.latest_review()
+
         review = self.reviewer.review(
             memory_snapshot=self.memory.state.model_dump(mode="json"),
             repo_root=self.settings.target_root,
             recent_summary=(latest.diagnosis if latest else ""),
         )
+
         self.memory.add_architecture_review(review)
 
         for item in review.build_actions:
@@ -171,15 +178,23 @@ class DaddyEngine:
         for action in review.self_evolution_actions:
             patches.extend(action.patches)
 
-        record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
+        # 🔥 CRITICAL FIX: DO NOT APPLY PATCHES IN ARCHITECTURE MODE
+        if mode == "architecture":
+            record.patches_applied = []
+            policy_route = "branch"
+        else:
+            record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
 
         pr = None
+
         if mode == "architecture":
             pr = self._execute_architecture_pr(run_id)
+
             if pr:
                 record.backlog_updates.append(f"PR created: {pr.get('html_url', '')}")
 
         result = run_command(self.settings.command, cwd=self.settings.target_root)
+
         record.verification = result
         record.success = result.returncode == 0
         record.summary = "Success" if record.success else f"Failed ({result.returncode})"
@@ -207,4 +222,5 @@ class DaddyEngine:
 
         self.memory.add_run(record)
         self.memory.save()
+
         return record
