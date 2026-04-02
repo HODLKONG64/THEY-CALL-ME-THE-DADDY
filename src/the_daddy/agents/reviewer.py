@@ -188,6 +188,10 @@ class WakeReviewer:
             "run": "run",
             "health": "health",
             "success": "success",
+            "document": "documentation",
+            "documentation": "documentation",
+            "docs": "documentation",
+            "clarity": "documentation",
         }
 
         stopwords = {
@@ -344,6 +348,49 @@ class WakeReviewer:
 
         return kept, removed
 
+    def _is_doc_or_observability_churn(self, text: str) -> bool:
+        normalized = self._normalize_phrase(text)
+        doc_markers = {
+            "documentation",
+            "docs",
+            "clarity",
+            "document",
+            "explain",
+            "comment",
+            "comments",
+        }
+        obs_markers = {
+            "observability",
+            "logging",
+            "trace",
+            "diagnostic",
+            "diagnostics",
+            "metrics",
+            "health checks",
+            "health check",
+        }
+        return any(marker in normalized for marker in doc_markers) and any(
+            marker in normalized for marker in obs_markers
+        )
+
+    def _suppress_noop_backlog_churn(
+        self,
+        review: ArchitectureReview,
+    ) -> tuple[ArchitectureReview, bool]:
+        if review.self_evolution_actions:
+            return review, False
+
+        kept: list[str] = []
+        removed = False
+        for item in review.backlog_items or []:
+            if self._is_doc_or_observability_churn(item):
+                removed = True
+                continue
+            kept.append(item)
+
+        review.backlog_items = kept
+        return review, removed
+
     def _is_test_only_action(self, action: SelfEvolutionAction) -> bool:
         if not action.patches:
             return False
@@ -421,10 +468,6 @@ class WakeReviewer:
         if not normalized:
             return ""
         return self._read_text(repo_root / normalized)
-
-    def _existing_file_bytes(self, repo_root: Path, path: str) -> int:
-        text = self._existing_file_text(repo_root, path)
-        return len(text.encode("utf-8", errors="ignore"))
 
     def _is_existing_runtime_helper_replace(self, repo_root: Path, patch: PatchAction) -> bool:
         normalized = self._normalize_path(getattr(patch, "path", ""))
@@ -830,6 +873,7 @@ def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, 
                 "Do not propose regex_replace unless the pattern exists in the current file.",
                 "Do not retry recently blocked targets immediately.",
                 "Do not keep farming reviewer_fallback.py after it already exists.",
+                "When no safe code action exists, prefer a clean no-op over documentation churn.",
             ],
         )
 
@@ -959,7 +1003,7 @@ Rules:
 - CRITICAL: do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink-replace, or missing regex anchor.
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
+- If no valid self_evolution patch target exists, return an empty self_evolution_actions array and avoid documentation-only churn.
 
 Required JSON shape:
 {{
@@ -1104,7 +1148,8 @@ Repository snapshot:
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
-                    "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
+                    "When the repo is green, still look for one bounded runtime, observability, or safety improvement. "
+                    "If no safe code action exists, prefer a clean no-op over documentation-only churn."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
@@ -1132,6 +1177,10 @@ Repository snapshot:
         review.backlog_items = filtered_backlog
         if removed_backlog:
             review.execution_notes.append("Suppressed repetitive backlog items already present in memory.")
+
+        review, removed_noop_churn = self._suppress_noop_backlog_churn(review)
+        if removed_noop_churn:
+            review.execution_notes.append("Suppressed documentation/observability backlog churn because no safe code action existed.")
 
         if review.self_evolution_actions:
             only_allowlisted_or_tracked = True
