@@ -52,6 +52,9 @@ class DaddyMemoryState:
     self_evolution_history: list[dict[str, Any]] = field(default_factory=list)
     proposed_builds: list[dict[str, Any]] = field(default_factory=list)
 
+    # ✅ FIX: NEW FIELD REQUIRED BY MEMORY
+    improvement_history: list[dict[str, Any]] = field(default_factory=list)
+
     # Reputation / agent intelligence
     reputations: dict[str, dict[str, Any]] = field(default_factory=dict)
     drift_warnings: list[dict[str, Any]] = field(default_factory=list)
@@ -60,6 +63,7 @@ class DaddyMemoryState:
     latest_run_summary: dict[str, Any] = field(default_factory=dict)
 
 
+# Alias used by newer code paths
 MemoryState = DaddyMemoryState
 
 
@@ -138,7 +142,11 @@ class MemoryRepository:
         self._state.architecture_queue.append(dict(plan))
         self.save_state()
 
-    def mark_failure_pattern(self, signature: str, details: dict[str, Any] | None = None) -> None:
+    def mark_failure_pattern(
+        self,
+        signature: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         if not signature:
             return
         existing = dict(self._state.failure_patterns.get(signature, {}))
@@ -203,7 +211,7 @@ class MemoryRepository:
         merged: dict[str, Any] = asdict(DaddyMemoryState())
         merged.update(raw)
 
-        # ✅ FIXED BLOCK (ONLY CHANGE)
+        # ✅ FIX: SAFE schema_version handling
         raw_version = merged.get("schema_version") or MEMORY_SCHEMA_VERSION
         try:
             if isinstance(raw_version, str) and "." in raw_version:
