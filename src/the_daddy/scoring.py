@@ -71,6 +71,7 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/scoring.py",
     "src/the_daddy/merge_rules.py",
     "src/the_daddy/git_tools.py",
+    "src/the_daddy/runtime/command_runner.py",
 }
 
 
@@ -107,7 +108,6 @@ def score_patch(action: PatchAction) -> PatchScore:
         score += penalty
         reasons.append(f"suspicious filename {filename}: {penalty}")
 
-    # 🔒 PROTECTED CORE FILES: heavy penalty so scoring always pushes to reject
     if norm_path in PROTECTED_CORE_FILES:
         score -= 50.0
         reasons.append(f"protected core file {norm_path}: -50")
@@ -123,7 +123,6 @@ def score_patch(action: PatchAction) -> PatchScore:
         score -= 2.0
         reasons.append("empty patch content: -2")
     elif content_bytes < 100 and action.operation == "replace_file":
-        # 🔒 TINY REPLACE_FILE: suspicious stub — remove the small-patch bonus and penalise
         score -= 20.0
         reasons.append("tiny replace_file content (<100 bytes): -20")
     elif content_bytes < 4000:
