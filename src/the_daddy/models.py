@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+DEFAULT_TRUST_SCORE = 50
 
 
 class PatchAction(BaseModel):
@@ -123,14 +126,26 @@ class VettingDecision(BaseModel):
     reputation_delta: int = 0
     notes: list[str] = Field(default_factory=list)
 
+    @field_validator("route", mode="before")
+    @classmethod
+    def _normalize_legacy_route(cls, value: Any) -> Any:
+        return "safe" if value == "accept" else value
+
 
 class AgentReputation(BaseModel):
-    agent_id: str
-    score: int = 0
-    accepted: int = 0
-    rejected: int = 0
+    model_config = ConfigDict(populate_by_name=True)
+
+    agent_id: str = Field(validation_alias=AliasChoices("agent_id", "agent_name"))
+    trust_score: int = Field(default=DEFAULT_TRUST_SCORE, validation_alias=AliasChoices("trust_score", "score"))
+    accepted_count: int = Field(default=0, validation_alias=AliasChoices("accepted_count", "accepted"))
+    staged_count: int = Field(default=0, validation_alias=AliasChoices("staged_count", "staged"))
+    rejected_count: int = Field(default=0, validation_alias=AliasChoices("rejected_count", "rejected"))
     impact: Literal["low", "medium", "high"] = "low"
     updated_at: str = Field(default_factory=utc_now_iso)
+
+
+Reputation = AgentReputation
+VetDecision = VettingDecision
 
 
 class FailurePatternRecord(BaseModel):
