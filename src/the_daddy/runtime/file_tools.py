@@ -9,6 +9,7 @@ from ..models import PatchAction
 
 
 IGNORED_PARTS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", "doctor_local"}
+
 BLOCKED_ROOT_FILENAMES = {
     "bool",
     "None",
@@ -23,11 +24,12 @@ BLOCKED_ROOT_FILENAMES = {
     "Path",
     "THEY-CALL-ME-THE-DADDY",
 }
+
 BLOCKED_PATH_PARTS = {
     "build",
     "dist",
-    ".egg-info",
     "__pycache__",
+    ".egg-info",
 }
 
 
@@ -51,7 +53,7 @@ def _safe_target(root: Path, rel: str) -> Path:
         raise ValueError(f"Blocked suspicious root filename: {target.name}")
 
     if any(part in BLOCKED_PATH_PARTS for part in target.parts):
-        raise ValueError(f"Blocked build/cache artifact path: {cleaned}")
+        raise ValueError(f"Blocked artifact path: {cleaned}")
 
     return target
 
@@ -59,6 +61,7 @@ def _safe_target(root: Path, rel: str) -> Path:
 def find_referenced_files(output: str, root: Path, allow_extensions: Iterable[str]) -> list[Path]:
     found: list[Path] = []
     exts = tuple(allow_extensions)
+
     for match in re.findall(r"([A-Za-z0-9_./\\-]+\.(?:py|md|yml|yaml|json|txt|toml))", output):
         try:
             p = _safe_target(root, match)
@@ -73,6 +76,7 @@ def find_referenced_files(output: str, root: Path, allow_extensions: Iterable[st
         ):
             if p not in found:
                 found.append(p)
+
     return found[:8]
 
 
@@ -87,7 +91,10 @@ def gather_file_context(root: Path, files: list[Path], max_files: int = 8, max_b
                 {
                     "path": str(p.relative_to(root)),
                     "content": text[:max_bytes],
-                    "model_dump": lambda self, mode="json": {"path": self.path, "content": self.content},
+                    "model_dump": lambda self, mode="json": {
+                        "path": self.path,
+                        "content": self.content,
+                    },
                 },
             )()
         )
