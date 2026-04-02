@@ -23,18 +23,52 @@ class GitBranchExecutor:
         )
         return result.stdout.strip()
 
+    def _run_no_check(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def current_branch(self) -> str:
         return self._run("rev-parse", "--abbrev-ref", "HEAD")
 
     def head_sha(self) -> str:
         return self._run("rev-parse", "HEAD")
 
-    def create_or_checkout_branch(self, branch_name: str, base_branch: str = "main") -> str:
-        try:
-            self._run("checkout", branch_name)
-        except Exception:
+    def branch_exists_local(self, branch_name: str) -> bool:
+        result = self._run_no_check("show-ref", "--verify", f"refs/heads/{branch_name}")
+        return result.returncode == 0
+
+    def branch_exists_remote(self, branch_name: str) -> bool:
+        result = self._run_no_check("ls-remote", "--heads", "origin", branch_name)
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    def refresh_base_branch(self, base_branch: str = "main") -> None:
+        self._run_no_check("fetch", "origin", base_branch)
+        if self.branch_exists_local(base_branch):
             self._run("checkout", base_branch)
+            if self.branch_exists_remote(base_branch):
+                self._run("reset", "--hard", f"origin/{base_branch}")
+        else:
+            if self.branch_exists_remote(base_branch):
+                self._run("checkout", "-B", base_branch, f"origin/{base_branch}")
+            else:
+                self._run("checkout", "-B", base_branch)
+
+    def create_or_checkout_branch(self, branch_name: str, base_branch: str = "main") -> str:
+        self.refresh_base_branch(base_branch)
+
+        if self.branch_exists_local(branch_name):
+            self._run("checkout", branch_name)
+            if self.branch_exists_remote(branch_name):
+                self._run_no_check("fetch", "origin", branch_name)
+            self._run("reset", "--hard", base_branch)
+        else:
             self._run("checkout", "-b", branch_name)
+
         return self.current_branch()
 
     def add_safe_paths(self, paths: Iterable[str]) -> None:
