@@ -44,9 +44,44 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/git_tools.py",
 }
 
+SAFE_NEW_FILE_ALLOWLIST = {
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+}
+
+
+def _normalize_path(rel: str) -> str:
+    cleaned = str(rel or "").strip().replace("\\", "/")
+    while "//" in cleaned:
+        cleaned = cleaned.replace("//", "/")
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned
+
+
+def _looks_like_hallucinated_path(path: str) -> bool:
+    normalized = _normalize_path(path)
+
+    if normalized == "src/the_daddy/reviewer.py":
+        return True
+
+    if normalized.startswith("src/the_daddy/runtime/"):
+        return normalized not in SAFE_NEW_FILE_ALLOWLIST
+
+    if normalized in PROTECTED_CORE_FILES:
+        return False
+
+    if normalized.startswith("src/the_daddy/"):
+        remainder = normalized[len("src/the_daddy/"):]
+        if "/" not in remainder:
+            return True
+
+    return False
+
 
 def _safe_target(root: Path, rel: str) -> Path:
-    cleaned = str(rel).strip().replace("\\", "/")
+    cleaned = _normalize_path(rel)
 
     if not cleaned:
         raise ValueError("Empty patch path")
@@ -57,18 +92,19 @@ def _safe_target(root: Path, rel: str) -> Path:
     if cleaned.endswith("/"):
         raise ValueError(f"Patch path points to a directory, not a file: {rel}")
 
+    if _looks_like_hallucinated_path(cleaned):
+        raise ValueError(f"Blocked hallucinated or unapproved patch path: {cleaned}")
+
     target = (root / cleaned).resolve()
     root_resolved = root.resolve()
 
-    # Ensure inside repo
     target.relative_to(root_resolved)
 
-    # 🔒 BLOCK ROOT JUNK FILES
     if target.parent == root_resolved and target.name in BLOCKED_ROOT_FILENAMES:
         raise ValueError(f"Blocked suspicious root filename: {target.name}")
 
-    # 🔒 BLOCK ARTIFACT / JUNK PATHS
-    if any(part in BLOCKED_PATH_PARTS for part in target.parts):
+    relative_parts = target.relative_to(root_resolved).parts
+    if any(part in BLOCKED_PATH_PARTS for part in relative_parts):
         raise ValueError(f"Blocked artifact path: {cleaned}")
 
     return target
@@ -127,45 +163,53 @@ def gather_file_context(root: Path, files: list[Path], max_files: int = 8, max_b
 
 
 def apply_patch_action(root: Path, action: PatchAction, allow_extensions: Iterable[str]) -> dict:
-    target = _safe_target(root, action.path)
+    norm_path = _normalize_path(action.path)
+    target = _safe_target(root, norm_path)
 
     if target.suffix not in set(allow_extensions):
         raise ValueError(f"Extension not allowed: {target.suffix}")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    old_content = target.read_text(encoding="utf-8", errors="ignore") if target.exists() else ""
-    old_hash = hashlib.sha256(old_content.encode("utf-8", errors="ignore")).hexdigest()
+    target_exists = target.exists()
 
     if action.operation == "replace_file":
         if action.new_content is None:
             raise ValueError("replace_file missing new_content")
 
-        # 🔒 PROTECTED CORE FILES: never allow auto-patch to overwrite them
-        norm_path = action.path.strip().replace("\\", "/")
         if norm_path in PROTECTED_CORE_FILES:
             raise ValueError(f"Reject: protected core file cannot be modified by auto-patch: {norm_path}")
+
+        if not target_exists and norm_path not in SAFE_NEW_FILE_ALLOWLIST:
+            raise ValueError(f"Reject: new file creation not allowed outside safe allowlist: {norm_path}")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        old_content = target.read_text(encoding="utf-8", errors="ignore") if target_exists else ""
+        old_hash = hashlib.sha256(old_content.encode("utf-8", errors="ignore")).hexdigest()
 
         new_content = action.new_content
         new_len = len(new_content)
         old_len = len(old_content)
 
-        # 🔒 MINIMUM CONTENT SIZE: reject tiny stubs
         if new_len < 50:
             raise ValueError(
-                f"Reject: new_content too small ({new_len} bytes) for {action.path}"
+                f"Reject: new_content too small ({new_len} bytes) for {norm_path}"
             )
 
-        # 🔒 DESTRUCTIVE SHRINK GUARD: reject if new file is less than 25% of original
         if old_len > 0 and new_len < old_len * 0.25:
             raise ValueError(
-                f"Reject: destructive shrink detected for {action.path} "
+                f"Reject: destructive shrink detected for {norm_path} "
                 f"(old={old_len} bytes, new={new_len} bytes, ratio={new_len / old_len:.2f})"
             )
 
     else:
         if action.pattern is None or action.replacement is None:
             raise ValueError("regex_replace missing pattern/replacement")
+
+        if not target_exists:
+            raise ValueError(f"Reject: regex_replace target does not exist: {norm_path}")
+
+        old_content = target.read_text(encoding="utf-8", errors="ignore")
+        old_hash = hashlib.sha256(old_content.encode("utf-8", errors="ignore")).hexdigest()
 
         new_content, count = re.subn(
             action.pattern,
@@ -175,21 +219,21 @@ def apply_patch_action(root: Path, action: PatchAction, allow_extensions: Iterab
         )
 
         if count == 0:
-            raise ValueError(f"Pattern not found in {action.path}")
+            raise ValueError(f"Pattern not found in {norm_path}")
 
     target.write_text(new_content, encoding="utf-8")
 
     new_hash = hashlib.sha256(new_content.encode("utf-8", errors="ignore")).hexdigest()
 
     return {
-        "path": action.path,
+        "path": norm_path,
         "description": action.description,
         "old_hash": old_hash,
         "new_hash": new_hash,
         "bytes_before": len(old_content.encode("utf-8")),
         "bytes_after": len(new_content.encode("utf-8")),
         "rollback": {
-            "path": action.path,
+            "path": norm_path,
             "old_content": old_content if len(old_content.encode("utf-8")) <= 50000 else None,
             "old_hash": old_hash,
         },
