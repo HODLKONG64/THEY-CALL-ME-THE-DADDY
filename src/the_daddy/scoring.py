@@ -63,6 +63,16 @@ DANGEROUS_KEYWORDS = {
     "shutil.rmtree": -15.0,
 }
 
+PROTECTED_CORE_FILES = {
+    "src/the_daddy/agents/reviewer.py",
+    "src/the_daddy/engine.py",
+    "src/the_daddy/models.py",
+    "src/the_daddy/policy.py",
+    "src/the_daddy/scoring.py",
+    "src/the_daddy/merge_rules.py",
+    "src/the_daddy/git_tools.py",
+}
+
 
 def _content_for_scoring(action: PatchAction) -> str:
     return (action.new_content or "") + (action.pattern or "") + (action.replacement or "")
@@ -72,7 +82,8 @@ def score_patch(action: PatchAction) -> PatchScore:
     score = 0.0
     reasons: list[str] = []
     path = action.path.strip()
-    filename = path.replace("\\", "/").split("/")[-1]
+    norm_path = path.replace("\\", "/")
+    filename = norm_path.split("/")[-1]
 
     ext_bonus = 0.0
     for ext, bonus in SAFE_FILE_BONUS.items():
@@ -87,7 +98,7 @@ def score_patch(action: PatchAction) -> PatchScore:
         reasons.append("unknown or unsafe extension: -10")
 
     for risky, penalty in RISKY_PATH_PARTS.items():
-        if risky in path.replace("\\", "/"):
+        if risky in norm_path:
             score += penalty
             reasons.append(f"risky path part {risky}: {penalty}")
 
@@ -95,6 +106,11 @@ def score_patch(action: PatchAction) -> PatchScore:
         penalty = SUSPICIOUS_FILENAMES[filename]
         score += penalty
         reasons.append(f"suspicious filename {filename}: {penalty}")
+
+    # 🔒 PROTECTED CORE FILES: heavy penalty so scoring always pushes to reject
+    if norm_path in PROTECTED_CORE_FILES:
+        score -= 50.0
+        reasons.append(f"protected core file {norm_path}: -50")
 
     content = _content_for_scoring(action)
     for keyword, penalty in DANGEROUS_KEYWORDS.items():
@@ -106,6 +122,10 @@ def score_patch(action: PatchAction) -> PatchScore:
     if content_bytes == 0:
         score -= 2.0
         reasons.append("empty patch content: -2")
+    elif content_bytes < 100 and action.operation == "replace_file":
+        # 🔒 TINY REPLACE_FILE: suspicious stub — remove the small-patch bonus and penalise
+        score -= 20.0
+        reasons.append("tiny replace_file content (<100 bytes): -20")
     elif content_bytes < 4000:
         score += 1.5
         reasons.append("small bounded patch: +1.5")

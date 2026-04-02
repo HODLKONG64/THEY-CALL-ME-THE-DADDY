@@ -8,6 +8,17 @@ from pydantic import ValidationError
 from ..models import ArchitectureReview, MemoryState, PatchAction, SelfEvolutionAction
 
 
+PROTECTED_CORE_FILES = {
+    "src/the_daddy/agents/reviewer.py",
+    "src/the_daddy/engine.py",
+    "src/the_daddy/models.py",
+    "src/the_daddy/policy.py",
+    "src/the_daddy/scoring.py",
+    "src/the_daddy/merge_rules.py",
+    "src/the_daddy/git_tools.py",
+}
+
+
 @dataclass
 class PlannedSelfEvolution:
     enabled: bool
@@ -50,6 +61,16 @@ class ImprovementPlanner:
                 continue
             if patch.operation == "regex_replace" and (not patch.pattern or not patch.replacement):
                 continue
+
+            # 🔒 PROTECTED CORE FILES: skip silently — apply_patch_action would reject anyway
+            norm_path = patch.path.strip().replace("\\", "/")
+            if norm_path in PROTECTED_CORE_FILES:
+                continue
+
+            # 🔒 MINIMUM CONTENT SIZE for replace_file
+            if patch.operation == "replace_file" and len(patch.new_content or "") < 50:
+                continue
+
             normalized.append(patch)
         return normalized
 

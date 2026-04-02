@@ -8,13 +8,14 @@ def test_apply_patch_action_replace_file(tmp_path):
     root = tmp_path
     target = root / "a.py"
     target.write_text("x = 1\n", encoding="utf-8")
+    new_content = "x = 2\n" + "# padding to meet minimum content size requirement\n" * 2
     result = apply_patch_action(
         root,
         PatchAction(
             path="a.py",
             operation="replace_file",
             description="replace",
-            new_content="x = 2\n",
+            new_content=new_content,
         ),
         [".py"],
     )

@@ -72,11 +72,10 @@ class GitBranchExecutor:
         return self.current_branch()
 
     def add_safe_paths(self, paths: Iterable[str]) -> None:
+        # 🔒 Errors from git add are no longer silently swallowed.
+        # If staging fails the caller will see the exception.
         for path in paths:
-            try:
-                self._run("add", path)
-            except Exception:
-                continue
+            self._run("add", path)
 
     def has_staged_changes(self) -> bool:
         result = subprocess.run(
@@ -101,13 +100,34 @@ class GitBranchExecutor:
     def branch_for_architecture_run(self, run_id: str) -> str:
         return f"daddy-architecture-{run_id.lower()}"
 
+    def _verify_py_files(self, paths: Iterable[str]) -> None:
+        """Syntax-check every .py file before it is pushed."""
+        for path in paths:
+            if not str(path).endswith(".py"):
+                continue
+            full = self.repo_root / path
+            if not full.exists():
+                raise FileNotFoundError(f"Pre-push syntax check: file not found: {path}")
+            result = subprocess.run(
+                ["python", "-m", "py_compile", str(full)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise ValueError(
+                    f"Pre-push syntax check failed for {path}:\n{result.stderr.strip()}"
+                )
+
     def commit_safe_branch_changes(self, run_id: str, safe_paths: Iterable[str]) -> str | None:
+        paths = list(safe_paths)
         branch_name = self.branch_for_architecture_run(run_id)
         self.create_or_checkout_branch(branch_name)
-        self.add_safe_paths(safe_paths)
+        self.add_safe_paths(paths)
         committed = self.commit(f"auto: daddy architecture plan {run_id}")
         if not committed:
             return None
+        # 🔒 Syntax-check all .py files before pushing
+        self._verify_py_files(paths)
         self.push(branch_name)
         return branch_name
 

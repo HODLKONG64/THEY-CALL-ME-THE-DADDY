@@ -17,7 +17,7 @@ def test_normalize_self_evolution_actions_filters_invalid_patches_per_action_dic
                     {
                         "path": "docs/ARCHITECTURE.md",
                         "operation": "replace_file",
-                        "new_content": "# Updated\n",
+                        "new_content": "# Updated\n\nThis document describes the architecture in sufficient detail to pass the minimum content size guard.\n",
                         "pattern": None,
                         "replacement": None,
                         "description": "valid replace_file patch",

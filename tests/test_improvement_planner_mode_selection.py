@@ -19,7 +19,7 @@ def test_decide_mode_prefers_build_when_valid_safe_self_evolution_exists():
                     PatchAction(
                         path="README.md",
                         operation="replace_file",
-                        new_content="# updated\n",
+                        new_content="# updated\n\nThis README has been updated with enough content to pass the minimum size guard.\n",
                         pattern=None,
                         replacement=None,
                         description="Update docs",
