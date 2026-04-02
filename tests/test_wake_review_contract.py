@@ -1,18 +1,17 @@
 from the_daddy.models import ArchitectureReview, SelfEvolutionAction
 
-def test_wake_review_invariant():
+def test_wake_review_must_include_safe_action():
     review = ArchitectureReview(
-        diagnosis="Ensure at least one safe self-evolution action.",
-        system_intent="Bounded self-maintenance.",
+        diagnosis="Ensure at least one safe action is present in wake review.",
+        system_intent="Maintain safe self-evolution.",
         self_evolution_actions=[
             SelfEvolutionAction(
-                title="Invariant enforcement",
-                description="Must have at least one safe action.",
+                title="Fallback safe action",
+                description="This is a placeholder indicating a safe action is always included.",
                 risk="safe",
-                patches=[]
+                patches=[],
             )
         ],
-        risk_level="low"
+        risk_level="low",
     )
-    assert review.self_evolution_actions
     assert any(action.risk == "safe" for action in review.self_evolution_actions)
