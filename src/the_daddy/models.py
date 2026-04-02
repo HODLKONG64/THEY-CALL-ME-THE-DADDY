@@ -10,6 +10,9 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+DEFAULT_TRUST_SCORE = 50
+
+
 class PatchAction(BaseModel):
     path: str
     operation: Literal["replace_file", "regex_replace"]
@@ -133,9 +136,9 @@ class AgentReputation(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     agent_id: str = Field(validation_alias=AliasChoices("agent_id", "agent_name"))
-    trust_score: int = Field(default=50, validation_alias=AliasChoices("trust_score", "score"))
+    trust_score: int = Field(default=DEFAULT_TRUST_SCORE, validation_alias=AliasChoices("trust_score", "score"))
     accepted_count: int = Field(default=0, validation_alias=AliasChoices("accepted_count", "accepted"))
-    staged_count: int = 0
+    staged_count: int = Field(default=0, validation_alias=AliasChoices("staged_count", "staged"))
     rejected_count: int = Field(default=0, validation_alias=AliasChoices("rejected_count", "rejected"))
     impact: Literal["low", "medium", "high"] = "low"
     updated_at: str = Field(default_factory=utc_now_iso)
