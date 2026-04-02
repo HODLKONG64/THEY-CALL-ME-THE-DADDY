@@ -120,7 +120,6 @@ class ImprovementPlanner:
         enabled: bool,
         max_actions: int,
     ) -> PlannedSelfEvolution:
-
         if not enabled:
             return PlannedSelfEvolution(
                 enabled=False,
@@ -128,7 +127,9 @@ class ImprovementPlanner:
                 reasons=["Self-evolution disabled"],
             )
 
-        safe_actions = self._normalize_self_evolution_actions(getattr(review, "self_evolution_actions", None))
+        safe_actions = self._normalize_self_evolution_actions(
+            getattr(review, "self_evolution_actions", None)
+        )
 
         if not safe_actions:
             return PlannedSelfEvolution(
@@ -148,7 +149,8 @@ class ImprovementPlanner:
 
     def select_build_work(self, planned_work: Iterable) -> object | None:
         candidates = [
-            item for item in self._safe_list(planned_work)
+            item
+            for item in self._safe_list(planned_work)
             if getattr(item, "state", "") in {"proposed", "active"}
         ]
         if not candidates:
@@ -157,7 +159,7 @@ class ImprovementPlanner:
         candidates.sort(
             key=lambda item: (
                 -getattr(item, "priority", 0),
-                getattr(item, "created_at", "")
+                getattr(item, "created_at", ""),
             )
         )
         return candidates[0]
@@ -173,4 +175,19 @@ class ImprovementPlanner:
 
         return ranked[0].failure_count >= 3
 
-    def decide_mode(self, memory, r
+    def decide_mode(self, memory: MemoryState | Any, review: ArchitectureReview) -> str:
+        state: MemoryState = memory.state if hasattr(memory, "state") else memory
+
+        architecture_plans = self._safe_list(getattr(review, "architecture_plans", None))
+        self_evolution_actions = self._normalize_self_evolution_actions(
+            getattr(review, "self_evolution_actions", None)
+        )
+        planned_work = self._safe_list(getattr(state, "planned_work", None))
+
+        if architecture_plans and self.should_trigger_architecture(state):
+            return "architecture"
+        if self_evolution_actions:
+            return "build"
+        if self.select_build_work(planned_work):
+            return "build"
+        return "repair"
