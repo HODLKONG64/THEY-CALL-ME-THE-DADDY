@@ -36,9 +36,7 @@ jobs:
 
       - name: Remove tracked junk files
         run: |
-          git rm -r --cached __pycache__ || true
-          git rm -r --cached .pytest_cache || true
-          git rm -r --cached build dist *.egg-info || true
+          git rm -r --cached --ignore-unmatch __pycache__ .pytest_cache build dist *.egg-info
 
       - name: Install dependencies
         run: |
