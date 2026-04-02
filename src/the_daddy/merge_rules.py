@@ -15,6 +15,7 @@ RISKY_PATH_PARTS = {
 MAX_SAFE_FILES = 5
 MAX_SAFE_PATCH_COUNT = 8
 MAX_ARCHITECTURE_BRANCH_FILES = 5
+MAX_AUTO_MERGE_BYTE_DELTA = 1200
 
 PROTECTED_CORE_FILES = {
     "src/the_daddy/agents/reviewer.py",
@@ -44,6 +45,8 @@ class AutoMergeJudge:
         policy_route: str,
         changed_files: Iterable[str],
         patch_count: int,
+        total_byte_delta: int,
+        review_risk: str,
     ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         files = list(changed_files)
@@ -58,6 +61,12 @@ class AutoMergeJudge:
             reasons.append(f"Patch count {patch_count} exceeds safe limit {MAX_SAFE_PATCH_COUNT}.")
         if len(files) > MAX_ARCHITECTURE_BRANCH_FILES:
             reasons.append(f"Changed file count {len(files)} exceeds safe limit {MAX_ARCHITECTURE_BRANCH_FILES}.")
+        if (review_risk or "").lower() != "low":
+            reasons.append(f"Review risk was {review_risk}, not low.")
+        if total_byte_delta > MAX_AUTO_MERGE_BYTE_DELTA:
+            reasons.append(
+                f"Patch byte delta {total_byte_delta} exceeds auto-merge threshold {MAX_AUTO_MERGE_BYTE_DELTA}."
+            )
 
         protected_touched = [p for p in files if p.strip().replace("\\", "/") in PROTECTED_CORE_FILES]
         if protected_touched:
