@@ -13,6 +13,30 @@ def utc_now_iso() -> str:
 DEFAULT_TRUST_SCORE = 50
 
 
+def _to_mapping_like(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        return dict(value)
+
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json")
+            if isinstance(dumped, dict):
+                return dict(dumped)
+        except Exception:
+            pass
+
+    if hasattr(value, "__dict__"):
+        try:
+            return dict(vars(value))
+        except Exception:
+            return None
+
+    return None
+
+
 class PatchAction(BaseModel):
     path: str
     operation: Literal["replace_file", "regex_replace"]
@@ -87,6 +111,55 @@ class ArchitectureReview(BaseModel):
     execution_notes: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"] = "medium"
     reviewed_at: str = Field(default_factory=utc_now_iso)
+
+    @field_validator("self_evolution_actions", mode="before")
+    @classmethod
+    def _normalize_self_evolution_actions(cls, value: Any) -> list[Any]:
+        if value is None:
+            return []
+
+        if not isinstance(value, list):
+            value = [value]
+
+        normalized: list[dict[str, Any]] = []
+
+        for raw_action in value:
+            action_map = _to_mapping_like(raw_action)
+            if not action_map:
+                continue
+
+            patches_raw = action_map.get("patches", [])
+            if patches_raw is None:
+                patches_raw = []
+
+            if not isinstance(patches_raw, list):
+                patches_raw = [patches_raw]
+
+            valid_patches: list[PatchAction] = []
+            for raw_patch in patches_raw:
+                patch_map = _to_mapping_like(raw_patch)
+                if not patch_map:
+                    continue
+                try:
+                    valid_patches.append(PatchAction.model_validate(patch_map))
+                except Exception:
+                    continue
+
+            # If caller supplied patches but none were valid, drop the whole action.
+            # This lets malformed entries exist in input without forcing build mode later.
+            if patches_raw and not valid_patches:
+                continue
+
+            normalized.append(
+                {
+                    "title": str(action_map.get("title", "")),
+                    "description": str(action_map.get("description", "")),
+                    "risk": action_map.get("risk", "safe"),
+                    "patches": [patch.model_dump(mode="json") for patch in valid_patches],
+                }
+            )
+
+        return normalized
 
 
 class DiagnosticPlan(BaseModel):
@@ -231,12 +304,16 @@ FailurePattern = FailurePatternRecord
 
 
 class PatchResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     path: str = ""
     description: str = ""
     success: bool = True
 
 
 class PolicyDecision(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     route: str = "safe"
     reason: str = ""
     allowed: bool = True
