@@ -30,6 +30,7 @@ src/they_call_me_the_daddy.egg-info/requires.txt
 src/they_call_me_the_daddy.egg-info/top_level.txt
 tests/test_engine_smoke.py
 tests/test_file_tools.py
+tests/test_improvement_planner.py
 tests/test_memory.py
 tests/test_monster_upgrade.py
 tests/test_policy.py
