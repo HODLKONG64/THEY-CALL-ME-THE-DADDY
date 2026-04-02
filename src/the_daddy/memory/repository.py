@@ -12,37 +12,48 @@ from ..models import (
     MetricsLedgerEntry,
     PatchProvenance,
     PlannedWorkItem,
-    Reputation,
     RunRecord,
 )
 
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 class MemoryRepository:
     def __init__(self, store) -> None:
         self.store = store
         self.state: MemoryState = self._load()
 
+    # 🔥 FIX: MIGRATE OLD MEMORY (THIS IS THE BUG FIX)
     def _migrate_legacy_state(self, data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(data, dict):
             return {}
 
         failure_patterns = data.get("failure_patterns")
+
         if isinstance(failure_patterns, dict):
             fixed: dict[str, Any] = {}
+
             for key, value in failure_patterns.items():
                 if isinstance(value, dict):
                     item = dict(value)
-                    item.setdefault("signature", key)
+
+                    # 🔥 CRITICAL: backfill missing signature
+                    if "signature" not in item:
+                        item["signature"] = key
+
                     item.setdefault("success_count", 0)
                     item.setdefault("failure_count", 0)
                     item.setdefault("last_route", "")
                     item.setdefault("last_summary", "")
                     item.setdefault("related_files", [])
                     item.setdefault("updated_at", _now())
+
                     fixed[key] = item
+
                 else:
+                    # handle completely broken entries
                     fixed[key] = {
                         "signature": key,
                         "success_count": 0,
@@ -52,8 +63,10 @@ class MemoryRepository:
                         "related_files": [],
                         "updated_at": _now(),
                     }
+
             data["failure_patterns"] = fixed
 
+        # ensure all required fields exist
         data.setdefault("schema_version", "3.0")
         data.setdefault("architecture_reviews", [])
         data.setdefault("runs", [])
@@ -67,13 +80,18 @@ class MemoryRepository:
         data.setdefault("patch_provenance", [])
         data.setdefault("learning_weights", {})
         data.setdefault("last_saved_at", _now())
+
         return data
 
     def _load(self) -> MemoryState:
         data = self.store.load()
+
         if not data:
             return MemoryState()
+
+        # 🔥 APPLY MIGRATION BEFORE VALIDATION
         migrated = self._migrate_legacy_state(data)
+
         return MemoryState.model_validate(migrated)
 
     def save(self) -> None:
@@ -113,6 +131,7 @@ class MemoryRepository:
 
     def record_failure_pattern(self, signature: str, context: dict[str, Any], resolved: bool) -> None:
         existing = self.state.failure_patterns.get(signature)
+
         if not existing:
             existing = FailurePatternRecord(signature=signature)
 
@@ -123,11 +142,7 @@ class MemoryRepository:
 
         existing.last_route = str(context.get("route", ""))
         existing.last_summary = str(context.get("diagnosis", ""))
-        existing.related_files = (
-            list(context.get("files", []))
-            if isinstance(context.get("files", []), list)
-            else []
-        )
+        existing.related_files = list(context.get("files", [])) if isinstance(context.get("files", []), list) else []
         existing.updated_at = _now()
 
         self.state.failure_patterns[signature] = existing
@@ -153,6 +168,7 @@ class MemoryRepository:
                 "timestamp": _now(),
             }
         )
+
         if len(self.state.improvement_history) > 150:
             self.state.improvement_history = self.state.improvement_history[-150:]
 
@@ -165,9 +181,12 @@ class MemoryRepository:
 
     def get_next_build_work(self) -> PlannedWorkItem | None:
         candidates = [w for w in self.state.planned_work if w.state in {"proposed", "active"}]
+
         if not candidates:
             return None
+
         candidates.sort(key=lambda x: (x.priority, x.created_at))
+
         return candidates[0]
 
     def update_work_state(self, work_id: str, state: str, note: str | None = None) -> None:
@@ -175,6 +194,7 @@ class MemoryRepository:
             if work.work_id == work_id:
                 work.state = state
                 work.updated_at = _now()
+
                 if note:
                     work.notes.append(note)
 
@@ -191,15 +211,7 @@ class MemoryRepository:
                 plan.status = status
                 plan.updated_at = _now()
 
-    def record_patch(
-        self,
-        run_id: str,
-        mode: str,
-        path: str,
-        description: str,
-        route: str,
-        source: str = "reviewer",
-    ) -> None:
+    def record_patch(self, run_id: str, mode: str, path: str, description: str, route: str, source: str = "reviewer") -> None:
         self.state.patch_provenance.append(
             PatchProvenance(
                 run_id=run_id,
@@ -210,34 +222,18 @@ class MemoryRepository:
                 route=route,
             )
         )
+
         if len(self.state.patch_provenance) > 300:
             self.state.patch_provenance = self.state.patch_provenance[-300:]
 
     def record_metrics(self, entry: MetricsLedgerEntry) -> None:
         self.state.metrics_ledger.append(entry)
+
         if len(self.state.metrics_ledger) > 300:
             self.state.metrics_ledger = self.state.metrics_ledger[-300:]
 
     def add_quarantine_event(self, event: dict[str, Any]) -> None:
         self.state.quarantine_events.append(event)
+
         if len(self.state.quarantine_events) > 200:
             self.state.quarantine_events = self.state.quarantine_events[-200:]
-
-    def get_reputation(self, agent_name: str) -> Reputation:
-        rep = self.state.reputations.get(agent_name)
-        if rep is None:
-            rep = Reputation(agent_name=agent_name)
-            self.state.reputations[agent_name] = rep
-        return rep
-
-    def update_reputation(self, agent_name: str, decision: Any) -> Reputation:
-        rep = self.get_reputation(agent_name)
-        delta = int(getattr(decision, "reputation_delta", 0))
-        rep.trust_score = max(0, min(100, rep.trust_score + delta))
-        if getattr(decision, "accepted", False):
-            rep.accepted_count += 1
-        else:
-            rep.rejected_count += 1
-        rep.updated_at = _now()
-        self.state.reputations[agent_name] = rep
-        return rep
