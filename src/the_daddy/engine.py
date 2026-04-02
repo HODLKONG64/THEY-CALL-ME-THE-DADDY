@@ -80,12 +80,10 @@ class DaddyEngine:
 
         safe_paths = set()
 
-        # 🔥 APPLY PATCHES ON BRANCH
         for patch in patches:
             apply_patch_action(self.settings.target_root, patch, self.settings.allow_extensions)
             safe_paths.add(patch.path)
 
-        # 🔥 FORCE FILE CHANGE
         marker_file = self.settings.target_root / "ARCHITECTURE.md"
         try:
             with open(marker_file, "a", encoding="utf-8") as f:
@@ -132,7 +130,7 @@ Files:
         )
 
         if merged:
-            record.backlog_updates.append(f"PR auto-merged")
+            record.backlog_updates.append("PR auto-merged")
 
         return merged
 
@@ -161,7 +159,6 @@ Files:
         record.selected_mode = mode
         record.architecture_review = review
 
-        # 🔥 FIX: USE ARCHITECTURE PATCHES
         if mode == "architecture":
             pending = self.memory.get_pending_architecture()
             patches = pending[0].patch_bundle if pending else []
@@ -170,7 +167,6 @@ Files:
             for action in review.self_evolution_actions:
                 patches.extend(action.patches)
 
-        # 🔥 FIX: DO NOT APPLY EARLY
         if mode == "architecture":
             record.patches_applied = [
                 {"path": p.path, "description": p.description, "route": "branch"}
@@ -181,18 +177,24 @@ Files:
             record.patches_applied, policy_route = self._apply_safe_patches(run_id, mode, patches)
 
         pr = None
-
         if mode == "architecture":
             pr = self._execute_architecture_pr(run_id, patches)
-
             if pr:
                 record.backlog_updates.append("PR created")
 
-        result = run_command(self.settings.command, cwd=self.settings.target_root)
+        result = run_command(
+            self.settings.command,
+            cwd=self.settings.target_root,
+            timeout_seconds=self.settings.run_timeout_seconds,
+        )
 
         record.verification = result
         record.success = result.returncode == 0
         record.summary = "Success" if record.success else f"Failed ({result.returncode})"
+
+        if not record.success:
+            sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
+            self.memory.record_failure_pattern(sig, {"route": mode, "diagnosis": "run failure"}, False)
 
         if pr:
             self._attempt_auto_merge(pr, record, policy_route)
