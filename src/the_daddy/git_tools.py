@@ -72,7 +72,7 @@ class GitBranchExecutor:
         return self.current_branch()
 
     def add_safe_paths(self, paths: Iterable[str]) -> None:
-        # 🔒 Errors from git add are no longer silently swallowed.
+        # Errors from git add are no longer silently swallowed.
         # If staging fails the caller will see the exception.
         for path in paths:
             self._run("add", path)
@@ -115,7 +115,8 @@ class GitBranchExecutor:
             )
             if result.returncode != 0:
                 raise ValueError(
-                    f"Pre-push syntax check failed for {path}:\n{result.stderr.strip()}"
+                    f"Pre-push syntax check failed for {path}:
+{result.stderr.strip()}"
                 )
 
     def commit_safe_branch_changes(self, run_id: str, safe_paths: Iterable[str]) -> str | None:
@@ -126,7 +127,7 @@ class GitBranchExecutor:
         committed = self.commit(f"auto: daddy architecture plan {run_id}")
         if not committed:
             return None
-        # 🔒 Syntax-check all .py files before pushing
+        # Syntax-check all .py files before pushing
         self._verify_py_files(paths)
         self.push(branch_name)
         return branch_name
