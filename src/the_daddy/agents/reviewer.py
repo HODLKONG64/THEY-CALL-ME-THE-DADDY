@@ -119,6 +119,35 @@ class WakeReviewer:
             ],
         )
 
+    def _derive_build_action(self, review: ArchitectureReview) -> PlannedWorkItem | None:
+        if not review.self_evolution_actions:
+            return None
+
+        first_action = review.self_evolution_actions[0]
+        related_files = [patch.path for patch in first_action.patches if getattr(patch, "path", "")]
+        if not related_files:
+            return None
+
+        title = first_action.title.strip() or "Carry bounded maintenance forward"
+        description = first_action.description.strip() or "Apply the bounded self-evolution patch set."
+
+        notes = [
+            "Derived from reviewer-proposed self-evolution action.",
+            "Keep the change bounded and verification-driven.",
+        ]
+
+        return PlannedWorkItem(
+            work_id="build-thread-derived-001",
+            title=title[:120],
+            description=description[:500],
+            mode="build",
+            state="proposed",
+            priority=1,
+            route="safe",
+            related_files=related_files[:8],
+            notes=notes,
+        )
+
     def _default_architecture_plan(self, repo_root: Path) -> ArchitecturePlan | None:
         target = repo_root / "src" / "the_daddy" / "merge_rules.py"
         current = self._read_text(target)
@@ -156,7 +185,11 @@ Rules:
 - Prefer one small executable Python patch over documentation-only output when possible.
 - Only emit safe, bounded changes.
 - Never emit secrets handling, destructive shell commands, dependency explosions, or large rewrites.
-- If no good patch is visible, return empty self_evolution_actions and empty architecture_plans.
+- If you emit any self_evolution_actions, also emit at least one matching build_action that describes carrying that patch set forward.
+- Only emit architecture_plans when there is a genuine repo-wide structural issue that should be handled in a branch lane.
+- If there is no justified architecture plan, return an empty architecture_plans array.
+- Keep build_actions concrete, file-aware, and aligned to the self_evolution_actions when present.
+- Do not invent architecture work just to fill the field.
 
 Required JSON shape:
 {{
@@ -265,7 +298,12 @@ Repository snapshot:
         try:
             data = self.client.generate_json(
                 model=self.settings.openai_model_review,
-                system="You are a strict JSON-only architecture reviewer. Return only a valid JSON object matching the provided schema.",
+                system=(
+                    "You are a strict JSON-only architecture reviewer. "
+                    "Return only a valid JSON object matching the provided schema. "
+                    "When you propose a self-evolution action, include a matching build_action. "
+                    "Only include architecture_plans when clearly justified by a repo-wide structural issue."
+                ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
             )
@@ -275,8 +313,13 @@ Repository snapshot:
             return self._fallback_review(repo_root, f"Reviewer model call failed: {type(exc).__name__}: {exc}")
 
         if not review.build_actions:
-            review.build_actions = [self._default_build_action()]
-            review.execution_notes.append("Default build action injected because reviewer returned none.")
+            derived_action = self._derive_build_action(review)
+            if derived_action is not None:
+                review.build_actions = [derived_action]
+                review.execution_notes.append("Derived build action injected from reviewer-proposed self-evolution patch set.")
+            else:
+                review.build_actions = [self._default_build_action()]
+                review.execution_notes.append("Default build action injected because reviewer returned none.")
 
         if not review.self_evolution_actions:
             fallback_action = self._fallback_patch_action(repo_root)
@@ -286,12 +329,11 @@ Repository snapshot:
                     "Fallback self-evolution patch injected because reviewer returned no executable patch."
                 )
 
-        if not review.architecture_plans:
-            fallback_plan = self._default_architecture_plan(repo_root)
-            if fallback_plan is not None:
-                review.architecture_plans = [fallback_plan]
-                review.execution_notes.append(
-                    "Fallback architecture plan injected because reviewer returned no branch patch bundle."
-                )
+        if review.architecture_plans:
+            justified_plans: list[ArchitecturePlan] = []
+            for plan in review.architecture_plans:
+                if plan.patch_bundle and plan.files_touched:
+                    justified_plans.append(plan)
+            review.architecture_plans = justified_plans
 
         return review
