@@ -34,6 +34,16 @@ BLOCKED_PATH_PARTS = {
     "path",
 }
 
+PROTECTED_CORE_FILES = {
+    "src/the_daddy/agents/reviewer.py",
+    "src/the_daddy/engine.py",
+    "src/the_daddy/models.py",
+    "src/the_daddy/policy.py",
+    "src/the_daddy/scoring.py",
+    "src/the_daddy/merge_rules.py",
+    "src/the_daddy/git_tools.py",
+}
+
 
 def _safe_target(root: Path, rel: str) -> Path:
     cleaned = str(rel).strip().replace("\\", "/")
@@ -130,7 +140,28 @@ def apply_patch_action(root: Path, action: PatchAction, allow_extensions: Iterab
     if action.operation == "replace_file":
         if action.new_content is None:
             raise ValueError("replace_file missing new_content")
+
+        # 🔒 PROTECTED CORE FILES: never allow auto-patch to overwrite them
+        norm_path = action.path.strip().replace("\\", "/")
+        if norm_path in PROTECTED_CORE_FILES:
+            raise ValueError(f"Reject: protected core file cannot be modified by auto-patch: {norm_path}")
+
         new_content = action.new_content
+        new_len = len(new_content)
+        old_len = len(old_content)
+
+        # 🔒 MINIMUM CONTENT SIZE: reject tiny stubs
+        if new_len < 50:
+            raise ValueError(
+                f"Reject: new_content too small ({new_len} bytes) for {action.path}"
+            )
+
+        # 🔒 DESTRUCTIVE SHRINK GUARD: reject if new file is less than 25% of original
+        if old_len > 0 and new_len < old_len * 0.25:
+            raise ValueError(
+                f"Reject: destructive shrink detected for {action.path} "
+                f"(old={old_len} bytes, new={new_len} bytes, ratio={new_len / old_len:.2f})"
+            )
 
     else:
         if action.pattern is None or action.replacement is None:
