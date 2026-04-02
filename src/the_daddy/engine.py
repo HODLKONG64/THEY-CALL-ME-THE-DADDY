@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .agents.diagnoser import Diagnoser
 from .agents.improvement_planner import ImprovementPlanner
@@ -10,11 +13,23 @@ from .config import Settings, get_settings
 from .logging_utils import write_local_summary
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
-from .models import ArchitectureReview, ExternalProposal, RunRecord, utc_now_iso
+from .models import ArchitectureReview, CommandResult, ExternalProposal, RunRecord, utc_now_iso
 from .policy import classify_patch_risk
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action, find_referenced_files, gather_file_context
 from .telemetry import TraceBuffer
+
+
+KEY_FINGERPRINT_FILES = [
+    "README.md",
+    "ARCHITECTURE.md",
+    ".github/workflows/daddy-cycle.yml",
+    "src/the_daddy/engine.py",
+    "src/the_daddy/models.py",
+    "src/the_daddy/policy.py",
+    "src/the_daddy/agents/reviewer.py",
+    "src/the_daddy/memory/repository.py",
+]
 
 
 def make_run_id() -> str:
@@ -30,6 +45,21 @@ class DaddyEngine:
         self.diagnoser = Diagnoser(self.settings) if self.settings.has_openai else None
         self.vetter = ExternalVetter(self.settings) if self.settings.has_openai else None
         self.improvement_planner = ImprovementPlanner()
+
+    def repo_fingerprint(self) -> dict:
+        files = {}
+        root = self.settings.target_root.resolve()
+        for rel in KEY_FINGERPRINT_FILES:
+            p = root / rel
+            if p.exists() and p.is_file():
+                text = p.read_text(encoding="utf-8", errors="ignore")
+                files[rel] = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+        head = "unknown"
+        try:
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        except Exception:
+            pass
+        return {"git_head": head, "files": files}
 
     def architecture_review(self, trace: TraceBuffer) -> ArchitectureReview | None:
         if not self.reviewer:
@@ -119,13 +149,16 @@ class DaddyEngine:
         run_id = make_run_id()
         trace = TraceBuffer()
         record = RunRecord(run_id=run_id, command=self.settings.command)
-        trace.add("run.start", run_id=run_id, command=self.settings.command)
+        record.repo_fingerprint = self.repo_fingerprint()
+        trace.add("run.start", run_id=run_id, command=self.settings.command, repo_fingerprint=record.repo_fingerprint)
 
         review = self.architecture_review(trace)
         record.architecture_review = review
         if review:
             record.backlog_updates = self.improvement_planner.merge_review_into_backlog(self.memory.state, review)
             record.self_evolution = self._execute_self_evolution(review, trace)
+            if record.self_evolution and record.self_evolution.patches:
+                record.rollback_manifest = [item.get("rollback", {}) for item in record.self_evolution.patches]
             self.memory.save()
 
         prior_attempts = []
@@ -187,6 +220,7 @@ class DaddyEngine:
                 for change in plan.changes:
                     patch_events.append(apply_patch_action(self.settings.target_root, change, self.settings.allow_extensions))
                 record.patches_applied.extend(patch_events)
+                record.rollback_manifest.extend([item.get("rollback", {}) for item in patch_events])
                 self.memory.record_failure_pattern(
                     signature,
                     {"attempt": attempt, "diagnosis": plan.diagnosis, "patches": patch_events},
@@ -200,7 +234,7 @@ class DaddyEngine:
                 break
 
         if last_result is not None:
-            record.verification = last_result
+            record.verification = CommandResult.model_validate(last_result.model_dump() if hasattr(last_result, 'model_dump') else last_result)
         if not record.summary:
             record.summary = "Run finished." if record.success else "Run finished without a successful repair."
         record.finished_at = utc_now_iso()

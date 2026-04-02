@@ -1,4 +1,4 @@
-name: Daddy Cycle
+name: daddy-cycle
 
 on:
   workflow_dispatch:
@@ -9,46 +9,57 @@ permissions:
   contents: write
 
 jobs:
-  daddy:
+  run-daddy:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_MODEL_MAIN: ${{ vars.OPENAI_MODEL_MAIN || 'gpt-5.4' }}
-      OPENAI_MODEL_REVIEW: ${{ vars.OPENAI_MODEL_REVIEW || 'gpt-5.4' }}
-      OPENAI_MODEL_VET: ${{ vars.OPENAI_MODEL_VET || 'gpt-5.4-mini' }}
-      OPENAI_MODEL_LIGHT: ${{ vars.OPENAI_MODEL_LIGHT || 'gpt-5.4-nano' }}
+      OPENAI_MODEL_MAIN: gpt-5.4
+      OPENAI_MODEL_REVIEW: gpt-5.4
+      OPENAI_MODEL_VET: gpt-5.4-mini
+      OPENAI_MODEL_LIGHT: gpt-5.4-nano
       R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
-      R2_REGION: ${{ vars.R2_REGION || 'auto' }}
-      DADDY_COMMAND: ${{ vars.DADDY_COMMAND || 'pytest -q' }}
-      DADDY_MAINTENANCE_COMMAND: ${{ vars.DADDY_MAINTENANCE_COMMAND || 'pytest -q' }}
-      DADDY_TARGET_ROOT: ${{ vars.DADDY_TARGET_ROOT || '.' }}
-      DADDY_MAX_ATTEMPTS: ${{ vars.DADDY_MAX_ATTEMPTS || '4' }}
-      DADDY_RUN_TIMEOUT_SECONDS: ${{ vars.DADDY_RUN_TIMEOUT_SECONDS || '1200' }}
-      DADDY_ENABLE_SELF_EVOLUTION: ${{ vars.DADDY_ENABLE_SELF_EVOLUTION || 'true' }}
-      DADDY_SELF_EVOLUTION_MAX_ACTIONS: ${{ vars.DADDY_SELF_EVOLUTION_MAX_ACTIONS || '3' }}
+      R2_REGION: auto
+      DADDY_COMMAND: pytest -q
+      DADDY_MAINTENANCE_COMMAND: pytest -q
+      DADDY_TARGET_ROOT: .
+      DADDY_MAX_ATTEMPTS: 4
+      DADDY_RUN_TIMEOUT_SECONDS: 1200
+      DADDY_ENABLE_SELF_EVOLUTION: true
+      DADDY_SELF_EVOLUTION_MAX_ACTIONS: 3
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: Install package
+          python-version: '3.11'
+      - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-
-      - name: Run The Daddy
+      - name: Run Daddy
         run: daddy run
-
-      - name: Commit safe self-evolution changes
+      - name: Commit only engine-approved changes
         run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          run_files = sorted(Path('doctor_local').glob('run_*.json'))
+          approved = False
+          if run_files:
+              data = json.loads(run_files[-1].read_text(encoding='utf-8'))
+              se = data.get('self_evolution') or {}
+              approved = bool(se.get('applied')) or bool(data.get('patches_applied'))
+          print('approved=' + ('true' if approved else 'false'))
+          Path('doctor_local/.approved').write_text('true' if approved else 'false', encoding='utf-8')
+          PY
+          if [ "$(cat doctor_local/.approved)" != "true" ]; then
+            echo "No engine-approved repo changes to commit."
+            exit 0
+          fi
           if git diff --quiet; then
             echo "No repo changes to commit."
             exit 0
@@ -58,15 +69,10 @@ jobs:
           git add .
           git commit -m "chore: apply daddy safe self-evolution"
           git push
-
-      - name: Export summary
-        if: always()
+      - name: Show summary
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path("doctor_local/last_run_summary.txt")
-          if p.exists():
-              print(p.read_text())
-          else:
-              print("No run summary generated.")
+          p = Path('doctor_local/last_run_summary.txt')
+          print(p.read_text(encoding='utf-8') if p.exists() else 'No run summary generated.')
           PY
