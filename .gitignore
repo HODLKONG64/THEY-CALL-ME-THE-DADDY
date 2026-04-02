@@ -1,36 +1,75 @@
-.venv/
+# =========================
+# PYTHON CACHE / BYTECODE
+# =========================
 __pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# PYTEST / TEST CACHE
+# =========================
 .pytest_cache/
-doctor_local/
-.env
-*.pyc
-*.pyo
-*.pyd
-.DS_Store
-.coverage
-htmlcov/
+.cache/
 
-# === DADDY SELF-EVOLUTION PROTECTION (DO NOT REMOVE) ===
-bool
-None
-str
-int
-float
-list
-dict
-tuple
-set
-path/
-README_FIX.md
-THEY-CALL-ME-THE-DADDY
-
-# build / packaging
+# =========================
+# BUILD / DIST
+# =========================
 build/
 dist/
 *.egg-info/
+.eggs/
 
-# cache / temp
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# =========================
+# VIRTUAL ENVIRONMENTS
+# =========================
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# OS / SYSTEM FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# IDE / EDITOR
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# LOGS
+# =========================
+*.log
+
+# =========================
+# ENV / SECRETS
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# RUNTIME LOCAL STATE
+# =========================
+doctor_local/
+
+# =========================
+# TEMP / ARTIFACTS
+# =========================
+*.tmp
+*.temp
+
+# =========================
+# COVERAGE
+# =========================
+.coverage
+htmlcov/
+
+# =========================
+# MISC
+# =========================
+*.bak
+*.swp
