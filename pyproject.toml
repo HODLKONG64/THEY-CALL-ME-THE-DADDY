@@ -1,35 +1,21 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "they-call-me-the-daddy"
 version = "1.0.0"
-description = "OpenAI-driven self-improving debugging swarm with R2 memory, external agent vetting, and workflow automation"
-readme = "README.md"
+description = "Self-evolving agent system"
 requires-python = ">=3.11"
-authors = [{name = "OpenAI", email = "noreply@example.com"}]
+
 dependencies = [
-  "openai>=2.0.0",
-  "boto3>=1.35.0",
-  "python-dotenv>=1.0.1",
-  "pydantic>=2.8.2",
-  "httpx>=0.27.0",
-  "rich>=13.7.1",
-  "fastapi>=0.115.0",
-  "uvicorn>=0.30.0",
-  "pytest>=8.0.0"
+    "openai>=1.30.0",
+    "boto3>=1.34.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.27.0",
+    "rich>=13.7.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "pytest>=8.2.0"
 ]
-
-[project.scripts]
-daddy = "the_daddy.cli:main"
-daddy-api = "the_daddy.dashboard:main"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
