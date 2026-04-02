@@ -9,3 +9,16 @@ doctor_local/
 .DS_Store
 .coverage
 htmlcov/
+
+# packaging / build artifacts
+build/
+dist/
+*.egg-info/
+
+# self-evolution junk blockers
+bool
+None
+str
+int
+float
+THEY-CALL-ME-THE-DADDY
