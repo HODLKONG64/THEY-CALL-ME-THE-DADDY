@@ -7,6 +7,7 @@ src/the_daddy/dashboard.py
 src/the_daddy/engine.py
 src/the_daddy/git_tools.py
 src/the_daddy/logging_utils.py
+src/the_daddy/merge_rules.py
 src/the_daddy/models.py
 src/the_daddy/policy.py
 src/the_daddy/prompts.py
