@@ -66,6 +66,7 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/scoring.py",
     "src/the_daddy/merge_rules.py",
     "src/the_daddy/git_tools.py",
+    "src/the_daddy/runtime/command_runner.py",
 }
 
 
@@ -101,15 +102,12 @@ def _is_blocked_path(path: str) -> list[str]:
 def _looks_like_hallucinated_path(path: str) -> bool:
     normalized = _normalize_path(path)
 
-    # Block invented near-miss path.
     if normalized == "src/the_daddy/reviewer.py":
         return True
 
-    # Protected files are handled elsewhere.
     if normalized in PROTECTED_CORE_FILES:
         return False
 
-    # Arbitrary new top-level modules under src/the_daddy/ are suspicious.
     if normalized.startswith("src/the_daddy/"):
         remainder = normalized[len("src/the_daddy/"):]
         if "/" not in remainder:
@@ -129,24 +127,19 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
             reasons.append("Empty patch path")
             continue
 
-        # 🔒 PATH BLOCKING
         reasons.extend(_is_blocked_path(path))
 
-        # 🔒 EXTENSION CHECK
         if not any(path.endswith(ext) for ext in SAFE_EXTENSIONS):
             reasons.append(f"Unsafe extension: {path}")
 
-        # 🔒 CONTENT CHECK
         content = (patch.new_content or "") + (patch.pattern or "") + (patch.replacement or "")
         for bad in BLOCKED_KEYWORDS:
             if bad in content:
                 reasons.append(f"Blocked keyword detected: {bad}")
 
-        # 🔒 WORKFLOW FILES → FORCE PR
         if _is_workflow_file(path):
             route = "branch"
 
-        # 🔒 HALLUCINATED / NEAR-MISS PATHS
         if _looks_like_hallucinated_path(path):
             reasons.append(f"Blocked hallucinated or near-miss path: {path}")
 
