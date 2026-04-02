@@ -15,6 +15,7 @@ from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
+from .runtime.iterative_depth_learner import IterativeDepthLearner
 from .scoring import rank_patch_set
 
 
@@ -32,6 +33,9 @@ class DaddyEngine:
         self.planner = ImprovementPlanner()
         self.diagnoser = Diagnoser(self.settings)
         self.merge_judge = AutoMergeJudge()
+        self.depth_learner = IterativeDepthLearner(
+            max_depth=getattr(self.settings, "max_depth", 3)
+        )
 
         self.git_tools = GitBranchExecutor(
             repo_root=self.settings.target_root,
@@ -344,6 +348,61 @@ class DaddyEngine:
             patches=list(applied_patches),
         )
 
+    def _run_depth_gate(
+        self,
+        *,
+        mode: str,
+        patches: list,
+        record: RunRecord,
+    ) -> list:
+        if not patches:
+            return patches
+
+        depth_result = self.depth_learner.deepen(
+            patches=[
+                {
+                    "path": getattr(p, "path", ""),
+                    "operation": getattr(p, "operation", ""),
+                    "description": getattr(p, "description", ""),
+                    "new_content_length": len((getattr(p, "new_content", "") or "").encode("utf-8")),
+                    "pattern": getattr(p, "pattern", None),
+                }
+                for p in patches
+            ],
+            trace=getattr(record, "trace", []) or [],
+            patch_count=len(patches),
+            total_byte_delta=0,
+        )
+
+        record.trace.append(
+            {
+                "event": "iterative_depth_result",
+                "decision": depth_result.get("decision", ""),
+                "depth_reached": depth_result.get("depth_reached", 0),
+                "reasons": depth_result.get("reasons", []),
+            }
+        )
+
+        decision = depth_result.get("decision")
+        if decision == "reject":
+            record.trace.append(
+                {
+                    "event": "patch_blocked_by_depth_learning",
+                    "reason": " | ".join(depth_result.get("reasons", [])),
+                }
+            )
+            return []
+
+        if decision == "escalate_to_branch":
+            record.trace.append(
+                {
+                    "event": "patch_escalated_by_depth_learning",
+                    "reason": " | ".join(depth_result.get("reasons", [])),
+                }
+            )
+
+        return patches
+
     def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str, prepared_branch: str | None = None) -> None:
         changed_files = self._changed_files_from_record(record)
 
@@ -519,6 +578,8 @@ class DaddyEngine:
             for action in getattr(review, "self_evolution_actions", []) or []:
                 if action.patches:
                     patches.extend(action.patches)
+
+        patches = self._run_depth_gate(mode=mode, patches=patches, record=record)
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
