@@ -39,6 +39,7 @@ BANNED_TEST_TITLE_PATTERNS = (
 PROACTIVE_RUNTIME_PATH = "src/the_daddy/runtime/trace_summary.py"
 FALLBACK_RUNTIME_PATH = "src/the_daddy/runtime/reviewer_fallback.py"
 ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
+ERROR_DIGEST_RUNTIME_PATH = "src/the_daddy/runtime/error_digest.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -48,12 +49,14 @@ SAFE_NEW_FILE_ALLOWLIST = {
     PROACTIVE_RUNTIME_PATH,
     FALLBACK_RUNTIME_PATH,
     ARCHITECTURE_RUNTIME_PATH,
+    ERROR_DIGEST_RUNTIME_PATH,
 }
 
 ALLOWLISTED_RUNTIME_HELPERS = {
     PROACTIVE_RUNTIME_PATH,
     FALLBACK_RUNTIME_PATH,
     ARCHITECTURE_RUNTIME_PATH,
+    ERROR_DIGEST_RUNTIME_PATH,
 }
 
 BANNED_INVENTED_MODULE_FILENAMES = {
@@ -175,6 +178,10 @@ class WakeReviewer:
             "logging": "observability",
             "runtime": "runtime",
             "telemetry": "observability",
+            "error": "error",
+            "digest": "digest",
+            "failure": "failure",
+            "failures": "failure",
         }
 
         stopwords = {
@@ -222,6 +229,8 @@ class WakeReviewer:
             tokens.add("trace_observability")
         if "runtime" in tokens and "observability" in tokens:
             tokens.add("runtime_observability")
+        if "error" in tokens and "digest" in tokens:
+            tokens.add("error_digest")
 
         return tokens
 
@@ -611,6 +620,7 @@ class WakeReviewer:
         repo_root: Path,
     ) -> ArchitectureReview:
         proactive_action = self._proactive_runtime_action(repo_root)
+        digest_action = self._error_digest_action(repo_root)
         fallback_action = self._fallback_patch_action(repo_root)
 
         if proactive_action is not None:
@@ -618,6 +628,14 @@ class WakeReviewer:
             review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
             review.execution_notes.append(
                 "Reviewer output drifted onto invalid targets; replaced with allowlisted proactive runtime helper."
+            )
+            return review
+
+        if digest_action is not None:
+            review.self_evolution_actions = [digest_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted error-digest runtime helper."
             )
             return review
 
@@ -636,7 +654,7 @@ class WakeReviewer:
         return review
 
     def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
-        target = repo_root / "src" / "the_daddy" / "runtime" / "reviewer_fallback.py"
+        target = repo_root / FALLBACK_RUNTIME_PATH
         if target.exists():
             return None
 
@@ -704,6 +722,49 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             ],
         )
 
+    def _error_digest_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / ERROR_DIGEST_RUNTIME_PATH
+        if target.exists():
+            return None
+
+        new_content = '''from __future__ import annotations
+
+from collections import Counter
+from typing import Any
+
+
+def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    kinds = Counter()
+    recent: list[dict[str, Any]] = []
+
+    for item in items:
+        event = str(item.get("event", "unknown")).strip() or "unknown"
+        if event in {"patch_apply_failed", "pr_delivery_failed", "branch_prepare_failed"}:
+            kinds[event] += 1
+            if len(recent) < 5:
+                recent.append(item)
+
+    return {
+        "total_error_events": sum(kinds.values()),
+        "error_counts": dict(kinds),
+        "recent_errors": recent,
+    }
+'''
+        return SelfEvolutionAction(
+            title="Add runtime error digest helper",
+            description="Create a bounded runtime helper that summarizes recent error-class events for safer diagnostics.",
+            risk="safe",
+            patches=[
+                PatchAction(
+                    path=ERROR_DIGEST_RUNTIME_PATH,
+                    operation="replace_file",
+                    new_content=new_content,
+                    description="Add runtime error digest helper.",
+                )
+            ],
+        )
+
     def _default_build_action(self) -> PlannedWorkItem:
         return PlannedWorkItem(
             work_id="build-thread-001",
@@ -714,9 +775,10 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             priority=1,
             route="safe",
             related_files=[
-                "src/the_daddy/runtime/trace_summary.py",
-                "src/the_daddy/runtime/reviewer_fallback.py",
-                "src/the_daddy/runtime/architecture_probe.py",
+                PROACTIVE_RUNTIME_PATH,
+                FALLBACK_RUNTIME_PATH,
+                ARCHITECTURE_RUNTIME_PATH,
+                ERROR_DIGEST_RUNTIME_PATH,
             ],
             notes=[
                 "Prefer bounded code patches over doc-only churn.",
@@ -762,7 +824,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
         )
 
     def _default_architecture_plan(self, repo_root: Path) -> ArchitecturePlan | None:
-        target = repo_root / "src" / "the_daddy" / "runtime" / "architecture_probe.py"
+        target = repo_root / ARCHITECTURE_RUNTIME_PATH
         if target.exists():
             return None
 
@@ -854,6 +916,7 @@ Rules:
 - CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
 - CRITICAL: do not retry the same target if it was recently blocked for shrink-replace or missing regex anchor.
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
+- Prefer a fresh allowlisted helper like error_digest.py before repeating stale runtime-helper ideas.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
@@ -935,12 +998,15 @@ Repository snapshot:
 
     def _fallback_review(self, repo_root: Path, reason: str) -> ArchitectureReview:
         proactive_action = self._proactive_runtime_action(repo_root)
+        digest_action = self._error_digest_action(repo_root)
         fallback_action = self._fallback_patch_action(repo_root)
         fallback_plan = self._default_architecture_plan(repo_root)
 
         actions: list[SelfEvolutionAction] = []
         if proactive_action is not None:
             actions.append(proactive_action)
+        elif digest_action is not None:
+            actions.append(digest_action)
         elif fallback_action is not None:
             actions.append(fallback_action)
 
@@ -949,6 +1015,8 @@ Repository snapshot:
         execution_notes = ["Fallback review used because model output was unavailable or invalid."]
         if proactive_action is not None:
             execution_notes.append("Proactive runtime improvement injected while repo is otherwise healthy.")
+        elif digest_action is not None:
+            execution_notes.append("Error digest runtime improvement injected while repo is otherwise healthy.")
 
         return ArchitectureReview(
             diagnosis="Fallback review generated",
@@ -988,6 +1056,7 @@ Repository snapshot:
                     "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
+                    "Prefer a fresh allowlisted helper like error_digest.py before repeating stale helper ideas. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -1048,12 +1117,19 @@ Repository snapshot:
                     "Proactive runtime improvement injected while repo is green."
                 )
             else:
-                fallback_action = self._fallback_patch_action(repo_root)
-                if fallback_action is not None:
-                    review.self_evolution_actions = [fallback_action]
+                digest_action = self._error_digest_action(repo_root)
+                if digest_action is not None:
+                    review.self_evolution_actions = [digest_action]
                     review.execution_notes.append(
-                        "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                        "Error digest runtime improvement injected while repo is green."
                     )
+                else:
+                    fallback_action = self._fallback_patch_action(repo_root)
+                    if fallback_action is not None:
+                        review.self_evolution_actions = [fallback_action]
+                        review.execution_notes.append(
+                            "Fallback self-evolution patch injected because reviewer returned no executable patch."
+                        )
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
