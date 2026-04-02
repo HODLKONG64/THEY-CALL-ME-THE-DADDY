@@ -1,23 +1,82 @@
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
 from .config import get_settings
 from .engine import DaddyEngine
 
 
-def main():
+def _json_default(obj):
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json")
+    if isinstance(obj, Path):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _print_run_summary(record) -> None:
+    payload = {
+        "run_id": record.run_id,
+        "command": record.command,
+        "selected_mode": getattr(record, "selected_mode", "unknown"),
+        "success": record.success,
+        "summary": record.summary,
+        "patch_count": len(getattr(record, "patches_applied", []) or []),
+        "backlog_updates": getattr(record, "backlog_updates", []) or [],
+        "repo_fingerprint": getattr(record, "repo_fingerprint", {}) or {},
+        "verification": getattr(record, "verification", None),
+    }
+
+    architecture_review = getattr(record, "architecture_review", None)
+    if architecture_review is not None:
+        payload["architecture_review"] = {
+            "risk_level": getattr(architecture_review, "risk_level", ""),
+            "self_evolution_actions": len(getattr(architecture_review, "self_evolution_actions", []) or []),
+            "build_actions": len(getattr(architecture_review, "build_actions", []) or []),
+            "architecture_plans": len(getattr(architecture_review, "architecture_plans", []) or []),
+            "execution_notes": getattr(architecture_review, "execution_notes", []) or [],
+            "backlog_items": getattr(architecture_review, "backlog_items", []) or [],
+        }
+
+        plans = getattr(architecture_review, "architecture_plans", []) or []
+        if plans:
+            payload["architecture_plan_titles"] = [getattr(p, "title", "") for p in plans]
+            payload["architecture_plan_patch_counts"] = [
+                len(getattr(p, "patch_bundle", []) or []) for p in plans
+            ]
+
+    verification = getattr(record, "verification", None)
+    if verification is not None:
+        payload["verification_returncode"] = getattr(verification, "returncode", None)
+        payload["verification_timed_out"] = getattr(verification, "timed_out", False)
+        payload["verification_stdout"] = getattr(verification, "stdout", "") or ""
+        payload["verification_stderr"] = getattr(verification, "stderr", "") or ""
+        payload["verification_combined"] = getattr(verification, "combined", "") or ""
+
+    print(json.dumps(payload, indent=2, default=_json_default))
+
+
+def main() -> int:
     settings = get_settings()
 
     if len(sys.argv) < 2:
-        print("Usage: run")
-        return 1
+        print("Usage: python -m src.the_daddy.cli run", file=sys.stderr)
+        return 2
+
+    command = sys.argv[1].strip().lower()
+
+    if command != "run":
+        print(f"Unknown command: {command}", file=sys.stderr)
+        return 2
 
     engine = DaddyEngine(settings)
-    result = engine.run()
+    record = engine.run()
 
-    print(result.summary)
-    return 0 if result.success else 1
+    _print_run_summary(record)
+
+    return 0 if getattr(record, "success", False) else 1
 
 
 if __name__ == "__main__":
