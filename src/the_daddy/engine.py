@@ -59,21 +59,52 @@ class DaddyEngine:
             "total_score": scored.total_score,
             "recommended_route": scored.recommended_route,
             "reasons": list(scored.reasons),
+            "items": [
+                {
+                    "path": item.path,
+                    "score": item.score,
+                    "reasons": list(item.reasons),
+                }
+                for item in getattr(scored, "items", []) or []
+            ],
         }
 
-    def _apply_safe_patches(self, run_id: str, mode: str, patches: list):
+    def _apply_safe_patches(self, run_id: str, mode: str, patches: list, record: RunRecord):
         applied = []
         rollback_manifest = []
 
         if not patches:
+            record.trace.append(
+                {
+                    "event": "patch_scoring",
+                    "result": "no_patches",
+                }
+            )
             return applied, rollback_manifest, "none"
 
         scoring = self._score_patch_set(patches)
+        record.trace.append(
+            {
+                "event": "patch_scoring",
+                "recommended_route": scoring["recommended_route"],
+                "total_score": scoring["total_score"],
+                "reasons": scoring["reasons"],
+                "items": scoring["items"],
+            }
+        )
 
         if scoring["recommended_route"] == "reject":
             return applied, rollback_manifest, "reject"
 
         policy = classify_patch_risk(patches)
+        record.trace.append(
+            {
+                "event": "patch_policy",
+                "passed": policy.passed,
+                "route": policy.route,
+                "reasons": list(policy.reasons),
+            }
+        )
 
         if not policy.passed:
             return applied, rollback_manifest, policy.route
@@ -89,6 +120,15 @@ class DaddyEngine:
                     self.settings.allow_extensions,
                 )
             except Exception as exc:
+                record.trace.append(
+                    {
+                        "event": "patch_apply_failed",
+                        "path": getattr(patch, "path", ""),
+                        "description": getattr(patch, "description", ""),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                )
                 self.memory.record_failure_pattern(
                     self.memory.fingerprint(f"{patch.path}:{type(exc).__name__}:{str(exc)}"),
                     {
@@ -122,6 +162,16 @@ class DaddyEngine:
                     "path": result["rollback"]["path"],
                     "old_hash": result["rollback"]["old_hash"],
                     "old_content": result["rollback"]["old_content"],
+                }
+            )
+
+            record.trace.append(
+                {
+                    "event": "patch_applied",
+                    "path": result["path"],
+                    "description": patch.description,
+                    "bytes_before": result["bytes_before"],
+                    "bytes_after": result["bytes_after"],
                 }
             )
 
@@ -333,7 +383,7 @@ class DaddyEngine:
             record.patches_applied,
             record.rollback_manifest,
             policy_route,
-        ) = self._apply_safe_patches(run_id, mode, patches)
+        ) = self._apply_safe_patches(run_id, mode, patches, record)
 
         if policy_route == "none":
             policy_route = "safe"
