@@ -74,6 +74,12 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/runtime/command_runner.py",
 }
 
+ALLOWLISTED_RUNTIME_HELPERS = {
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+}
+
 LOW_VALUE_PATTERNS = [
     "trace",
     "logging",
@@ -90,6 +96,15 @@ DIVERSITY_TARGETS = [
 ]
 
 
+def _normalize_path(path: str) -> str:
+    normalized = (path or "").strip().replace("\\", "/")
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
 def _content_for_scoring(action: PatchAction) -> str:
     return (action.new_content or "") + (action.pattern or "") + (action.replacement or "")
 
@@ -98,7 +113,13 @@ def _value_score_bonus(path: str) -> tuple[float, list[str]]:
     score = 0.0
     reasons: list[str] = []
 
-    lowered = path.lower()
+    normalized = _normalize_path(path)
+    lowered = normalized.lower()
+
+    if normalized in ALLOWLISTED_RUNTIME_HELPERS:
+        score += 3.5
+        reasons.append("allowlisted runtime helper bonus: +3.5")
+        return score, reasons
 
     if any(pattern in lowered for pattern in LOW_VALUE_PATTERNS):
         score -= 2.5
@@ -115,12 +136,12 @@ def score_patch(action: PatchAction) -> PatchScore:
     score = 0.0
     reasons: list[str] = []
     path = (action.path or "").strip()
-    norm_path = path.replace("\\", "/")
-    filename = norm_path.split("/")[-1]
+    norm_path = _normalize_path(path)
+    filename = norm_path.split("/")[-1] if norm_path else ""
 
     ext_bonus = 0.0
     for ext, bonus in SAFE_FILE_BONUS.items():
-        if path.endswith(ext):
+        if norm_path.endswith(ext):
             ext_bonus = bonus
             score += bonus
             reasons.append(f"safe extension bonus {ext}: +{bonus}")
@@ -159,8 +180,12 @@ def score_patch(action: PatchAction) -> PatchScore:
         score -= 2.0
         reasons.append("empty patch content: -2")
     elif content_bytes < 100 and action.operation == "replace_file":
-        score -= 20.0
-        reasons.append("tiny replace_file content (<100 bytes): -20")
+        if norm_path in ALLOWLISTED_RUNTIME_HELPERS:
+            score += 0.5
+            reasons.append("small allowlisted helper stub: +0.5")
+        else:
+            score -= 20.0
+            reasons.append("tiny replace_file content (<100 bytes): -20")
     elif content_bytes < 4000:
         score += 1.5
         reasons.append("small bounded patch: +1.5")
@@ -175,11 +200,11 @@ def score_patch(action: PatchAction) -> PatchScore:
         score += 0.5
         reasons.append("surgical regex patch: +0.5")
 
-    if "test" in path.lower():
+    if "test" in norm_path.lower():
         score += 1.0
         reasons.append("test-related file: +1")
 
-    if path.startswith("src/"):
+    if norm_path.startswith("src/"):
         score += 1.0
         reasons.append("source file target: +1")
 
@@ -202,11 +227,12 @@ def rank_patch_set(actions: Iterable[PatchAction]) -> RankedPatchSet:
         )
 
     min_item = min(item.score for item in items)
+    protected_core_touched = any(_normalize_path(item.path) in PROTECTED_CORE_FILES for item in items)
 
-    if min_item <= -10:
+    if protected_core_touched or min_item <= -15:
         recommended_route = "reject"
         reasons.append("at least one patch scored as clearly unsafe")
-    elif any(".github/workflows/" in item.path or ".github/actions/" in item.path for item in items):
+    elif any(".github/workflows/" in _normalize_path(item.path) or ".github/actions/" in _normalize_path(item.path) for item in items):
         recommended_route = "branch"
         reasons.append("workflow or action file present")
     elif total < 0:
@@ -217,7 +243,8 @@ def rank_patch_set(actions: Iterable[PatchAction]) -> RankedPatchSet:
         reasons.append("patch set is bounded and net positive")
 
     if len(items) > 8:
-        recommended_route = "recommend" if recommended_route == "safe" else recommended_route
+        if recommended_route == "safe":
+            recommended_route = "recommend"
         reasons.append("too many patches in one set")
 
     return RankedPatchSet(
