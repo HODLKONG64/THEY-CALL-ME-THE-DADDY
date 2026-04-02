@@ -30,6 +30,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install .
+          pip install pytest
 
       - name: Run Daddy
         env:
@@ -46,7 +47,7 @@ jobs:
           DADDY_ENABLE_ARCHITECTURE_LANE: "true"
           PYTHONUNBUFFERED: "1"
         run: |
-          python -m src.the_daddy.cli run || true
+          python -m src.the_daddy.cli run
 
       - name: Commit safe changes only
         run: |
