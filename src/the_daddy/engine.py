@@ -149,10 +149,11 @@ class DaddyEngine:
         record = RunRecord(run_id=run_id, command=self.settings.command)
         record.repo_fingerprint = self.repo_fingerprint()
 
+        latest = self.memory.latest_review()
         review = self.reviewer.review(
             memory_snapshot=self.memory.state.model_dump(mode="json"),
             repo_root=self.settings.target_root,
-            recent_summary=(self.memory.latest_review().diagnosis if self.memory.latest_review() else ""),
+            recent_summary=(latest.diagnosis if latest else ""),
         )
         self.memory.add_architecture_review(review)
 

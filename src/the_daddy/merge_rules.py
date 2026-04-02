@@ -13,6 +13,8 @@ RISKY_PATH_PARTS = {
     "build",
 }
 MAX_SAFE_FILES = 5
+MAX_SAFE_PATCH_COUNT = 8
+MAX_ARCHITECTURE_BRANCH_FILES = 5
 
 
 class AutoMergeJudge:

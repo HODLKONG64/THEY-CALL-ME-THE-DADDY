@@ -11,7 +11,7 @@ class GitBranchExecutor:
     def __init__(self, repo_root: Path | str = ".", github_token: str = "", github_repo: str = "") -> None:
         self.repo_root = Path(repo_root).resolve()
         self.github_token = github_token
-        self.github_repo = github_repo  # owner/repo
+        self.github_repo = github_repo
 
     def _run(self, *args: str) -> str:
         result = subprocess.run(

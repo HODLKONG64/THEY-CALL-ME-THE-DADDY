@@ -71,5 +71,4 @@ class R2Store:
                 ContentType="application/json",
             )
         except Exception:
-            # local fallback already written; do not break the run
             return

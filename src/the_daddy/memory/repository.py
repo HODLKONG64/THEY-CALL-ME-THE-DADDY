@@ -35,18 +35,10 @@ class MemoryRepository:
         self.state.last_saved_at = _now()
         self.store.save(self.state.model_dump(mode="json"))
 
-    # -------------------------
-    # Core helpers
-    # -------------------------
-
     def fingerprint(self, text: str) -> str:
         if not text:
             return "empty"
         return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
-
-    # -------------------------
-    # Reviews
-    # -------------------------
 
     def add_architecture_review(self, review: ArchitectureReview) -> None:
         self.state.architecture_reviews.append(review)
@@ -61,10 +53,6 @@ class MemoryRepository:
         if len(self.state.architecture_reviews) > keep:
             self.state.architecture_reviews = self.state.architecture_reviews[-keep:]
 
-    # -------------------------
-    # Runs
-    # -------------------------
-
     def add_run(self, run: RunRecord) -> None:
         self.state.runs.append(run)
         self._trim_runs()
@@ -73,18 +61,10 @@ class MemoryRepository:
         if len(self.state.runs) > keep:
             self.state.runs = self.state.runs[-keep:]
 
-    # -------------------------
-    # Backlog
-    # -------------------------
-
     def add_backlog_items(self, items: list[str]) -> None:
         for item in items:
             if item and item not in self.state.backlog:
                 self.state.backlog.append(item)
-
-    # -------------------------
-    # Failure learning
-    # -------------------------
 
     def record_failure_pattern(self, signature: str, context: dict[str, Any], resolved: bool) -> None:
         existing = self.state.failure_patterns.get(signature)
@@ -115,10 +95,6 @@ class MemoryRepository:
 
         return sorted(ranked, key=score, reverse=True)
 
-    # -------------------------
-    # Improvement history
-    # -------------------------
-
     def record_improvement_result(self, title: str, applied: bool, payload: dict[str, Any]) -> None:
         self.state.improvement_history.append(
             {
@@ -130,10 +106,6 @@ class MemoryRepository:
         )
         if len(self.state.improvement_history) > 150:
             self.state.improvement_history = self.state.improvement_history[-150:]
-
-    # -------------------------
-    # Planned work / multi-cycle build
-    # -------------------------
 
     def add_planned_work(self, item: PlannedWorkItem) -> None:
         if not any(existing.work_id == item.work_id for existing in self.state.planned_work):
@@ -157,10 +129,6 @@ class MemoryRepository:
                 if note:
                     work.notes.append(note)
 
-    # -------------------------
-    # Architecture queue
-    # -------------------------
-
     def add_architecture_plan(self, plan: ArchitecturePlan) -> None:
         if not any(existing.title == plan.title for existing in self.state.architecture_queue):
             self.state.architecture_queue.append(plan)
@@ -173,10 +141,6 @@ class MemoryRepository:
             if plan.title == title:
                 plan.status = status
                 plan.updated_at = _now()
-
-    # -------------------------
-    # Patch provenance
-    # -------------------------
 
     def record_patch(self, run_id: str, mode: str, path: str, description: str, route: str, source: str = "reviewer") -> None:
         self.state.patch_provenance.append(
@@ -192,18 +156,10 @@ class MemoryRepository:
         if len(self.state.patch_provenance) > 300:
             self.state.patch_provenance = self.state.patch_provenance[-300:]
 
-    # -------------------------
-    # Metrics
-    # -------------------------
-
     def record_metrics(self, entry: MetricsLedgerEntry) -> None:
         self.state.metrics_ledger.append(entry)
         if len(self.state.metrics_ledger) > 300:
             self.state.metrics_ledger = self.state.metrics_ledger[-300:]
-
-    # -------------------------
-    # External proposals / reputation
-    # -------------------------
 
     def add_quarantine_event(self, event: dict[str, Any]) -> None:
         self.state.quarantine_events.append(event)
