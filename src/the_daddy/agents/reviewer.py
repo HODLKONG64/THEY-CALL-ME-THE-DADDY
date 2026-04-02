@@ -265,13 +265,14 @@ Repository snapshot:
         try:
             data = self.client.generate_json(
                 model=self.settings.openai_model_review,
-                system="You are a strict JSON-only reviewer. Return only a JSON object that matches the provided schema.",
+                system="You are a strict JSON-only architecture reviewer. Return only a valid JSON object matching the provided schema.",
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
             )
             review = ArchitectureReview.model_validate(data)
         except Exception as exc:
-            return self._fallback_review(repo_root, f"Reviewer model call failed: {type(exc).__name__}")
+            print(f"[REVIEWER ERROR] {type(exc).__name__}: {exc}", flush=True)
+            return self._fallback_review(repo_root, f"Reviewer model call failed: {type(exc).__name__}: {exc}")
 
         if not review.build_actions:
             review.build_actions = [self._default_build_action()]
