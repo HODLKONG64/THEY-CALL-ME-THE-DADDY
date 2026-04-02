@@ -17,13 +17,24 @@ class R2Store:
         self.key = getattr(settings, "memory_file_name", "sam-memory.json")
         self.local_path = settings.local_state_dir / self.key
 
-        self.client = boto3.client(
-            "s3",
-            endpoint_url=settings.r2_endpoint_url,
-            aws_access_key_id=settings.r2_access_key_id,
-            aws_secret_access_key=settings.r2_secret_access_key,
-            region_name=settings.r2_region,
+        self.enabled = all(
+            [
+                settings.r2_endpoint_url,
+                settings.r2_access_key_id,
+                settings.r2_secret_access_key,
+                settings.r2_bucket,
+            ]
         )
+
+        self.client = None
+        if self.enabled:
+            self.client = boto3.client(
+                "s3",
+                endpoint_url=settings.r2_endpoint_url,
+                aws_access_key_id=settings.r2_access_key_id,
+                aws_secret_access_key=settings.r2_secret_access_key,
+                region_name=settings.r2_region,
+            )
 
     def _read_local(self) -> dict[str, Any]:
         try:
@@ -38,6 +49,9 @@ class R2Store:
         self.local_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def load(self) -> dict[str, Any]:
+        if not self.enabled or self.client is None:
+            return self._read_local()
+
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=self.key)
             raw = response["Body"].read().decode("utf-8")
@@ -61,6 +75,9 @@ class R2Store:
             raise TypeError("R2Store.save expects a dict")
 
         self._write_local(data)
+
+        if not self.enabled or self.client is None:
+            return
 
         body = json.dumps(data, indent=2).encode("utf-8")
         try:
