@@ -33,6 +33,7 @@ ALLOWLISTED_RUNTIME_HELPERS = {
     "src/the_daddy/runtime/trace_summary.py",
     "src/the_daddy/runtime/reviewer_fallback.py",
     "src/the_daddy/runtime/architecture_probe.py",
+    "src/the_daddy/runtime/error_digest.py",
 }
 
 
@@ -60,10 +61,8 @@ class AutoMergeJudge:
         if not normalized:
             return False
 
-        non_allowlisted = [
-            path for path in normalized
-            if path not in {item.lower() for item in ALLOWLISTED_RUNTIME_HELPERS}
-        ]
+        allowlisted_lower = {item.lower() for item in ALLOWLISTED_RUNTIME_HELPERS}
+        non_allowlisted = [path for path in normalized if path not in allowlisted_lower]
 
         if not non_allowlisted:
             return False
