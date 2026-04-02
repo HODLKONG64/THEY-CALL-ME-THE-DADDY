@@ -19,6 +19,10 @@ from ..models import (
     utc_now_iso,
 )
 
+# Legacy compat for older tests/imports
+MEMORY_SCHEMA_VERSION = "3.0"
+DaddyMemoryState = MemoryState
+
 
 def _dedupe_keep_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
