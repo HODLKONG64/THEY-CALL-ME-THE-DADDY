@@ -40,6 +40,12 @@ PROACTIVE_RUNTIME_PATH = "src/the_daddy/runtime/trace_summary.py"
 FALLBACK_RUNTIME_PATH = "src/the_daddy/runtime/reviewer_fallback.py"
 ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
 
+SAFE_NEW_FILE_ALLOWLIST = {
+    PROACTIVE_RUNTIME_PATH,
+    FALLBACK_RUNTIME_PATH,
+    ARCHITECTURE_RUNTIME_PATH,
+}
+
 
 class WakeReviewer:
     def __init__(self, settings: Settings) -> None:
@@ -81,6 +87,14 @@ class WakeReviewer:
             return path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             return ""
+
+    def _normalize_path(self, path: str) -> str:
+        cleaned = str(path or "").strip().replace("\\", "/")
+        while "//" in cleaned:
+            cleaned = cleaned.replace("//", "/")
+        if cleaned.startswith("./"):
+            cleaned = cleaned[2:]
+        return cleaned
 
     def _normalize_phrase(self, text: str) -> str:
         cleaned = re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
@@ -297,10 +311,10 @@ class WakeReviewer:
     def _is_test_only_action(self, action: SelfEvolutionAction) -> bool:
         if not action.patches:
             return False
-        return all((patch.path or "").startswith("tests/") for patch in action.patches)
+        return all((self._normalize_path(patch.path or "")).startswith("tests/") for patch in action.patches)
 
     def _is_banned_test_path(self, path: str) -> bool:
-        normalized = (path or "").strip().replace("\\", "/").lower()
+        normalized = self._normalize_path(path).lower()
         return normalized in BANNED_TEST_PATH_PATTERNS
 
     def _has_banned_test_title(self, text: str) -> bool:
@@ -326,7 +340,7 @@ class WakeReviewer:
         tracked_tests = [path for path in tracked_files if path.startswith("tests/")]
 
         for patch in action.patches:
-            target = patch.path or ""
+            target = self._normalize_path(patch.path or "")
             if target in tracked_tests:
                 return True
 
@@ -343,6 +357,20 @@ class WakeReviewer:
                 smallest = min(len(target_tokens), len(existing_tokens))
                 if smallest > 0 and overlap >= smallest:
                     return True
+
+        return False
+
+    def _is_allowed_patch_path(self, path: str, tracked_files: list[str]) -> bool:
+        normalized = self._normalize_path(path)
+
+        if not normalized:
+            return False
+
+        if normalized in tracked_files:
+            return True
+
+        if normalized in SAFE_NEW_FILE_ALLOWLIST:
+            return True
 
         return False
 
@@ -364,6 +392,18 @@ class WakeReviewer:
             if self._is_repetitive_test_action(action, tracked_files):
                 removed_notes.append(
                     f"Suppressed repetitive test-only self-evolution action: {action.title}"
+                )
+                continue
+
+            invalid_paths: list[str] = []
+            for patch in action.patches or []:
+                patch_path = self._normalize_path(getattr(patch, "path", ""))
+                if not self._is_allowed_patch_path(patch_path, tracked_files):
+                    invalid_paths.append(patch_path)
+
+            if invalid_paths:
+                removed_notes.append(
+                    f"Blocked self-evolution action with non-tracked or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
                 )
                 continue
 
@@ -465,7 +505,7 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             return None
 
         first_action = review.self_evolution_actions[0]
-        related_files = [patch.path for patch in first_action.patches if getattr(patch, "path", "")]
+        related_files = [self._normalize_path(patch.path) for patch in first_action.patches if getattr(patch, "path", "")]
         if not related_files:
             return None
 
@@ -531,6 +571,8 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
         memory_json = json.dumps(memory_snapshot, indent=2)[:18000]
         repo_json = json.dumps(repo_snapshot, indent=2)[:26000]
 
+        allowlisted_new_files = "\n".join(f"  * {path}" for path in sorted(SAFE_NEW_FILE_ALLOWLIST))
+
         return f"""You are the wake-review agent for a bounded self-maintenance repository.
 
 Return valid JSON only.
@@ -563,6 +605,13 @@ Rules:
 - Prefer source/runtime fixes over another tiny documentation or test-only loop when the system is already green.
 - Even when the repo is green, proactively propose one bounded runtime, observability, or safety improvement if a non-repetitive one exists.
 - Prefer runtime/observability helpers over tests when no failures exist.
+- CRITICAL: every self_evolution patch path MUST be either:
+  * an existing tracked file from the repository snapshot, or
+  * one of these allowlisted new files only:
+{allowlisted_new_files}
+- NEVER invent a new module name like logging_utils.py, reviewer.py, helper.py, utils.py, or similar unless that exact path already exists in tracked_files.
+- If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
+- If no valid self_evolution patch target exists, return an empty self_evolution_actions array.
 
 Required JSON shape:
 {{
@@ -689,6 +738,7 @@ Repository snapshot:
                     "Only include architecture_plans when clearly justified by a repo-wide structural issue. "
                     "Avoid repetitive low-value test or backlog churn. "
                     "Never propose wake-review invariant/output/contract tests or self-evolution existence tests. "
+                    "Do not invent new file targets unless they are explicitly allowlisted runtime helper paths. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement."
                 ),
                 prompt=prompt,
@@ -743,7 +793,19 @@ Repository snapshot:
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
             for plan in review.architecture_plans:
-                if plan.patch_bundle and plan.files_touched:
+                valid_paths = [
+                    self._normalize_path(path)
+                    for path in (plan.files_touched or [])
+                    if self._is_allowed_patch_path(path, tracked_files)
+                ]
+                valid_bundle = [
+                    patch
+                    for patch in (plan.patch_bundle or [])
+                    if self._is_allowed_patch_path(getattr(patch, "path", ""), tracked_files)
+                ]
+                if valid_paths and valid_bundle:
+                    plan.files_touched = valid_paths
+                    plan.patch_bundle = valid_bundle
                     justified_plans.append(plan)
             review.architecture_plans = justified_plans
 
