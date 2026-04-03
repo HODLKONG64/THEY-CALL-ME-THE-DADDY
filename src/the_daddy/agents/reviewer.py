@@ -1004,10 +1004,63 @@ def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any
 
     def _run_health_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / RUN_HEALTH_RUNTIME_PATH
+        existing = self._read_text(target)
+
+        if "def summarize_run_velocity(" not in existing:
+            function_block = """
+
+
+def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    sample = items[-5:]
+    success_count = sum(1 for item in sample if bool(item.get("success", False)))
+    failure_count = len(sample) - success_count
+    return {
+        "sample_size": len(sample),
+        "successes": success_count,
+        "failures": failure_count,
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=RUN_HEALTH_RUNTIME_PATH,
+                    title="Append runtime run-velocity helper",
+                    description="Append a bounded run-velocity helper to the existing run health runtime helper using regex_replace.",
+                    function_name="summarize_run_velocity",
+                    function_block=function_block,
+                )
+
+        if "def summarize_mode_distribution(" not in existing:
+            function_block = """
+
+
+def summarize_mode_distribution(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    counts: dict[str, int] = {}
+
+    for item in items[-20:]:
+        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
+        counts[mode] = counts.get(mode, 0) + 1
+
+    return {
+        "sample_size": min(len(items), 20),
+        "mode_counts": counts,
+        "distinct_modes": len(counts),
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=RUN_HEALTH_RUNTIME_PATH,
+                    title="Append runtime mode-distribution helper",
+                    description="Append a bounded mode-distribution helper to the existing run health runtime helper using regex_replace.",
+                    function_name="summarize_mode_distribution",
+                    function_block=function_block,
+                )
+
         if target.exists():
             return None
 
-        new_content = '''from __future__ import annotations
+        new_content = """from __future__ import annotations
 
 from typing import Any
 
@@ -1041,10 +1094,37 @@ def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, 
         "recent_mode_counts": recent_modes,
         "latest_run": latest_run,
     }
-'''
+
+
+def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    sample = items[-5:]
+    success_count = sum(1 for item in sample if bool(item.get("success", False)))
+    failure_count = len(sample) - success_count
+    return {
+        "sample_size": len(sample),
+        "successes": success_count,
+        "failures": failure_count,
+    }
+
+
+def summarize_mode_distribution(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    counts: dict[str, int] = {}
+
+    for item in items[-20:]:
+        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
+        counts[mode] = counts.get(mode, 0) + 1
+
+    return {
+        "sample_size": min(len(items), 20),
+        "mode_counts": counts,
+        "distinct_modes": len(counts),
+    }
+"""
         return SelfEvolutionAction(
             title="Add runtime run health helper",
-            description="Create a bounded runtime helper that summarizes recent run success and failure state.",
+            description="Create a bounded runtime helper that summarizes recent run success, velocity, and mode distribution state.",
             risk="safe",
             patches=[
                 PatchAction(
