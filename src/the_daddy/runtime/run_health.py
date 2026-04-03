@@ -5,6 +5,7 @@ from typing import Any
 
 RECENT_HEALTH_WINDOW = 10
 RECENT_VELOCITY_WINDOW = 5
+RECENT_PATCH_VELOCITY_WINDOW = 8
 
 
 def summarize_run_health(
@@ -78,4 +79,30 @@ def summarize_mode_distribution(
         "window": effective_window,
         "mode_counts": counts,
         "distinct_modes": len(counts),
+    }
+
+
+def summarize_patch_velocity(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = RECENT_PATCH_VELOCITY_WINDOW,
+) -> dict[str, Any]:
+    items = runs or []
+    effective_window = max(1, int(window))
+    sample = items[-effective_window:] if items else []
+
+    patch_counts = [int(item.get("patch_count", 0) or 0) for item in sample]
+    runs_with_patches = sum(1 for count in patch_counts if count > 0)
+    runs_without_patches = len(sample) - runs_with_patches
+    total_patches = sum(patch_counts)
+    max_patch_count = max(patch_counts) if patch_counts else 0
+    average_patch_count = round(total_patches / len(sample), 4) if sample else 0.0
+
+    return {
+        "sample_size": len(sample),
+        "window": effective_window,
+        "runs_with_patches": runs_with_patches,
+        "runs_without_patches": runs_without_patches,
+        "total_patches": total_patches,
+        "max_patch_count": max_patch_count,
+        "average_patch_count": average_patch_count,
     }
