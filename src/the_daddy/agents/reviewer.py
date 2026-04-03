@@ -543,6 +543,29 @@ class WakeReviewer:
         recent = self._recent_helper_paths(memory_snapshot, limit=max(window * 2, 6))
         return set(recent[:window])
 
+    def _helper_path_allowed_by_rotation(
+        self,
+        *,
+        patch_path: str,
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[bool, str]:
+        if patch_path not in ALLOWLISTED_RUNTIME_HELPERS:
+            return True, ""
+
+        cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
+        if patch_path not in cooldown_paths:
+            return True, ""
+
+        rotation = self._helper_rotation_order()
+        for candidate in rotation:
+            if candidate == patch_path:
+                continue
+            if candidate in cooldown_paths:
+                continue
+            return False, f"Cooldown active for {patch_path}; prefer rotating to {candidate} first."
+
+        return False, f"Cooldown active for {patch_path}; all helper lanes were touched too recently."
+
     def _recent_helper_successes(self, memory_snapshot: dict[str, Any], limit: int = 8) -> dict[str, list[str]]:
         helper_events: dict[str, list[str]] = {}
         runs = memory_snapshot.get("runs", []) or []
@@ -569,32 +592,122 @@ class WakeReviewer:
 
         return helper_events
 
-
-    def _helper_path_allowed_by_rotation(
+    def _similar_helper_family_recently_improved(
         self,
         *,
+        action: SelfEvolutionAction,
         patch_path: str,
-        memory_snapshot: dict[str, Any],
-    ) -> tuple[bool, str]:
+        recent_helper_successes: dict[str, list[str]],
+    ) -> bool:
         if patch_path not in ALLOWLISTED_RUNTIME_HELPERS:
-            return True, ""
+            return False
 
-        cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
-        if patch_path not in cooldown_paths:
-            return True, ""
+        title_tokens = self._semantic_tokens(getattr(action, "title", ""))
+        desc_tokens = self._semantic_tokens(getattr(action, "description", ""))
+        action_tokens = title_tokens | desc_tokens
 
-        rotation = self._helper_rotation_order()
-        recent_paths = self._recent_helper_paths(memory_snapshot, limit=12)
+        if not action_tokens:
+            return False
 
-        for candidate in rotation:
-            if candidate == patch_path:
+        helper_semantic_groups = {
+            "trace_summary.py": {"trace", "observability", "runtime_observability", "trace_observability", "self_evolution"},
+            "error_digest.py": {"error", "digest", "failure", "observability", "runtime_observability"},
+            "run_health.py": {"run", "health", "success", "observability", "runtime_observability"},
+            "reviewer_fallback.py": {"fallback", "reviewer", "self_evolution", "observability"},
+            "architecture_probe.py": {"architecture", "probe", "observability"},
+        }
+
+        patch_name = Path(patch_path).name.lower()
+        patch_family = helper_semantic_groups.get(patch_name, set())
+        if not patch_family:
+            return False
+
+        for prior_path, prior_descriptions in recent_helper_successes.items():
+            if prior_path == patch_path:
                 continue
-            if candidate in cooldown_paths:
+            prior_name = Path(prior_path).name.lower()
+            prior_family = helper_semantic_groups.get(prior_name, set())
+            if not prior_family:
                 continue
-            return False, f"Cooldown active for {patch_path}; prefer rotating to {candidate} first."
 
-        return False, f"Cooldown active for {patch_path}; all helper lanes were touched too recently."
+            family_overlap = patch_family & prior_family
+            if not family_overlap:
+                continue
 
+            prior_tokens: set[str] = set()
+            for desc in prior_descriptions:
+                prior_tokens |= self._semantic_tokens(desc)
+
+            if not prior_tokens:
+                continue
+
+            overlap = action_tokens & prior_tokens
+            if overlap and len(overlap) >= 2:
+                return True
+
+            if action_tokens & family_overlap and prior_tokens & family_overlap:
+                return True
+
+        return False
+
+    def _recently_blocked_paths(self, memory_snapshot: dict[str, Any], limit: int = 6) -> dict[str, list[str]]:
+        blocked: dict[str, list[str]] = {}
+
+        runs = memory_snapshot.get("runs", []) or []
+        for run in runs[-limit:]:
+            if not isinstance(run, dict):
+                continue
+
+            for event in run.get("trace", []) or []:
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") != "patch_apply_failed":
+                    continue
+
+                path = self._normalize_path(str(event.get("path", "")).strip())
+                if not path:
+                    continue
+
+                error = str(event.get("error", "")).strip()
+                if not error:
+                    continue
+
+                blocked.setdefault(path, [])
+                if error not in blocked[path]:
+                    blocked[path].append(error)
+
+            self_evolution = run.get("self_evolution")
+            if isinstance(self_evolution, dict):
+                for reason in self_evolution.get("reasons", []) or []:
+                    text = str(reason)
+                    if "->" not in text:
+                        continue
+                    left, right = text.rsplit("->", 1)
+                    path = self._normalize_path(right.strip())
+                    if not path:
+                        continue
+                    blocked.setdefault(path, [])
+                    if left.strip() not in blocked[path]:
+                        blocked[path].append(left.strip())
+
+        return blocked
+
+    def _is_repeat_blocked_target(self, path: str, recently_blocked: dict[str, list[str]]) -> bool:
+        normalized = self._normalize_path(path)
+        reasons = recently_blocked.get(normalized, [])
+        if not reasons:
+            return False
+
+        hot_reasons = (
+            "replace on existing runtime helper",
+            "shrink-replace",
+            "pattern does not match",
+            "regex_replace action whose pattern does not match",
+            "blocked regex_replace",
+            "blocked shrink-replace",
+        )
+        lowered = " | ".join(reasons).lower()
+        return any(token in lowered for token in hot_reasons)
 
     def _filter_low_value_actions(
         self,
@@ -1266,17 +1379,14 @@ Repository snapshot:
         fallback_plan = self._default_architecture_plan(repo_root)
 
         actions: list[SelfEvolutionAction] = []
-        helper_candidates = {
-            PROACTIVE_RUNTIME_PATH: proactive_action,
-            ERROR_DIGEST_RUNTIME_PATH: digest_action,
-            RUN_HEALTH_RUNTIME_PATH: run_health_action,
-            FALLBACK_RUNTIME_PATH: fallback_action,
-        }
-        for helper_path in self._helper_rotation_order():
-            action = helper_candidates.get(helper_path)
-            if action is not None:
-                actions.append(action)
-                break
+        if proactive_action is not None:
+            actions.append(proactive_action)
+        elif run_health_action is not None:
+            actions.append(run_health_action)
+        elif digest_action is not None:
+            actions.append(digest_action)
+        elif fallback_action is not None:
+            actions.append(fallback_action)
 
         plans = [fallback_plan] if fallback_plan is not None else []
 
