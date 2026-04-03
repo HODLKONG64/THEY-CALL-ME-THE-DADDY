@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import datetime, timezone
+from typing import Any
 
 from .agents.diagnoser import Diagnoser
 from .agents.improvement_planner import ImprovementPlanner
@@ -13,6 +14,8 @@ from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
 from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
+from .runtime import run_health as run_health_runtime
+from .runtime import trace_summary as trace_summary_runtime
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
 from .runtime.iterative_depth_learner import IterativeDepthLearner
@@ -528,6 +531,92 @@ class DaddyEngine:
                 }
             )
 
+    def _run_payload(self, record: RunRecord) -> dict[str, Any]:
+        return {
+            "run_id": record.run_id,
+            "success": bool(record.success),
+            "selected_mode": str(record.selected_mode or ""),
+            "summary": str(record.summary or ""),
+            "patch_count": len(getattr(record, "patches_applied", []) or []),
+        }
+
+    def _build_action_payloads(self, review) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for item in getattr(review, "build_actions", []) or []:
+            if hasattr(item, "model_dump"):
+                payloads.append(item.model_dump(mode="json"))
+            elif isinstance(item, dict):
+                payloads.append(dict(item))
+        return payloads
+
+    def _emit_runtime_summaries(self, *, record: RunRecord, review) -> None:
+        prior_runs = []
+        for item in getattr(self.memory.state, "runs", []) or []:
+            if hasattr(item, "model_dump"):
+                prior_runs.append(item.model_dump(mode="json"))
+            elif isinstance(item, dict):
+                prior_runs.append(dict(item))
+
+        run_payloads = prior_runs[-19:] + [self._run_payload(record)]
+
+        summarize_trace = getattr(trace_summary_runtime, "summarize_trace", None)
+        if callable(summarize_trace):
+            trace_summary = summarize_trace(getattr(record, "trace", []) or [])
+            record.trace.append(
+                {
+                    "event": "runtime_trace_summary",
+                    "summary": trace_summary,
+                }
+            )
+
+        summarize_self_evolution_skips = getattr(trace_summary_runtime, "summarize_self_evolution_skips", None)
+        if callable(summarize_self_evolution_skips):
+            skip_summary = summarize_self_evolution_skips(
+                getattr(getattr(record, "self_evolution", None), "reasons", []) or []
+            )
+            record.trace.append(
+                {
+                    "event": "runtime_self_evolution_skip_summary",
+                    "summary": skip_summary,
+                }
+            )
+
+        summarize_build_action_titles = getattr(trace_summary_runtime, "summarize_build_action_titles", None)
+        if callable(summarize_build_action_titles):
+            build_action_summary = summarize_build_action_titles(self._build_action_payloads(review))
+            record.trace.append(
+                {
+                    "event": "runtime_build_action_summary",
+                    "summary": build_action_summary,
+                }
+            )
+
+        summarize_run_health = getattr(run_health_runtime, "summarize_run_health", None)
+        if callable(summarize_run_health):
+            run_health_summary = summarize_run_health(run_payloads)
+            record.trace.append(
+                {
+                    "event": "runtime_run_health_summary",
+                    "summary": run_health_summary,
+                }
+            )
+            review.execution_notes.append(
+                f"Run health summary emitted: success_rate={run_health_summary.get('success_rate', 0)} total_runs={run_health_summary.get('total_runs', 0)}."
+            )
+
+        summarize_run_velocity = getattr(run_health_runtime, "summarize_run_velocity", None)
+        if callable(summarize_run_velocity):
+            run_velocity_summary = summarize_run_velocity(run_payloads)
+            record.trace.append(
+                {
+                    "event": "runtime_run_velocity_summary",
+                    "summary": run_velocity_summary,
+                }
+            )
+            review.execution_notes.append(
+                f"Run velocity summary emitted: sample_size={run_velocity_summary.get('sample_size', 0)} successes={run_velocity_summary.get('successes', 0)}."
+            )
+
     def run(self):
         run_id = make_run_id()
 
@@ -641,6 +730,8 @@ class DaddyEngine:
             applied_patches=record.patches_applied,
             trace=record.trace,
         )
+
+        self._emit_runtime_summaries(record=record, review=review)
 
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:
