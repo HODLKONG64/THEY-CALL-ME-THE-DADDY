@@ -53,3 +53,14 @@ def summarize_build_actions(actions: list[object] | None) -> list[str]:
         summaries.append(f"{work_id} [p{priority_label}] {state}: {title}")
 
     return summaries
+
+
+
+def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    return {
+        "count": len(titles),
+        "titles": titles[:10],
+        "first_title": titles[0] if titles else "",
+    }
