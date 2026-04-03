@@ -1496,36 +1496,82 @@ Repository snapshot:
 
         if not review.self_evolution_actions:
             helper_candidates = {
-                PROACTIVE_RUNTIME_PATH: (self._proactive_runtime_action(repo_root), "Proactive runtime improvement injected while repo is green."),
-                ERROR_DIGEST_RUNTIME_PATH: (self._error_digest_action(repo_root), "Error-digest runtime improvement injected while repo is green."),
                 RUN_HEALTH_RUNTIME_PATH: (self._run_health_action(repo_root), "Run-health runtime improvement injected while repo is green."),
                 FALLBACK_RUNTIME_PATH: (self._fallback_patch_action(repo_root), "Fallback self-evolution patch injected because reviewer returned no executable patch."),
+                ARCHITECTURE_RUNTIME_PATH: (self._default_architecture_plan(repo_root), "Architecture-probe helper candidate selected for bounded branch-safe observability."),
+                PROACTIVE_RUNTIME_PATH: (self._proactive_runtime_action(repo_root), "Proactive runtime improvement injected while repo is green."),
+                ERROR_DIGEST_RUNTIME_PATH: (self._error_digest_action(repo_root), "Error-digest runtime improvement injected while repo is green."),
             }
+            preferred_order = [
+                RUN_HEALTH_RUNTIME_PATH,
+                FALLBACK_RUNTIME_PATH,
+                ARCHITECTURE_RUNTIME_PATH,
+                PROACTIVE_RUNTIME_PATH,
+                ERROR_DIGEST_RUNTIME_PATH,
+            ]
             cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
 
             chosen_action = None
             chosen_note = ""
-            for helper_path in self._helper_rotation_order():
-                action, note = helper_candidates.get(helper_path, (None, ""))
-                if action is None:
+            chosen_path = ""
+
+            for helper_path in preferred_order:
+                candidate, note = helper_candidates.get(helper_path, (None, ""))
+                if candidate is None:
                     continue
                 if helper_path in cooldown_paths:
                     continue
-                chosen_action = action
-                chosen_note = note
-                break
+
+                if helper_path == ARCHITECTURE_RUNTIME_PATH and isinstance(candidate, ArchitecturePlan):
+                    if candidate.patch_bundle:
+                        chosen_action = SelfEvolutionAction(
+                            title=candidate.title,
+                            description=candidate.summary,
+                            risk="safe",
+                            patches=list(candidate.patch_bundle),
+                        )
+                        chosen_note = note
+                        chosen_path = helper_path
+                        break
+                    continue
+
+                if isinstance(candidate, SelfEvolutionAction):
+                    chosen_action = candidate
+                    chosen_note = note
+                    chosen_path = helper_path
+                    break
 
             if chosen_action is None:
-                for helper_path in self._helper_rotation_order():
-                    action, note = helper_candidates.get(helper_path, (None, ""))
-                    if action is not None:
-                        chosen_action = action
+                for helper_path in preferred_order:
+                    candidate, note = helper_candidates.get(helper_path, (None, ""))
+                    if candidate is None:
+                        continue
+
+                    if helper_path == ARCHITECTURE_RUNTIME_PATH and isinstance(candidate, ArchitecturePlan):
+                        if candidate.patch_bundle:
+                            chosen_action = SelfEvolutionAction(
+                                title=candidate.title,
+                                description=candidate.summary,
+                                risk="safe",
+                                patches=list(candidate.patch_bundle),
+                            )
+                            chosen_note = note
+                            chosen_path = helper_path
+                            break
+                        continue
+
+                    if isinstance(candidate, SelfEvolutionAction):
+                        chosen_action = candidate
                         chosen_note = note
+                        chosen_path = helper_path
                         break
 
             if chosen_action is not None:
                 review.self_evolution_actions = [chosen_action]
-                review.execution_notes.append(chosen_note)
+                if chosen_note:
+                    review.execution_notes.append(chosen_note)
+                if chosen_path:
+                    review.execution_notes.append(f"Cooldown-aware helper injection selected: {chosen_path}")
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
