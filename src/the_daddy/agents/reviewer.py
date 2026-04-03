@@ -498,6 +498,91 @@ class WakeReviewer:
         except re.error:
             return False
 
+
+    def _recent_helper_successes(self, memory_snapshot: dict[str, Any], limit: int = 8) -> dict[str, list[str]]:
+        helper_events: dict[str, list[str]] = {}
+        runs = memory_snapshot.get("runs", []) or []
+
+        for run in runs[-limit:]:
+            if not isinstance(run, dict):
+                continue
+
+            for patch in run.get("patches_applied", []) or []:
+                if not isinstance(patch, dict):
+                    continue
+
+                path = self._normalize_path(str(patch.get("path", "")).strip())
+                if path not in ALLOWLISTED_RUNTIME_HELPERS:
+                    continue
+
+                description = str(patch.get("description", "")).strip()
+                if not description:
+                    description = "applied helper patch"
+
+                helper_events.setdefault(path, [])
+                if description not in helper_events[path]:
+                    helper_events[path].append(description)
+
+        return helper_events
+
+    def _similar_helper_family_recently_improved(
+        self,
+        *,
+        action: SelfEvolutionAction,
+        patch_path: str,
+        recent_helper_successes: dict[str, list[str]],
+    ) -> bool:
+        if patch_path not in ALLOWLISTED_RUNTIME_HELPERS:
+            return False
+
+        title_tokens = self._semantic_tokens(getattr(action, "title", ""))
+        desc_tokens = self._semantic_tokens(getattr(action, "description", ""))
+        action_tokens = title_tokens | desc_tokens
+
+        if not action_tokens:
+            return False
+
+        helper_semantic_groups = {
+            "trace_summary.py": {"trace", "observability", "runtime_observability", "trace_observability", "self_evolution"},
+            "error_digest.py": {"error", "digest", "failure", "observability", "runtime_observability"},
+            "run_health.py": {"run", "health", "success", "observability", "runtime_observability"},
+            "reviewer_fallback.py": {"fallback", "reviewer", "self_evolution", "observability"},
+            "architecture_probe.py": {"architecture", "probe", "observability"},
+        }
+
+        patch_name = Path(patch_path).name.lower()
+        patch_family = helper_semantic_groups.get(patch_name, set())
+        if not patch_family:
+            return False
+
+        for prior_path, prior_descriptions in recent_helper_successes.items():
+            if prior_path == patch_path:
+                continue
+            prior_name = Path(prior_path).name.lower()
+            prior_family = helper_semantic_groups.get(prior_name, set())
+            if not prior_family:
+                continue
+
+            family_overlap = patch_family & prior_family
+            if not family_overlap:
+                continue
+
+            prior_tokens: set[str] = set()
+            for desc in prior_descriptions:
+                prior_tokens |= self._semantic_tokens(desc)
+
+            if not prior_tokens:
+                continue
+
+            overlap = action_tokens & prior_tokens
+            if overlap and len(overlap) >= 2:
+                return True
+
+            if action_tokens & family_overlap and prior_tokens & family_overlap:
+                return True
+
+        return False
+
     def _recently_blocked_paths(self, memory_snapshot: dict[str, Any], limit: int = 6) -> dict[str, list[str]]:
         blocked: dict[str, list[str]] = {}
 
@@ -567,6 +652,7 @@ class WakeReviewer:
         kept: list[SelfEvolutionAction] = []
         removed_notes: list[str] = []
         recently_blocked = self._recently_blocked_paths(memory_snapshot)
+        recent_helper_successes = self._recent_helper_successes(memory_snapshot)
 
         for action in actions:
             if self._is_banned_test_action(action):
@@ -582,6 +668,7 @@ class WakeReviewer:
             missing_regex_anchor_paths: list[str] = []
             repeated_blocked_paths: list[str] = []
             repetitive_fallback_paths: list[str] = []
+            semantically_redundant_helper_paths: list[str] = []
 
             for patch in action.patches or []:
                 patch_path = self._normalize_path(getattr(patch, "path", ""))
@@ -596,6 +683,14 @@ class WakeReviewer:
 
                 if self._is_repeat_blocked_target(patch_path, recently_blocked):
                     repeated_blocked_paths.append(patch_path)
+                    continue
+
+                if self._similar_helper_family_recently_improved(
+                    action=action,
+                    patch_path=patch_path,
+                    recent_helper_successes=recent_helper_successes,
+                ):
+                    semantically_redundant_helper_paths.append(patch_path)
                     continue
 
                 if self._is_existing_runtime_helper_replace(repo_root, patch):
@@ -620,6 +715,12 @@ class WakeReviewer:
             if repeated_blocked_paths:
                 removed_notes.append(
                     f"Blocked retry of recently-failed target: {action.title} -> {', '.join(repeated_blocked_paths)}"
+                )
+                continue
+
+            if semantically_redundant_helper_paths:
+                removed_notes.append(
+                    f"Suppressed semantically redundant helper churn after recent helper success: {action.title} -> {', '.join(semantically_redundant_helper_paths)}"
                 )
                 continue
 
