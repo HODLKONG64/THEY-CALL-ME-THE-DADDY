@@ -1508,6 +1508,35 @@ def summarize_architecture_targets(files_touched: list[str] | None = None) -> di
             ],
         )
 
+
+    def _recent_trace_summary(self, memory_snapshot: dict[str, Any], event_name: str, limit: int = 8) -> dict[str, Any] | None:
+        runs = memory_snapshot.get("runs", []) or []
+        for run in reversed(runs[-limit:]):
+            if not isinstance(run, dict):
+                continue
+            for event in reversed(run.get("trace", []) or []):
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") != event_name:
+                    continue
+                summary = event.get("summary")
+                if isinstance(summary, dict):
+                    return summary
+        return None
+
+    def _has_forced_helper_pressure(self, memory_snapshot: dict[str, Any]) -> bool:
+        patch_velocity = self._recent_trace_summary(memory_snapshot, "runtime_patch_velocity_summary")
+        build_action_summary = self._recent_trace_summary(memory_snapshot, "runtime_build_action_summary")
+
+        if not patch_velocity or not build_action_summary:
+            return False
+
+        runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
+        sample_size = int(patch_velocity.get("sample_size", 0) or 0)
+        build_action_count = int(build_action_summary.get("count", 0) or 0)
+
+        return sample_size > 0 and runs_with_patches == 0 and build_action_count > 0
+
     def _build_prompt(
         self,
         memory_snapshot: dict[str, Any],
@@ -1570,6 +1599,7 @@ Rules:
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array and avoid documentation-only churn.
+- If recent runtime summaries indicate flat patch velocity and non-empty build-action pressure, prefer emitting one cooldown-allowed bounded helper action rather than a no-op.
 
 Required JSON shape:
 {{
@@ -1681,7 +1711,7 @@ Repository snapshot:
             strengths=["Repository is reachable and reviewer fallback is active."],
             weaknesses=[reason],
             recommendations=["Stabilise reviewer schema and runtime alignment."],
-            backlog_items=["Tighten schema alignment between reviewer, planner, and engine."],
+            backlog_items=["Tighten schema alignment between reviewer, planner, and engine.", "Continue prioritizing helper-lane observability improvements over repetitive wake-review test churn.", "Consider future surfacing of build-action summaries in run traces only through bounded helper extensions."],
             self_evolution_actions=actions,
             build_actions=[self._default_build_action()],
             architecture_plans=plans,
@@ -1715,7 +1745,7 @@ Repository snapshot:
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement. "
-                    "If no safe code action exists, prefer a clean no-op over documentation-only churn."
+                    "If no safe code action exists, prefer a clean no-op over documentation-only churn, except when recent runtime summaries show flat patch velocity with active build-action pressure, in which case emit one cooldown-allowed bounded helper action."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
@@ -1787,6 +1817,7 @@ Repository snapshot:
                 ERROR_DIGEST_RUNTIME_PATH,
             ]
             cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
+            forced_pressure = self._has_forced_helper_pressure(memory_snapshot)
 
             chosen_action = None
             chosen_note = ""
@@ -1818,7 +1849,7 @@ Repository snapshot:
                     chosen_path = helper_path
                     break
 
-            if chosen_action is None:
+            if chosen_action is None and forced_pressure:
                 for helper_path in preferred_order:
                     candidate, note = helper_candidates.get(helper_path, (None, ""))
                     if candidate is None:
@@ -1849,6 +1880,10 @@ Repository snapshot:
                     review.execution_notes.append(chosen_note)
                 if chosen_path:
                     review.execution_notes.append(f"Cooldown-aware helper injection selected: {chosen_path}")
+                if forced_pressure:
+                    review.execution_notes.append(
+                        "Forced bounded helper injection because runtime summaries show flat patch velocity while build-action pressure remains active."
+                    )
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
