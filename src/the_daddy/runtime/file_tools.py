@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hashlib
@@ -36,6 +35,7 @@ BLOCKED_PATH_PARTS = {
 }
 
 MAX_SHRINK_RATIO = 0.35
+MIN_NEW_FILE_BYTES = 50
 
 PROTECTED_CORE_FILES = {
     "src/the_daddy/agents/reviewer.py",
@@ -207,9 +207,9 @@ def apply_patch_action(root: Path, action: PatchAction, allow_extensions: Iterab
         new_len = len(new_content)
         old_len = len(old_content)
 
-        if new_len < 50:
+        if not target_exists and new_len < MIN_NEW_FILE_BYTES:
             raise ValueError(
-                f"Reject: new_content too small ({new_len} bytes) for {norm_path}"
+                f"Reject: new_content too small ({new_len} bytes) for new file {norm_path}"
             )
 
         if _is_excessive_shrink(old_len, new_len):
