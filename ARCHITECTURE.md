@@ -22,6 +22,3 @@ Every applied patch stores rollback metadata with prior content hash and, when s
 
 ## Drift
 Each run records a repo fingerprint from git HEAD and hashes of key files. Reviews should be compared against this fingerprint so stale advice can be identified.
-
-## Wake reviewer fallback
-- A bounded patch fallback was injected because the model returned no executable patch.

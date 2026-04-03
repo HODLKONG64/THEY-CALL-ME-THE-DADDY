@@ -79,6 +79,7 @@ ALLOWLISTED_RUNTIME_HELPERS = {
     "src/the_daddy/runtime/reviewer_fallback.py",
     "src/the_daddy/runtime/architecture_probe.py",
     "src/the_daddy/runtime/error_digest.py",
+    "src/the_daddy/runtime/run_health.py",
 }
 
 LOW_VALUE_PATTERNS = [
@@ -96,6 +97,7 @@ DIVERSITY_TARGETS = [
     "diagnoser",
     "digest",
     "error",
+    "health",
 ]
 
 

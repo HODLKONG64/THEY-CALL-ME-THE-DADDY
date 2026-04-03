@@ -1,56 +1,71 @@
 from types import SimpleNamespace
 
 from the_daddy.agents.improvement_planner import ImprovementPlanner
-from the_daddy.models import ArchitectureReview, MemoryState, PatchAction, SelfEvolutionAction
 
 
-def test_decide_mode_prefers_build_when_valid_safe_self_evolution_exists():
-    planner = ImprovementPlanner()
-    memory = MemoryState()
-    review = ArchitectureReview(
-        diagnosis="d",
-        system_intent="i",
-        self_evolution_actions=[
-            SelfEvolutionAction(
-                title="Add note",
-                description="Safe doc update",
-                risk="safe",
-                patches=[
-                    PatchAction(
-                        path="README.md",
-                        operation="replace_file",
-                        new_content="# updated\n\nThis README has been updated with enough content to pass the minimum size guard.\n",
-                        pattern=None,
-                        replacement=None,
-                        description="Update docs",
-                    )
-                ],
-            )
-        ],
-        risk_level="low",
+class _FailurePattern:
+    def __init__(self, failure_count, updated_at="2026-01-01T00:00:00+00:00"):
+        self.failure_count = failure_count
+        self.updated_at = updated_at
+
+
+def _memory(*, planned_work=None, failure_patterns=None):
+    return SimpleNamespace(
+        planned_work=[] if planned_work is None else planned_work,
+        failure_patterns={} if failure_patterns is None else failure_patterns,
     )
+
+
+def _review(*, self_evolution_actions=None, architecture_plans=None):
+    return SimpleNamespace(
+        self_evolution_actions=[] if self_evolution_actions is None else self_evolution_actions,
+        architecture_plans=[] if architecture_plans is None else architecture_plans,
+    )
+
+
+def test_decide_mode_prefers_architecture_when_plans_exist_and_failure_threshold_met():
+    planner = ImprovementPlanner()
+    memory = _memory(failure_patterns={"hotspot": _FailurePattern(3)})
+    review = _review(architecture_plans=[{"title": "plan"}])
+
+    assert planner.decide_mode(memory, review) == "architecture"
+
+
+def test_decide_mode_prefers_build_when_safe_review_work_exists():
+    planner = ImprovementPlanner()
+    memory = _memory()
+    review = _review(self_evolution_actions=[{"title": "safe action"}])
 
     assert planner.decide_mode(memory, review) == "build"
 
 
-def test_malformed_self_evolution_entries_do_not_trigger_build_mode_or_actions():
+def test_decide_mode_prefers_build_when_planned_work_exists_without_review_actions():
     planner = ImprovementPlanner()
-    memory = MemoryState()
-    malformed_action = SimpleNamespace(
-        title="Looks valid",
-        description="But contains malformed patches",
-        risk="safe",
-        patches=[SimpleNamespace(path="README.md", operation="replace_file")],
-    )
-    review = ArchitectureReview(
-        diagnosis="d",
-        system_intent="i",
-        self_evolution_actions=[malformed_action],
-        risk_level="low",
-    )
+    memory = _memory(planned_work=[{"title": "queued"}])
+    review = _review()
 
-    planned = planner.plan_self_evolution(review, enabled=True, max_actions=3)
+    assert planner.decide_mode(memory, review) == "build"
 
-    assert planned.actions == []
-    assert planned.reasons == ["No valid safe actions found"]
+
+def test_decide_mode_falls_back_to_repair_when_review_fields_are_none():
+    planner = ImprovementPlanner()
+    memory = _memory()
+    review = SimpleNamespace(self_evolution_actions=None, architecture_plans=None)
+
+    assert planner.decide_mode(memory, review) == "repair"
+
+
+def test_decide_mode_falls_back_to_repair_for_scalar_placeholder_review_fields():
+    planner = ImprovementPlanner()
+    memory = _memory()
+    review = SimpleNamespace(self_evolution_actions=False, architecture_plans=0)
+
+    assert planner.decide_mode(memory, review) == "repair"
+
+
+def test_decide_mode_ignores_architecture_plan_when_failure_threshold_not_met():
+    planner = ImprovementPlanner()
+    memory = _memory(failure_patterns={"hotspot": _FailurePattern(2)})
+    review = _review(architecture_plans=[{"title": "plan"}])
+
     assert planner.decide_mode(memory, review) == "repair"

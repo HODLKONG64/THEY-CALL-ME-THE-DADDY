@@ -24,10 +24,6 @@ MEMORY_SCHEMA_VERSION = "3.0"
 DaddyMemoryState = MemoryState
 
 
-def _utc_now() -> str:
-    return utc_now_iso()
-
-
 def _dedupe_keep_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -47,36 +43,20 @@ class MemoryRepository:
     def state(self) -> MemoryState:
         return self._state
 
-    @state.setter
-    def state(self, value: MemoryState) -> None:
-        self._state = value
-
     def fingerprint(self, text: str) -> str:
-        return hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
-
-    # -------------------------------------------------------------------------
-    # Public lifecycle methods
-    # -------------------------------------------------------------------------
+        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
     def load(self) -> MemoryState:
         self._state = self._load_from_store()
         return self._state
 
-    # Legacy compat for older callers
-    def _load(self) -> MemoryState:
-        return self.load()
-
     def save(self) -> MemoryState:
-        self._state.last_saved_at = _utc_now()
+        self._state.last_saved_at = utc_now_iso()
         self._save_to_store(self._state)
         return self._state
 
     def snapshot(self) -> dict[str, Any]:
         return self._state.model_dump(mode="json")
-
-    # -------------------------------------------------------------------------
-    # Reviews / plans / work
-    # -------------------------------------------------------------------------
 
     def latest_review(self) -> ArchitectureReview | None:
         if not self._state.architecture_reviews:
@@ -99,22 +79,10 @@ class MemoryRepository:
         return plan
 
     def get_pending_architecture(self) -> list[ArchitecturePlan]:
-        return [
-            plan
-            for plan in self._state.architecture_queue
-            if getattr(plan, "status", "") in {"proposed", "active"}
-        ]
+        return [p for p in self._state.architecture_queue if p.status in {"proposed", "active"}]
 
     def get_active_work(self) -> list[PlannedWorkItem]:
-        return [
-            work
-            for work in self._state.planned_work
-            if getattr(work, "state", "") in {"proposed", "active"}
-        ]
-
-    # -------------------------------------------------------------------------
-    # Failure patterns
-    # -------------------------------------------------------------------------
+        return [w for w in self._state.planned_work if w.state in {"proposed", "active"}]
 
     def ranked_failure_patterns(self) -> list[FailurePatternRecord]:
         return sorted(
@@ -123,8 +91,26 @@ class MemoryRepository:
             reverse=True,
         )
 
-    def get_failure_hotspots(self) -> list[str]:
-        return [item.signature for item in self.ranked_failure_patterns()[:5]]
+    def record_patch(
+        self,
+        run_id: str,
+        mode: str,
+        path: str,
+        description: str,
+        route: str,
+        source: str = "reviewer",
+    ) -> PatchProvenance:
+        entry = PatchProvenance(
+            run_id=run_id,
+            mode=mode,
+            path=path,
+            description=description,
+            route=route,
+            source=source,
+        )
+        self._state.patch_provenance.append(entry)
+        self.save()
+        return entry
 
     def record_failure_pattern(
         self,
@@ -140,179 +126,37 @@ class MemoryRepository:
             existing = FailurePatternRecord(signature=signature)
 
         payload = dict(details or {})
+        existing.success_count += 1 if success else 0
+        existing.failure_count += 0 if success else 1
+        existing.updated_at = utc_now_iso()
 
-        if success:
-            existing.success_count += 1
-        else:
-            existing.failure_count += 1
-
-        existing.updated_at = _utc_now()
-
-        route = payload.get("route")
-        if route is not None:
-            existing.last_route = str(route)
-
-        diagnosis = payload.get("diagnosis")
-        summary = payload.get("summary")
-        if diagnosis is not None:
-            existing.last_summary = str(diagnosis)
-        elif summary is not None:
-            existing.last_summary = str(summary)
+        if "route" in payload:
+            existing.last_route = str(payload["route"])
+        if "diagnosis" in payload:
+            existing.last_summary = str(payload["diagnosis"])
+        if "summary" in payload:
+            existing.last_summary = str(payload["summary"])
 
         related_files = payload.get("related_files") or []
         if isinstance(related_files, list):
-            existing.related_files = _dedupe_keep_order(
-                existing.related_files + [str(x) for x in related_files]
-            )
+            existing.related_files = _dedupe_keep_order(existing.related_files + [str(x) for x in related_files])
 
         self._state.failure_patterns[signature] = existing
         self.save()
         return existing
 
-    # -------------------------------------------------------------------------
-    # Patch provenance / metrics / runs
-    # -------------------------------------------------------------------------
-
-    def recent_patch_provenance(self, limit: int = 25) -> list[PatchProvenance]:
-        history = self._state.patch_provenance or []
-        if limit <= 0:
-            return []
-        return history[-limit:]
-
-    def recent_runs(self, limit: int = 6) -> list[RunRecord]:
-        runs = self._state.runs or []
-        if limit <= 0:
-            return []
-        return runs[-limit:]
-
-    def has_recent_patch_fingerprint(self, fingerprint: str, window: int = 12) -> bool:
-        if not fingerprint or window <= 0:
-            return False
-
-        recent_events = self._state.improvement_history[-window:] if self._state.improvement_history else []
-        for event in recent_events:
-            if not isinstance(event, dict):
-                continue
-            if event.get("type") != "patch_observation":
-                continue
-            if event.get("patch_fingerprint") == fingerprint:
-                return True
-
-        return False
-
-    def has_recent_patch_path(self, path: str, window: int = 8) -> bool:
-        normalized = (path or "").strip()
-        if not normalized or window <= 0:
-            return False
-
-        for entry in self.recent_patch_provenance(limit=window):
-            if getattr(entry, "path", "") == normalized:
-                return True
-
-        return False
-
-    def record_patch(
-        self,
-        run_id: str,
-        mode: str,
-        path: str,
-        description: str,
-        route: str,
-        source: str = "reviewer",
-        patch_fingerprint: str | None = None,
-    ) -> PatchProvenance:
-        entry = PatchProvenance(
-            run_id=run_id,
-            mode=mode,
-            path=path,
-            description=description,
-            route=route,
-            source=source,
-            patch_fingerprint=patch_fingerprint or "",
-        )
-        self._state.patch_provenance.append(entry)
-
-        if patch_fingerprint:
-            self._state.improvement_history.append(
-                {
-                    "type": "patch_observation",
-                    "run_id": run_id,
-                    "path": path,
-                    "route": route,
-                    "source": source,
-                    "patch_fingerprint": patch_fingerprint,
-                    "created_at": _utc_now(),
-                }
-            )
-
-        self.save()
-        return entry
-
     def record_metrics(self, entry: MetricsLedgerEntry) -> MetricsLedgerEntry:
         self._state.metrics_ledger.append(entry)
-
-        # Legacy learning-weight feedback support, only if present on the model.
-        weights = getattr(self._state, "learning_weights", None)
-        if weights is not None:
-            if entry.success and hasattr(weights, "repeated_success_weight"):
-                weights.repeated_success_weight *= 1.01
-            elif not entry.success and hasattr(weights, "repeated_failure_weight"):
-                weights.repeated_failure_weight *= 1.02
-
-            if entry.patch_count > 5 and hasattr(weights, "per_file_patch_success_weight"):
-                weights.per_file_patch_success_weight *= 0.99
-
-            if entry.review_risk == "high" and hasattr(weights, "reviewer_outcome_weight"):
-                weights.reviewer_outcome_weight *= 0.98
-
-            if hasattr(weights, "stale_advice_decay"):
-                weights.stale_advice_decay *= 0.999
-
         self.save()
         return entry
 
     def add_run(self, record: RunRecord) -> RunRecord:
-        if not getattr(record, "finished_at", ""):
-            record.finished_at = _utc_now()
-        record.attempt_count = max(1, int(getattr(record, "attempt_count", 0) or 0))
         self._state.runs.append(record)
         self.save()
         return record
 
-    def get_patch_success_rate(self, path: str) -> float:
-        total = 0
-        success = 0
-
-        for run in self._state.runs:
-            patches_applied = getattr(run, "patches_applied", []) or []
-            for patch in patches_applied:
-                patch_path = self._extract_patch_path(patch)
-                if patch_path == path:
-                    total += 1
-                    if getattr(run, "success", False):
-                        success += 1
-
-        if total == 0:
-            return 0.5
-
-        return success / total
-
-    def _extract_patch_path(self, patch: Any) -> str | None:
-        if isinstance(patch, dict):
-            value = patch.get("path")
-            return str(value) if value is not None else None
-
-        value = getattr(patch, "path", None)
-        return str(value) if value is not None else None
-
-    # -------------------------------------------------------------------------
-    # Backlog / reputation
-    # -------------------------------------------------------------------------
-
     def add_backlog_items(self, items: list[str]) -> list[str]:
-        self._state.backlog = _dedupe_keep_order(
-            self._state.backlog + [str(item) for item in items]
-        )
+        self._state.backlog = _dedupe_keep_order(self._state.backlog + [str(item) for item in items])
         self.save()
         return self._state.backlog
 
@@ -341,14 +185,10 @@ class MemoryRepository:
             if hasattr(rep, key):
                 setattr(rep, key, value)
 
-        rep.updated_at = _utc_now()
+        rep.updated_at = utc_now_iso()
         self._state.reputations[actor] = rep
         self.save()
         return rep
-
-    # -------------------------------------------------------------------------
-    # Store IO
-    # -------------------------------------------------------------------------
 
     def _load_from_store(self) -> MemoryState:
         raw: Any = {}
@@ -367,9 +207,7 @@ class MemoryRepository:
     def _save_to_store(self, state: MemoryState) -> None:
         if self.store is None:
             return
-
         payload = state.model_dump(mode="json")
-
         if hasattr(self.store, "save"):
             self.store.save(payload)
         elif hasattr(self.store, "put"):
@@ -377,19 +215,12 @@ class MemoryRepository:
         elif hasattr(self.store, "write"):
             self.store.write(payload)
 
-    # -------------------------------------------------------------------------
-    # State coercion / repair
-    # -------------------------------------------------------------------------
-
     def _coerce_state(self, raw: Any) -> MemoryState:
         if isinstance(raw, MemoryState):
             return raw
 
         if not isinstance(raw, dict):
-            state = MemoryState()
-            if not state.schema_version:
-                state.schema_version = MEMORY_SCHEMA_VERSION
-            return state
+            return MemoryState()
 
         raw = dict(raw)
 
@@ -424,9 +255,7 @@ class MemoryRepository:
 
             for item in raw.get("architecture_reviews", []) or []:
                 try:
-                    state.architecture_reviews.append(
-                        ArchitectureReview.model_validate(item)
-                    )
+                    state.architecture_reviews.append(ArchitectureReview.model_validate(item))
                 except ValidationError:
                     continue
 
@@ -454,9 +283,7 @@ class MemoryRepository:
                     state.failure_patterns[signature] = parsed
                 except ValidationError:
                     try:
-                        state.failure_patterns[signature] = FailurePatternRecord(
-                            signature=signature
-                        )
+                        state.failure_patterns[signature] = FailurePatternRecord(signature=signature)
                     except ValidationError:
                         continue
 
@@ -491,9 +318,6 @@ class MemoryRepository:
                 state.quarantine_events = quarantine_events
 
         if not state.schema_version:
-            state.schema_version = MEMORY_SCHEMA_VERSION
-
-        if not getattr(state, "last_saved_at", None):
-            state.last_saved_at = _utc_now()
-
+            state.schema_version = "3.0"
+        state.last_saved_at = utc_now_iso()
         return state

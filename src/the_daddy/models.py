@@ -216,7 +216,7 @@ VetDecision = VettingDecision
 
 
 class FailurePatternRecord(BaseModel):
-    signature: str
+    signature: str = ""
     success_count: int = 0
     failure_count: int = 0
     last_route: str = ""
@@ -307,6 +307,27 @@ class MemoryState(BaseModel):
     learning_weights: LearningWeights = Field(default_factory=LearningWeights)
     learning_journal: list[LearningJournalEntry] = Field(default_factory=list)
     last_saved_at: str = Field(default_factory=utc_now_iso)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _backfill_failure_pattern_signatures(cls, value: Any) -> Any:
+        payload = _to_mapping_like(value)
+        if not payload:
+            return value
+
+        raw_patterns = payload.get("failure_patterns")
+        if not isinstance(raw_patterns, dict):
+            return payload
+
+        fixed_patterns: dict[str, Any] = {}
+        for signature, record in raw_patterns.items():
+            record_map = _to_mapping_like(record) or {}
+            if not record_map.get("signature"):
+                record_map["signature"] = str(signature)
+            fixed_patterns[str(signature)] = record_map
+
+        payload["failure_patterns"] = fixed_patterns
+        return payload
 
 
 FailurePattern = FailurePatternRecord

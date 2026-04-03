@@ -16,11 +16,10 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    openai_model_main: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_MAIN", "gpt-4o"))
-    openai_model_review: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_REVIEW", "gpt-4o"))
-    openai_model_vet: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_VET", "gpt-4o-mini"))
-    openai_model_light: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_LIGHT", "gpt-4o-mini"))
-    openai_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("OPENAI_TIMEOUT_SECONDS", "120")))
+    openai_model_main: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_MAIN", "gpt-5.4"))
+    openai_model_review: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_REVIEW", "gpt-5.4"))
+    openai_model_vet: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_VET", "gpt-5.4-mini"))
+    openai_model_light: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_LIGHT", "gpt-5.4-nano"))
 
     # GitHub / PR lane
     github_token: str = Field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
@@ -33,7 +32,6 @@ class Settings(BaseSettings):
     max_attempts: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_ATTEMPTS", "4")))
     run_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("DADDY_RUN_TIMEOUT_SECONDS", "1200")))
     max_file_bytes: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_FILE_BYTES", "120000")))
-    max_depth: int = Field(default_factory=lambda: int(os.getenv("DADDY_MAX_DEPTH", "3")))
     allow_extensions: list[str] = Field(
         default_factory=lambda: [".py", ".md", ".txt", ".yml", ".yaml", ".json", ".toml"]
     )

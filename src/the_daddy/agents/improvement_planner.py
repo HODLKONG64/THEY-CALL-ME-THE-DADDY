@@ -1,22 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Iterable
 
-from pydantic import ValidationError
-
-from ..models import ArchitectureReview, MemoryState, PatchAction, SelfEvolutionAction
-
-
-PROTECTED_CORE_FILES = {
-    "src/the_daddy/agents/reviewer.py",
-    "src/the_daddy/engine.py",
-    "src/the_daddy/models.py",
-    "src/the_daddy/policy.py",
-    "src/the_daddy/scoring.py",
-    "src/the_daddy/merge_rules.py",
-    "src/the_daddy/git_tools.py",
-}
+from ..models import ArchitectureReview, MemoryState, SelfEvolutionAction
 
 
 @dataclass
@@ -27,109 +14,11 @@ class PlannedSelfEvolution:
 
 
 class ImprovementPlanner:
-    def _safe_list(self, value: Any) -> list[Any]:
-        if value is None:
-            return []
-        if isinstance(value, (str, bytes, dict)):
-            return []
-        try:
-            return list(value)
-        except TypeError:
-            return []
-
-    def _coerce_patch_action(self, value: Any) -> PatchAction | None:
-        if isinstance(value, PatchAction):
-            return value
-        if isinstance(value, dict):
-            try:
-                return PatchAction.model_validate(value)
-            except ValidationError:
-                return None
-        return None
-
-    def _normalize_patches(self, value: Any) -> list[PatchAction]:
-        normalized: list[PatchAction] = []
-        for item in self._safe_list(value):
-            patch = self._coerce_patch_action(item)
-            if not patch:
-                continue
-            if not getattr(patch, "path", ""):
-                continue
-            if getattr(patch, "operation", None) not in {"replace_file", "regex_replace"}:
-                continue
-            if patch.operation == "replace_file" and not patch.new_content:
-                continue
-            if patch.operation == "regex_replace" and (not patch.pattern or not patch.replacement):
-                continue
-
-            # 🔒 PROTECTED CORE FILES: skip silently — apply_patch_action would reject anyway
-            norm_path = patch.path.strip().replace("\\", "/")
-            if norm_path in PROTECTED_CORE_FILES:
-                continue
-
-            # 🔒 MINIMUM CONTENT SIZE for replace_file
-            if patch.operation == "replace_file" and len(patch.new_content or "") < 50:
-                continue
-
-            normalized.append(patch)
-        return normalized
-
-    def _coerce_self_evolution_action(self, value: Any) -> SelfEvolutionAction | None:
-        if isinstance(value, SelfEvolutionAction):
-            patches = self._normalize_patches(getattr(value, "patches", None))
-            if not patches:
-                return None
-            return value.model_copy(update={"patches": patches})
-
-        if isinstance(value, dict):
-            title = value.get("title")
-            description = value.get("description")
-            risk = value.get("risk")
-            patches = self._normalize_patches(value.get("patches"))
-
-            if not isinstance(title, str) or not title:
-                return None
-            if not isinstance(description, str) or not description:
-                return None
-            if risk != "safe":
-                return None
-            if not patches:
-                return None
-
-            return SelfEvolutionAction(
-                title=title,
-                description=description,
-                risk="safe",
-                patches=patches,
-            )
-        return None
-
-    def _normalize_self_evolution_actions(self, value: Any) -> list[SelfEvolutionAction]:
-        normalized: list[SelfEvolutionAction] = []
-        for item in self._safe_list(value):
-            action = self._coerce_self_evolution_action(item)
-            if not action:
-                continue
-            if not isinstance(getattr(action, "title", None), str) or not action.title:
-                continue
-            if not isinstance(getattr(action, "description", None), str) or not action.description:
-                continue
-            if getattr(action, "risk", None) != "safe":
-                continue
-            patches = self._normalize_patches(getattr(action, "patches", None))
-            if not patches:
-                continue
-            normalized.append(action.model_copy(update={"patches": patches}))
-        return normalized
-
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
 
-        recommendations = self._safe_list(getattr(review, "recommendations", None))
-        backlog_items = self._safe_list(getattr(review, "backlog_items", None))
-
-        for item in recommendations + backlog_items:
-            if isinstance(item, str) and item and item not in memory.backlog:
+        for item in list(review.recommendations) + list(review.backlog_items):
+            if item and item not in memory.backlog:
                 memory.backlog.append(item)
                 additions.append(item)
 
@@ -141,6 +30,7 @@ class ImprovementPlanner:
         enabled: bool,
         max_actions: int,
     ) -> PlannedSelfEvolution:
+
         if not enabled:
             return PlannedSelfEvolution(
                 enabled=False,
@@ -148,10 +38,12 @@ class ImprovementPlanner:
                 reasons=["Self-evolution disabled"],
             )
 
-        safe_actions = self._normalize_self_evolution_actions(
-            getattr(review, "self_evolution_actions", None)
-        )
+        safe_actions = [
+            a for a in review.self_evolution_actions
+            if a.risk == "safe" and a.patches
+        ]
 
+        # 🔥 CRITICAL FIX — ensure at least 1 action exists
         if not safe_actions:
             return PlannedSelfEvolution(
                 enabled=True,
@@ -170,8 +62,7 @@ class ImprovementPlanner:
 
     def select_build_work(self, planned_work: Iterable) -> object | None:
         candidates = [
-            item
-            for item in self._safe_list(planned_work)
+            item for item in planned_work
             if getattr(item, "state", "") in {"proposed", "active"}
         ]
         if not candidates:
@@ -179,8 +70,8 @@ class ImprovementPlanner:
 
         candidates.sort(
             key=lambda item: (
-                -getattr(item, "priority", 0),
-                getattr(item, "created_at", ""),
+                getattr(item, "priority", 0),
+                getattr(item, "created_at", "")
             )
         )
         return candidates[0]
@@ -196,19 +87,16 @@ class ImprovementPlanner:
 
         return ranked[0].failure_count >= 3
 
-    def decide_mode(self, memory: MemoryState | Any, review: ArchitectureReview) -> str:
+    def decide_mode(self, memory, review: ArchitectureReview) -> str:
         state: MemoryState = memory.state if hasattr(memory, "state") else memory
 
-        architecture_plans = self._safe_list(getattr(review, "architecture_plans", None))
-        self_evolution_actions = self._normalize_self_evolution_actions(
-            getattr(review, "self_evolution_actions", None)
-        )
-        planned_work = self._safe_list(getattr(state, "planned_work", None))
-
-        if architecture_plans and self.should_trigger_architecture(state):
+        if review.architecture_plans and self.should_trigger_architecture(state):
             return "architecture"
-        if self_evolution_actions:
+
+        if review.self_evolution_actions:
             return "build"
-        if self.select_build_work(planned_work):
+
+        if state.planned_work:
             return "build"
+
         return "repair"

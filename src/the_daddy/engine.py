@@ -16,6 +16,7 @@ from .policy import classify_patch_risk
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
 from .runtime.iterative_depth_learner import IterativeDepthLearner
+from .runtime.learning_journal import build_learning_journal_entry
 from .scoring import rank_patch_set
 
 
@@ -674,6 +675,10 @@ class DaddyEngine:
                 architecture_plans_count=len(review.architecture_plans),
             )
         )
+
+        learning_entry = build_learning_journal_entry(run_id=run_id, review=review, record=record)
+        self.memory.state.learning_journal.append(learning_entry)
+        self.memory.state.learning_journal = self.memory.state.learning_journal[-200:]
 
         self.memory.add_run(record)
         self.memory.save()

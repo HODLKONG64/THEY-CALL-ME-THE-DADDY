@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import hashlib
@@ -55,6 +56,8 @@ SAFE_NEW_FILE_ALLOWLIST = {
     "src/the_daddy/runtime/trace_summary.py",
     "src/the_daddy/runtime/reviewer_fallback.py",
     "src/the_daddy/runtime/architecture_probe.py",
+    "src/the_daddy/runtime/error_digest.py",
+    "src/the_daddy/runtime/run_health.py",
 }
 
 

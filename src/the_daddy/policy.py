@@ -64,6 +64,18 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/runtime/command_runner.py",
 }
 
+BANNED_SELF_EVOLUTION_PATHS = {
+    "src/the_daddy/runtime/command_runner.py",
+}
+
+ALLOWLISTED_RUNTIME_HELPERS = {
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+    "src/the_daddy/runtime/error_digest.py",
+    "src/the_daddy/runtime/run_health.py",
+}
+
 
 def _normalize_path(path: str) -> str:
     normalized = (path or "").strip().replace("\\", "/")
@@ -76,7 +88,7 @@ def _normalize_path(path: str) -> str:
 
 def _is_workflow_file(path: str) -> bool:
     normalized = _normalize_path(path)
-    return any(normalized.startswith(p) for p in FORCE_BRANCH_PATHS)
+    return any(normalized.startswith(prefix) for prefix in FORCE_BRANCH_PATHS)
 
 
 def _is_blocked_path(path: str) -> list[str]:
@@ -103,6 +115,9 @@ def _looks_like_hallucinated_path(path: str) -> bool:
     if normalized in PROTECTED_CORE_FILES:
         return False
 
+    if normalized.startswith("src/the_daddy/runtime/"):
+        return False
+
     if normalized.startswith("src/the_daddy/"):
         remainder = normalized[len("src/the_daddy/"):]
         if "/" not in remainder:
@@ -126,6 +141,12 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
 
         if not any(path.endswith(ext) for ext in SAFE_EXTENSIONS):
             reasons.append(f"Unsafe extension: {path}")
+
+        if path in PROTECTED_CORE_FILES:
+            reasons.append(f"Protected core file cannot be auto-patched: {path}")
+
+        if path in BANNED_SELF_EVOLUTION_PATHS:
+            reasons.append(f"Banned self-evolution path: {path}")
 
         content = (patch.new_content or "") + (patch.pattern or "") + (patch.replacement or "")
         for bad in BLOCKED_KEYWORDS:

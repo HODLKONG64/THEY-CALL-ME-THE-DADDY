@@ -39,10 +39,7 @@ class R2Store:
 
     def _write_local(self, data: dict[str, Any]) -> None:
         self.local_path.parent.mkdir(parents=True, exist_ok=True)
-        self.local_path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        self.local_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def load(self) -> dict[str, Any]:
         if not self.enabled or self.client is None:
@@ -57,50 +54,11 @@ class R2Store:
                 return data
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
-            if code in {"NoSuchKey", "404", "NoSuchBucket"}:
+            if code not in {"NoSuchKey", "404", "NoSuchBucket"}:
                 return self._read_local()
-
-            # keep an error breadcrumb locally instead of failing blind
-            try:
-                fallback = {
-                    "_r2_error": {
-                        "stage": "load",
-                        "code": code,
-                        "message": str(exc),
-                    }
-                }
-                error_path = self.local_path.with_name("r2-load-error.json")
-                error_path.write_text(json.dumps(fallback, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+        except (BotoCoreError, json.JSONDecodeError, UnicodeDecodeError):
             return self._read_local()
-        except (BotoCoreError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            try:
-                fallback = {
-                    "_r2_error": {
-                        "stage": "load",
-                        "code": type(exc).__name__,
-                        "message": str(exc),
-                    }
-                }
-                error_path = self.local_path.with_name("r2-load-error.json")
-                error_path.write_text(json.dumps(fallback, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-            return self._read_local()
-        except Exception as exc:
-            try:
-                fallback = {
-                    "_r2_error": {
-                        "stage": "load",
-                        "code": type(exc).__name__,
-                        "message": str(exc),
-                    }
-                }
-                error_path = self.local_path.with_name("r2-load-error.json")
-                error_path.write_text(json.dumps(fallback, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+        except Exception:
             return self._read_local()
 
         return self._read_local()
@@ -109,7 +67,6 @@ class R2Store:
         if not isinstance(data, dict):
             raise TypeError("R2Store.save expects a dict")
 
-        # always keep local copy first
         self._write_local(data)
 
         if not self.enabled or self.client is None:
@@ -123,20 +80,5 @@ class R2Store:
                 Body=body,
                 ContentType="application/json",
             )
-        except Exception as exc:
-            # do not fail the run, but leave a local breadcrumb so failure is visible
-            try:
-                fallback = {
-                    "_r2_error": {
-                        "stage": "save",
-                        "code": type(exc).__name__,
-                        "message": str(exc),
-                        "bucket": self.bucket,
-                        "key": self.key,
-                    }
-                }
-                error_path = self.local_path.with_name("r2-save-error.json")
-                error_path.write_text(json.dumps(fallback, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+        except Exception:
             return
