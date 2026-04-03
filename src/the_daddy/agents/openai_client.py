@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Optional
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 from ..config import Settings
 
@@ -20,13 +20,19 @@ class OpenAIJSONClient:
             raise ValueError("OpenAI returned empty output; expected JSON.")
 
         try:
-            return json.loads(cleaned)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+            raise ValueError("OpenAI returned JSON, but not a JSON object.")
         except json.JSONDecodeError:
             pass
 
         fenced_match = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", cleaned, re.DOTALL)
         if fenced_match:
-            return json.loads(fenced_match.group(1))
+            parsed = json.loads(fenced_match.group(1))
+            if isinstance(parsed, dict):
+                return parsed
+            raise ValueError("OpenAI returned fenced JSON, but not a JSON object.")
 
         decoder = json.JSONDecoder()
         for start_index, char in enumerate(cleaned):
@@ -42,9 +48,10 @@ class OpenAIJSONClient:
 
         raise ValueError("Failed to parse JSON object from OpenAI response output.")
 
-    def generate_json(self, *, model: str, system: str, prompt: str, schema: dict) -> dict:
+    def _generate_json_with_schema(self, *, model: str, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         if not self.client:
             raise RuntimeError("OPENAI_API_KEY is not configured.")
+
         response = self.client.responses.create(
             model=model,
             input=[
@@ -62,3 +69,45 @@ class OpenAIJSONClient:
             timeout=self.settings.openai_timeout_seconds,
         )
         return self._parse_json_output(response.output_text)
+
+    def _generate_json_prompt_only(self, *, model: str, system: str, prompt: str) -> dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("OPENAI_API_KEY is not configured.")
+
+        response = self.client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": (
+                        prompt
+                        + "\n\nReturn valid JSON only. Do not wrap the JSON in markdown fences."
+                    ),
+                },
+            ],
+            timeout=self.settings.openai_timeout_seconds,
+        )
+        return self._parse_json_output(response.output_text)
+
+    def generate_json(self, *, model: str, system: str, prompt: str, schema: dict) -> dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("OPENAI_API_KEY is not configured.")
+
+        try:
+            return self._generate_json_with_schema(
+                model=model,
+                system=system,
+                prompt=prompt,
+                schema=schema,
+            )
+        except BadRequestError as exc:
+            text = str(exc)
+            if "invalid_json_schema" not in text and "Invalid schema for response_format" not in text:
+                raise
+
+        return self._generate_json_prompt_only(
+            model=model,
+            system=system,
+            prompt=prompt,
+        )
