@@ -14,6 +14,10 @@ class PlannedSelfEvolution:
 
 
 class ImprovementPlanner:
+    RECENT_SUMMARY_WINDOW = 6
+    NO_PATCH_STREAK_THRESHOLD = 3
+    LOW_SUCCESS_RATE_THRESHOLD = 0.8
+
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
 
@@ -24,11 +28,81 @@ class ImprovementPlanner:
 
         return additions
 
+    def _recent_runs(self, state: Any, limit: int | None = None) -> list[Any]:
+        raw_runs = getattr(state, "runs", []) or []
+        if not isinstance(raw_runs, list):
+            return []
+
+        if limit is None:
+            return list(raw_runs)
+        return list(raw_runs[-max(1, int(limit)):])
+
+    def _trace_events(self, run: Any) -> list[dict[str, Any]]:
+        trace = getattr(run, "trace", None)
+        if trace is None and isinstance(run, dict):
+            trace = run.get("trace", [])
+        if not isinstance(trace, list):
+            return []
+        return [item for item in trace if isinstance(item, dict)]
+
+    def _summary_event(self, run: Any, event_name: str) -> dict[str, Any] | None:
+        for event in self._trace_events(run):
+            if event.get("event") == event_name:
+                summary = event.get("summary")
+                if isinstance(summary, dict):
+                    return summary
+        return None
+
+    def _recent_patch_velocity_summary(self, state: Any) -> dict[str, Any] | None:
+        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
+        for run in reversed(runs):
+            summary = self._summary_event(run, "runtime_patch_velocity_summary")
+            if summary:
+                return summary
+        return None
+
+    def _recent_run_health_summary(self, state: Any) -> dict[str, Any] | None:
+        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
+        for run in reversed(runs):
+            summary = self._summary_event(run, "runtime_run_health_summary")
+            if summary:
+                return summary
+        return None
+
+    def _recent_build_action_summary(self, state: Any) -> dict[str, Any] | None:
+        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
+        for run in reversed(runs):
+            summary = self._summary_event(run, "runtime_build_action_summary")
+            if summary:
+                return summary
+        return None
+
+    def _recent_no_patch_streak(self, state: Any) -> int:
+        streak = 0
+        for run in reversed(self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)):
+            patch_count = 0
+            if isinstance(run, dict):
+                patch_count = int(run.get("patch_count", 0) or 0)
+            else:
+                patch_count = int(getattr(run, "patch_count", 0) or 0)
+
+            if patch_count > 0:
+                break
+            streak += 1
+        return streak
+
+    def _has_recent_build_summary_pressure(self, state: Any) -> bool:
+        summary = self._recent_build_action_summary(state)
+        if not summary:
+            return False
+        return int(summary.get("count", 0) or 0) > 0
+
     def plan_self_evolution(
         self,
         review: ArchitectureReview,
         enabled: bool,
         max_actions: int,
+        memory: Any | None = None,
     ) -> PlannedSelfEvolution:
         if not enabled:
             return PlannedSelfEvolution(
@@ -54,17 +128,42 @@ class ImprovementPlanner:
                 reasons=["No valid safe actions found"],
             )
 
-        if max_actions <= 0:
+        effective_max = max_actions
+        reasons: list[str] = []
+
+        if memory is not None:
+            state: Any = memory.state if hasattr(memory, "state") else memory
+            patch_velocity = self._recent_patch_velocity_summary(state)
+            run_health = self._recent_run_health_summary(state)
+
+            if patch_velocity:
+                runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
+                window = int(patch_velocity.get("window", 0) or 0)
+                if runs_with_patches == 0 and window > 0:
+                    effective_max = min(effective_max, 1)
+                    reasons.append(
+                        f"Recent patch velocity is flat across the last {window} runs; limiting self-evolution to 1 action."
+                    )
+
+            if run_health:
+                success_rate = float(run_health.get("success_rate", 0) or 0)
+                sample_size = int(run_health.get("sample_size", 0) or 0)
+                if sample_size > 0 and success_rate < self.LOW_SUCCESS_RATE_THRESHOLD:
+                    effective_max = min(effective_max, 1)
+                    reasons.append(
+                        f"Recent run health success_rate={success_rate} across sample_size={sample_size}; keeping self-evolution conservative."
+                    )
+
+        if effective_max <= 0:
             return PlannedSelfEvolution(
                 enabled=True,
                 actions=[],
-                reasons=[f"Capped self-evolution actions from {len(safe_actions)} to 0."],
+                reasons=reasons + [f"Capped self-evolution actions from {len(safe_actions)} to 0."],
             )
 
-        reasons: list[str] = []
-        if len(safe_actions) > max_actions:
-            reasons.append(f"Capped self-evolution actions from {len(safe_actions)} to {max_actions}.")
-            safe_actions = safe_actions[:max_actions]
+        if len(safe_actions) > effective_max:
+            reasons.append(f"Capped self-evolution actions from {len(safe_actions)} to {effective_max}.")
+            safe_actions = safe_actions[:effective_max]
 
         return PlannedSelfEvolution(
             enabled=True,
@@ -116,11 +215,29 @@ class ImprovementPlanner:
                 return "architecture"
 
         self_evolution_actions = getattr(review, "self_evolution_actions", None)
-        if isinstance(self_evolution_actions, list):
-            if self_evolution_actions:
-                return "build"
+        if isinstance(self_evolution_actions, list) and self_evolution_actions:
+            return "build"
         elif self_evolution_actions:
             return "repair"
+
+        patch_velocity = self._recent_patch_velocity_summary(state)
+        run_health = self._recent_run_health_summary(state)
+        no_patch_streak = self._recent_no_patch_streak(state)
+        has_build_summary_pressure = self._has_recent_build_summary_pressure(state)
+
+        if run_health:
+            success_rate = float(run_health.get("success_rate", 0) or 0)
+            sample_size = int(run_health.get("sample_size", 0) or 0)
+            if sample_size > 0 and success_rate < self.LOW_SUCCESS_RATE_THRESHOLD:
+                return "repair"
+
+        if patch_velocity:
+            runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
+            sample_size = int(patch_velocity.get("sample_size", 0) or 0)
+
+            if sample_size > 0 and runs_with_patches == 0:
+                if has_build_summary_pressure or no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD:
+                    return "build"
 
         planned_work = getattr(state, "planned_work", None)
         if isinstance(planned_work, list):
