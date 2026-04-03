@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..models import ArchitectureReview, MemoryState, SelfEvolutionAction
 
@@ -30,7 +30,6 @@ class ImprovementPlanner:
         enabled: bool,
         max_actions: int,
     ) -> PlannedSelfEvolution:
-
         if not enabled:
             return PlannedSelfEvolution(
                 enabled=False,
@@ -38,12 +37,16 @@ class ImprovementPlanner:
                 reasons=["Self-evolution disabled"],
             )
 
+        raw_actions = getattr(review, "self_evolution_actions", []) or []
+        if not isinstance(raw_actions, list):
+            raw_actions = []
+
         safe_actions = [
-            a for a in review.self_evolution_actions
-            if a.risk == "safe" and a.patches
+            action
+            for action in raw_actions
+            if getattr(action, "risk", "") == "safe" and bool(getattr(action, "patches", []))
         ]
 
-        # 🔥 CRITICAL FIX — ensure at least 1 action exists
         if not safe_actions:
             return PlannedSelfEvolution(
                 enabled=True,
@@ -51,20 +54,33 @@ class ImprovementPlanner:
                 reasons=["No valid safe actions found"],
             )
 
+        if max_actions <= 0:
+            return PlannedSelfEvolution(
+                enabled=True,
+                actions=[],
+                reasons=[f"Capped self-evolution actions from {len(safe_actions)} to 0."],
+            )
+
+        reasons: list[str] = []
         if len(safe_actions) > max_actions:
+            reasons.append(f"Capped self-evolution actions from {len(safe_actions)} to {max_actions}.")
             safe_actions = safe_actions[:max_actions]
 
         return PlannedSelfEvolution(
             enabled=True,
             actions=safe_actions,
-            reasons=[],
+            reasons=reasons,
         )
 
-    def select_build_work(self, planned_work: Iterable) -> object | None:
-        candidates = [
-            item for item in planned_work
-            if getattr(item, "state", "") in {"proposed", "active"}
-        ]
+    def select_build_work(self, planned_work: Iterable[Any]) -> object | None:
+        try:
+            candidates = [
+                item for item in planned_work
+                if getattr(item, "state", "") in {"proposed", "active"}
+            ]
+        except TypeError:
+            return None
+
         if not candidates:
             return None
 
@@ -88,15 +104,25 @@ class ImprovementPlanner:
         return ranked[0].failure_count >= 3
 
     def decide_mode(self, memory, review: ArchitectureReview) -> str:
-        state: MemoryState = memory.state if hasattr(memory, "state") else memory
+        state: Any = memory.state if hasattr(memory, "state") else memory
 
-        if review.architecture_plans and self.should_trigger_architecture(state):
-            return "architecture"
+        architecture_plans = getattr(review, "architecture_plans", None)
+        if isinstance(architecture_plans, list) and architecture_plans and isinstance(state, MemoryState):
+            if self.should_trigger_architecture(state):
+                return "architecture"
 
-        if review.self_evolution_actions:
-            return "build"
+        self_evolution_actions = getattr(review, "self_evolution_actions", None)
+        if isinstance(self_evolution_actions, list):
+            if self_evolution_actions:
+                return "build"
+        elif self_evolution_actions:
+            return "repair"
 
-        if state.planned_work:
+        planned_work = getattr(state, "planned_work", None)
+        if isinstance(planned_work, list):
+            if planned_work:
+                return "build"
+        elif isinstance(planned_work, str):
             return "build"
 
         return "repair"
