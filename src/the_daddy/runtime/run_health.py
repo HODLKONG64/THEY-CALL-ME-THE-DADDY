@@ -32,3 +32,16 @@ def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, 
         "recent_mode_counts": recent_modes,
         "latest_run": latest_run,
     }
+
+
+
+def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    sample = items[-5:]
+    success_count = sum(1 for item in sample if bool(item.get("success", False)))
+    failure_count = len(sample) - success_count
+    return {
+        "sample_size": len(sample),
+        "successes": success_count,
+        "failures": failure_count,
+    }
