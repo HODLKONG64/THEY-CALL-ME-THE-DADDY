@@ -1,0 +1,7 @@
+{
+  "proposed_changes": [
+    "Add stricter stack-trace parser",
+    "Track timeout fingerprints separately"
+  ],
+  "notes": "Suggestion from external scout bot."
+}
