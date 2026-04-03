@@ -752,12 +752,37 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
             ],
         )
 
+
     def _error_digest_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / ERROR_DIGEST_RUNTIME_PATH
-        if target.exists():
+        existing = self._read_text(target)
+
+        if "def summarize_traceback_excerpt(" in existing:
             return None
 
-        new_content = '''from __future__ import annotations
+        function_block = """
+
+
+def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
+    lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
+    tail = lines[-max_lines:]
+    return {
+        "line_count": len(lines),
+        "excerpt": tail,
+        "last_line": tail[-1] if tail else "",
+    }
+"""
+
+        if target.exists():
+            return self._append_regex_patch_action(
+                path=ERROR_DIGEST_RUNTIME_PATH,
+                title="Append traceback extraction helper to error_digest",
+                description="Append a bounded traceback excerpt helper to the existing error digest runtime helper using regex_replace.",
+                function_name="summarize_traceback_excerpt",
+                function_block=function_block,
+            )
+
+        new_content = """from __future__ import annotations
 
 from collections import Counter
 from typing import Any
@@ -780,7 +805,17 @@ def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, An
         "error_counts": dict(kinds),
         "recent_errors": recent,
     }
-'''
+
+
+def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
+    lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
+    tail = lines[-max_lines:]
+    return {
+        "line_count": len(lines),
+        "excerpt": tail,
+        "last_line": tail[-1] if tail else "",
+    }
+"""
         return SelfEvolutionAction(
             title="Add runtime error digest helper",
             description="Create a bounded runtime helper that summarizes recent error-class events for safer diagnostics.",
@@ -999,6 +1034,31 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
             payload["build_actions"] = repaired_actions
             return ArchitectureReview.model_validate(payload)
 
+
+    def _append_regex_patch_action(
+        self,
+        *,
+        path: str,
+        title: str,
+        description: str,
+        function_name: str,
+        function_block: str,
+    ) -> SelfEvolutionAction:
+        return SelfEvolutionAction(
+            title=title,
+            description=description,
+            risk="safe",
+            patches=[
+                PatchAction(
+                    path=path,
+                    operation="regex_replace",
+                    pattern="\\Z",
+                    replacement=function_block,
+                    description=f"Append bounded helper function {function_name}.",
+                )
+            ],
+        )
+
     def _build_prompt(
         self,
         memory_snapshot: dict[str, Any],
@@ -1201,7 +1261,7 @@ Repository snapshot:
                     "Do not target banned self-evolution paths. "
                     "Prefer allowlisted runtime helper paths for observability improvements. "
                     "For an existing runtime helper file, do not use replace_file. "
-                    "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
+                    "For an existing runtime helper file, prefer regex_replace when the pattern matches the current file. Prefer appending a small helper function to an existing runtime helper over returning no action. "
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
