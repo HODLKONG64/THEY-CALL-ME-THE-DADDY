@@ -92,22 +92,26 @@ class ImprovementPlanner:
         )
         return candidates[0]
 
-    def should_trigger_architecture(self, memory: MemoryState) -> bool:
+    def should_trigger_architecture(self, memory: Any) -> bool:
+        failure_patterns = getattr(memory, "failure_patterns", {})
+        if not hasattr(failure_patterns, "values"):
+            return False
+
         ranked = sorted(
-            memory.failure_patterns.values(),
-            key=lambda item: (item.failure_count, item.updated_at),
+            failure_patterns.values(),
+            key=lambda item: (getattr(item, "failure_count", 0), getattr(item, "updated_at", "")),
             reverse=True,
         )
         if not ranked:
             return False
 
-        return ranked[0].failure_count >= 3
+        return int(getattr(ranked[0], "failure_count", 0) or 0) >= 3
 
     def decide_mode(self, memory, review: ArchitectureReview) -> str:
         state: Any = memory.state if hasattr(memory, "state") else memory
 
         architecture_plans = getattr(review, "architecture_plans", None)
-        if isinstance(architecture_plans, list) and architecture_plans and isinstance(state, MemoryState):
+        if isinstance(architecture_plans, list) and architecture_plans:
             if self.should_trigger_architecture(state):
                 return "architecture"
 
