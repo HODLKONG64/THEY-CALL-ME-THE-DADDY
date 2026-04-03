@@ -619,6 +619,19 @@ class DaddyEngine:
                 f"Run velocity summary emitted: sample_size={run_velocity_summary.get('sample_size', 0)} successes={run_velocity_summary.get('successes', 0)}."
             )
 
+        summarize_patch_velocity = getattr(run_health_runtime, "summarize_patch_velocity", None)
+        if callable(summarize_patch_velocity):
+            patch_velocity_summary = summarize_patch_velocity(run_payloads)
+            record.trace.append(
+                {
+                    "event": "runtime_patch_velocity_summary",
+                    "summary": patch_velocity_summary,
+                }
+            )
+            review.execution_notes.append(
+                f"Patch velocity summary emitted: sample_size={patch_velocity_summary.get('sample_size', 0)} runs_with_patches={patch_velocity_summary.get('runs_with_patches', 0)}."
+            )
+
         summarize_fallback_reason_counts = getattr(reviewer_fallback_runtime, "summarize_fallback_reason_counts", None)
         if callable(summarize_fallback_reason_counts):
             fallback_reason_summary = summarize_fallback_reason_counts(
