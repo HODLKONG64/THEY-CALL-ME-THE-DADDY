@@ -132,5 +132,5 @@ It runs every 12 hours and on manual dispatch.
 
 This is a bounded self-healing and bounded self-evolving system for debugging and maintenance.
 
-It is **not** a free-for-all autonomous shell bot. High-risk actions are blocked unless you explicitly wire those permissions in yourself.
+It is **not** a free-for-all autonomous shell bot. High-risk actions are blocked unless you explicitly wire those permissions in yourself...
 :)
