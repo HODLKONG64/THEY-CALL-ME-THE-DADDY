@@ -45,3 +45,19 @@ def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str
         "successes": success_count,
         "failures": failure_count,
     }
+
+
+
+def summarize_mode_distribution(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    counts: dict[str, int] = {}
+
+    for item in items[-20:]:
+        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
+        counts[mode] = counts.get(mode, 0) + 1
+
+    return {
+        "sample_size": min(len(items), 20),
+        "mode_counts": counts,
+        "distinct_modes": len(counts),
+    }
