@@ -683,55 +683,10 @@ class WakeReviewer:
         )
         return review
 
-    def _append_regex_patch_action(
-        self,
-        *,
-        path: str,
-        title: str,
-        description: str,
-        function_name: str,
-        function_block: str,
-    ) -> SelfEvolutionAction | None:
-        return SelfEvolutionAction(
-            title=title,
-            description=description,
-            risk="safe",
-            patches=[
-                PatchAction(
-                    path=path,
-                    operation="regex_replace",
-                    pattern="\\Z",
-                    replacement=function_block,
-                    description=f"Append bounded helper function {function_name}.",
-                )
-            ],
-        )
-
     def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / FALLBACK_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def fallback_review_summary(" in existing:
-            return None
-
-        function_block = """
-
-
-def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(details or {})
-    payload["reason"] = reason
-    payload["source"] = "wake_reviewer_fallback"
-    return payload
-"""
-
         if target.exists():
-            return self._append_regex_patch_action(
-                path=FALLBACK_RUNTIME_PATH,
-                title="Append safe reviewer fallback summary helper",
-                description="Append a bounded fallback summary helper without replacing the existing runtime helper file.",
-                function_name="fallback_review_summary",
-                function_block=function_block,
-            )
+            return None
 
         new_content = '''from __future__ import annotations
 
@@ -760,33 +715,8 @@ def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) 
 
     def _proactive_runtime_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / PROACTIVE_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def summarize_self_evolution_skips(" in existing:
-            return None
-
-        function_block = """
-
-
-def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    blocked = [item for item in items if item.lower().startswith("blocked ")]
-    return {
-        "total_reasons": len(items),
-        "blocked_count": len(blocked),
-        "blocked_reasons": blocked,
-        "all_reasons": items,
-    }
-"""
-
         if target.exists():
-            return self._append_regex_patch_action(
-                path=PROACTIVE_RUNTIME_PATH,
-                title="Append normalized self-evolution trace helper",
-                description="Append a bounded helper function to the existing trace summary runtime helper using regex_replace.",
-                function_name="summarize_self_evolution_skips",
-                function_block=function_block,
-            )
+            return None
 
         new_content = '''from __future__ import annotations
 
@@ -807,17 +737,6 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
         "event_counts": dict(counts),
         "last_event": items[-1] if items else None,
     }
-
-
-def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    blocked = [item for item in items if item.lower().startswith("blocked ")]
-    return {
-        "total_reasons": len(items),
-        "blocked_count": len(blocked),
-        "blocked_reasons": blocked,
-        "all_reasons": items,
-    }
 '''
         return SelfEvolutionAction(
             title="Add runtime trace summarizer utility",
@@ -835,37 +754,8 @@ def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str
 
     def _error_digest_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / ERROR_DIGEST_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def summarize_blocked_patch_targets(" in existing:
-            return None
-
-        function_block = """
-
-
-def summarize_blocked_patch_targets(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    blocked_targets: list[str] = []
-    for item in items:
-        if str(item.get("event", "")).strip() != "patch_apply_failed":
-            continue
-        path = str(item.get("path", "")).strip()
-        if path and path not in blocked_targets:
-            blocked_targets.append(path)
-    return {
-        "blocked_target_count": len(blocked_targets),
-        "blocked_targets": blocked_targets,
-    }
-"""
-
         if target.exists():
-            return self._append_regex_patch_action(
-                path=ERROR_DIGEST_RUNTIME_PATH,
-                title="Append runtime blocked-target digest helper",
-                description="Append a bounded digest helper to summarize blocked patch targets on the existing error digest helper.",
-                function_name="summarize_blocked_patch_targets",
-                function_block=function_block,
-            )
+            return None
 
         new_content = '''from __future__ import annotations
 
@@ -890,21 +780,6 @@ def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, An
         "error_counts": dict(kinds),
         "recent_errors": recent,
     }
-
-
-def summarize_blocked_patch_targets(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    blocked_targets: list[str] = []
-    for item in items:
-        if str(item.get("event", "")).strip() != "patch_apply_failed":
-            continue
-        path = str(item.get("path", "")).strip()
-        if path and path not in blocked_targets:
-            blocked_targets.append(path)
-    return {
-        "blocked_target_count": len(blocked_targets),
-        "blocked_targets": blocked_targets,
-    }
 '''
         return SelfEvolutionAction(
             title="Add runtime error digest helper",
@@ -922,34 +797,8 @@ def summarize_blocked_patch_targets(events: list[dict[str, Any]] | None = None) 
 
     def _run_health_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / RUN_HEALTH_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def summarize_run_velocity(" in existing:
-            return None
-
-        function_block = """
-
-
-def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    sample = items[-5:]
-    success_count = sum(1 for item in sample if bool(item.get("success", False)))
-    failure_count = len(sample) - success_count
-    return {
-        "sample_size": len(sample),
-        "successes": success_count,
-        "failures": failure_count,
-    }
-"""
-
         if target.exists():
-            return self._append_regex_patch_action(
-                path=RUN_HEALTH_RUNTIME_PATH,
-                title="Append runtime run-velocity helper",
-                description="Append a bounded run-velocity helper to the existing run health runtime helper using regex_replace.",
-                function_name="summarize_run_velocity",
-                function_block=function_block,
-            )
+            return None
 
         new_content = '''from __future__ import annotations
 
@@ -984,18 +833,6 @@ def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, 
         "success_rate": success_rate,
         "recent_mode_counts": recent_modes,
         "latest_run": latest_run,
-    }
-
-
-def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    sample = items[-5:]
-    success_count = sum(1 for item in sample if bool(item.get("success", False)))
-    failure_count = len(sample) - success_count
-    return {
-        "sample_size": len(sample),
-        "successes": success_count,
-        "failures": failure_count,
     }
 '''
         return SelfEvolutionAction(
@@ -1033,7 +870,6 @@ def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str
                 "Prefer allowlisted runtime helpers when reviewer drift is detected.",
                 "Do not broaden scope when verification is failing.",
                 "Do not use replace_file on an existing runtime helper.",
-                "Prefer regex-based upgrades for existing allowlisted runtime helpers.",
                 "Do not propose regex_replace unless the pattern exists in the current file.",
                 "Do not retry recently blocked targets immediately.",
                 "Do not keep farming reviewer_fallback.py after it already exists.",
@@ -1057,7 +893,6 @@ def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str
             "Derived from reviewer-proposed self-evolution action.",
             "Keep the change bounded and verification-driven.",
             "Do not use replace_file on an existing runtime helper.",
-            "Prefer regex-based upgrades when a runtime helper already exists.",
             "Do not use regex_replace unless the pattern matches the current file.",
             "Do not retry recently blocked targets immediately.",
         ]
@@ -1106,6 +941,63 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
             patch_bundle=[patch],
             status="proposed",
         )
+
+
+    def _normalize_build_actions(self, review: ArchitectureReview) -> ArchitectureReview:
+        normalized: list[PlannedWorkItem] = []
+
+        for index, item in enumerate(review.build_actions or [], start=1):
+            work_id = getattr(item, "work_id", "") or f"build-thread-auto-{index:03d}"
+            title = (getattr(item, "title", "") or "Carry bounded maintenance forward").strip()
+            description = (getattr(item, "description", "") or "Apply the bounded self-evolution patch set.").strip()
+            mode = getattr(item, "mode", "build") or "build"
+            state = getattr(item, "state", "proposed") or "proposed"
+            priority = getattr(item, "priority", 1)
+            route = getattr(item, "route", "safe") or "safe"
+            related_files = list(getattr(item, "related_files", []) or [])
+            notes = list(getattr(item, "notes", []) or [])
+
+            normalized.append(
+                PlannedWorkItem(
+                    work_id=str(work_id),
+                    title=title[:120],
+                    description=description[:500],
+                    mode=mode,
+                    state=state,
+                    priority=int(priority),
+                    route=route,
+                    related_files=related_files[:8],
+                    notes=notes,
+                )
+            )
+
+        review.build_actions = normalized
+        return review
+
+    def _review_from_payload(self, data: dict[str, Any]) -> ArchitectureReview:
+        try:
+            return ArchitectureReview.model_validate(data)
+        except Exception:
+            payload = dict(data or {})
+
+            repaired_actions: list[dict[str, Any]] = []
+            for index, item in enumerate(payload.get("build_actions", []) or [], start=1):
+                if not isinstance(item, dict):
+                    continue
+                repaired = dict(item)
+                repaired.setdefault("work_id", f"build-thread-auto-{index:03d}")
+                repaired.setdefault("title", "Carry bounded maintenance forward")
+                repaired.setdefault("description", "Apply the bounded self-evolution patch set.")
+                repaired.setdefault("mode", "build")
+                repaired.setdefault("state", "proposed")
+                repaired.setdefault("priority", 1)
+                repaired.setdefault("route", "safe")
+                repaired.setdefault("related_files", [])
+                repaired.setdefault("notes", [])
+                repaired_actions.append(repaired)
+
+            payload["build_actions"] = repaired_actions
+            return ArchitectureReview.model_validate(payload)
 
     def _build_prompt(
         self,
@@ -1164,12 +1056,78 @@ Rules:
 - If you cannot justify a patch against an existing tracked file, use one of the allowlisted runtime helper paths above.
 - Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
 - CRITICAL: if an allowlisted runtime helper file already exists, do not use replace_file against it.
-- CRITICAL: if an allowlisted runtime helper file already exists and you still have a bounded improvement, use regex_replace with a pattern that matches the current file.
-- CRITICAL: prefer appending a small helper function to an existing allowlisted runtime helper via regex_replace rather than returning no action.
+- CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
 - CRITICAL: do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink-replace, or missing regex anchor.
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array and avoid documentation-only churn.
+
+Required JSON shape:
+{{
+  "diagnosis": "string",
+  "system_intent": "string",
+  "strengths": ["string"],
+  "weaknesses": ["string"],
+  "recommendations": ["string"],
+  "backlog_items": ["string"],
+  "self_evolution_actions": [
+    {{
+      "title": "string",
+      "description": "string",
+      "risk": "safe",
+      "patches": [
+        {{
+          "path": "string",
+          "operation": "replace_file",
+          "new_content": "string",
+          "pattern": null,
+          "replacement": null,
+          "description": "string"
+        }}
+      ]
+    }}
+  ],
+  "build_actions": [
+    {{
+      "work_id": "string",
+      "title": "string",
+      "description": "string",
+      "mode": "build",
+      "state": "proposed",
+      "priority": 1,
+      "route": "safe",
+      "related_files": ["string"],
+      "notes": ["string"],
+      "created_at": "ISO timestamp",
+      "updated_at": "ISO timestamp"
+    }}
+  ],
+  "architecture_plans": [
+    {{
+      "title": "string",
+      "summary": "string",
+      "rationale": "string",
+      "route": "branch",
+      "files_touched": ["string"],
+      "patch_bundle": [
+        {{
+          "path": "string",
+          "operation": "replace_file",
+          "new_content": "string",
+          "pattern": null,
+          "replacement": null,
+          "description": "string"
+        }}
+      ],
+      "proof_requirements": ["string"],
+      "status": "proposed",
+      "created_at": "ISO timestamp",
+      "updated_at": "ISO timestamp"
+    }}
+  ],
+  "execution_notes": ["string"],
+  "risk_level": "low"
+}}
 
 Recent summary:
 {recent_summary}
@@ -1243,8 +1201,7 @@ Repository snapshot:
                     "Do not target banned self-evolution paths. "
                     "Prefer allowlisted runtime helper paths for observability improvements. "
                     "For an existing runtime helper file, do not use replace_file. "
-                    "For an existing runtime helper file, prefer regex_replace when the pattern matches the current file. "
-                    "Prefer appending a small helper function to an existing runtime helper over returning no action. "
+                    "For an existing runtime helper file, prefer regex_replace only when the pattern exists in the current file. "
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
@@ -1254,7 +1211,7 @@ Repository snapshot:
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
             )
-            review = ArchitectureReview.model_validate(data)
+            review = self._review_from_payload(data)
         except Exception as exc:
             print(f"[REVIEWER ERROR] {type(exc).__name__}: {exc}", flush=True)
             return self._fallback_review(repo_root, f"Reviewer model call failed: {type(exc).__name__}: {exc}")
@@ -1346,5 +1303,7 @@ Repository snapshot:
                     plan.patch_bundle = valid_bundle
                     justified_plans.append(plan)
             review.architecture_plans = justified_plans
+
+        review = self._normalize_build_actions(review)
 
         return review
