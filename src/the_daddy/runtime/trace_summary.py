@@ -17,3 +17,15 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
         "event_counts": dict(counts),
         "last_event": items[-1] if items else None,
     }
+
+
+
+def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    blocked = [item for item in items if item.lower().startswith("blocked ")]
+    return {
+        "total_reasons": len(items),
+        "blocked_count": len(blocked),
+        "blocked_reasons": blocked,
+        "all_reasons": items,
+    }
