@@ -99,12 +99,14 @@ class MemoryRepository:
         description: str,
         route: str,
         source: str = "reviewer",
+        patch_fingerprint: str = "",
     ) -> PatchProvenance:
         entry = PatchProvenance(
             run_id=run_id,
             mode=mode,
             path=path,
             description=description,
+            patch_fingerprint=patch_fingerprint,
             route=route,
             source=source,
         )
