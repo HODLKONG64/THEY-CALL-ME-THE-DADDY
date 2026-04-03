@@ -14,6 +14,8 @@ from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
 from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
+from .runtime import architecture_probe as architecture_probe_runtime
+from .runtime import reviewer_fallback as reviewer_fallback_runtime
 from .runtime import run_health as run_health_runtime
 from .runtime import trace_summary as trace_summary_runtime
 from .runtime.command_runner import run_command
@@ -615,6 +617,30 @@ class DaddyEngine:
             )
             review.execution_notes.append(
                 f"Run velocity summary emitted: sample_size={run_velocity_summary.get('sample_size', 0)} successes={run_velocity_summary.get('successes', 0)}."
+            )
+
+        summarize_fallback_reason_counts = getattr(reviewer_fallback_runtime, "summarize_fallback_reason_counts", None)
+        if callable(summarize_fallback_reason_counts):
+            fallback_reason_summary = summarize_fallback_reason_counts(
+                getattr(getattr(record, "self_evolution", None), "reasons", []) or []
+            )
+            record.trace.append(
+                {
+                    "event": "runtime_fallback_reason_summary",
+                    "summary": fallback_reason_summary,
+                }
+            )
+
+        summarize_architecture_targets = getattr(architecture_probe_runtime, "summarize_architecture_targets", None)
+        if callable(summarize_architecture_targets):
+            architecture_target_summary = summarize_architecture_targets(
+                [item.get("path", "") for item in getattr(record, "patches_applied", []) or [] if isinstance(item, dict)]
+            )
+            record.trace.append(
+                {
+                    "event": "runtime_architecture_target_summary",
+                    "summary": architecture_target_summary,
+                }
             )
 
     def run(self):
