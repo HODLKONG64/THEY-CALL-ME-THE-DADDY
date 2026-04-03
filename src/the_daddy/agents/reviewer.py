@@ -513,6 +513,36 @@ class WakeReviewer:
             return False
 
 
+
+    def _helper_rotation_order(self) -> list[str]:
+        return [
+            PROACTIVE_RUNTIME_PATH,
+            ERROR_DIGEST_RUNTIME_PATH,
+            RUN_HEALTH_RUNTIME_PATH,
+            FALLBACK_RUNTIME_PATH,
+            ARCHITECTURE_RUNTIME_PATH,
+        ]
+
+    def _recent_helper_paths(self, memory_snapshot: dict[str, Any], limit: int = 12) -> list[str]:
+        recent: list[str] = []
+        runs = memory_snapshot.get("runs", []) or []
+
+        for run in reversed(runs[-limit:]):
+            if not isinstance(run, dict):
+                continue
+            for patch in run.get("patches_applied", []) or []:
+                if not isinstance(patch, dict):
+                    continue
+                path = self._normalize_path(str(patch.get("path", "")).strip())
+                if path in ALLOWLISTED_RUNTIME_HELPERS and path not in recent:
+                    recent.append(path)
+
+        return recent
+
+    def _helper_cooldown_paths(self, memory_snapshot: dict[str, Any], window: int = 2) -> set[str]:
+        recent = self._recent_helper_paths(memory_snapshot, limit=max(window * 2, 6))
+        return set(recent[:window])
+
     def _recent_helper_successes(self, memory_snapshot: dict[str, Any], limit: int = 8) -> dict[str, list[str]]:
         helper_events: dict[str, list[str]] = {}
         runs = memory_snapshot.get("runs", []) or []
@@ -539,122 +569,32 @@ class WakeReviewer:
 
         return helper_events
 
-    def _similar_helper_family_recently_improved(
+
+    def _helper_path_allowed_by_rotation(
         self,
         *,
-        action: SelfEvolutionAction,
         patch_path: str,
-        recent_helper_successes: dict[str, list[str]],
-    ) -> bool:
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[bool, str]:
         if patch_path not in ALLOWLISTED_RUNTIME_HELPERS:
-            return False
+            return True, ""
 
-        title_tokens = self._semantic_tokens(getattr(action, "title", ""))
-        desc_tokens = self._semantic_tokens(getattr(action, "description", ""))
-        action_tokens = title_tokens | desc_tokens
+        cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
+        if patch_path not in cooldown_paths:
+            return True, ""
 
-        if not action_tokens:
-            return False
+        rotation = self._helper_rotation_order()
+        recent_paths = self._recent_helper_paths(memory_snapshot, limit=12)
 
-        helper_semantic_groups = {
-            "trace_summary.py": {"trace", "observability", "runtime_observability", "trace_observability", "self_evolution"},
-            "error_digest.py": {"error", "digest", "failure", "observability", "runtime_observability"},
-            "run_health.py": {"run", "health", "success", "observability", "runtime_observability"},
-            "reviewer_fallback.py": {"fallback", "reviewer", "self_evolution", "observability"},
-            "architecture_probe.py": {"architecture", "probe", "observability"},
-        }
-
-        patch_name = Path(patch_path).name.lower()
-        patch_family = helper_semantic_groups.get(patch_name, set())
-        if not patch_family:
-            return False
-
-        for prior_path, prior_descriptions in recent_helper_successes.items():
-            if prior_path == patch_path:
+        for candidate in rotation:
+            if candidate == patch_path:
                 continue
-            prior_name = Path(prior_path).name.lower()
-            prior_family = helper_semantic_groups.get(prior_name, set())
-            if not prior_family:
+            if candidate in cooldown_paths:
                 continue
+            return False, f"Cooldown active for {patch_path}; prefer rotating to {candidate} first."
 
-            family_overlap = patch_family & prior_family
-            if not family_overlap:
-                continue
+        return False, f"Cooldown active for {patch_path}; all helper lanes were touched too recently."
 
-            prior_tokens: set[str] = set()
-            for desc in prior_descriptions:
-                prior_tokens |= self._semantic_tokens(desc)
-
-            if not prior_tokens:
-                continue
-
-            overlap = action_tokens & prior_tokens
-            if overlap and len(overlap) >= 2:
-                return True
-
-            if action_tokens & family_overlap and prior_tokens & family_overlap:
-                return True
-
-        return False
-
-    def _recently_blocked_paths(self, memory_snapshot: dict[str, Any], limit: int = 6) -> dict[str, list[str]]:
-        blocked: dict[str, list[str]] = {}
-
-        runs = memory_snapshot.get("runs", []) or []
-        for run in runs[-limit:]:
-            if not isinstance(run, dict):
-                continue
-
-            for event in run.get("trace", []) or []:
-                if not isinstance(event, dict):
-                    continue
-                if event.get("event") != "patch_apply_failed":
-                    continue
-
-                path = self._normalize_path(str(event.get("path", "")).strip())
-                if not path:
-                    continue
-
-                error = str(event.get("error", "")).strip()
-                if not error:
-                    continue
-
-                blocked.setdefault(path, [])
-                if error not in blocked[path]:
-                    blocked[path].append(error)
-
-            self_evolution = run.get("self_evolution")
-            if isinstance(self_evolution, dict):
-                for reason in self_evolution.get("reasons", []) or []:
-                    text = str(reason)
-                    if "->" not in text:
-                        continue
-                    left, right = text.rsplit("->", 1)
-                    path = self._normalize_path(right.strip())
-                    if not path:
-                        continue
-                    blocked.setdefault(path, [])
-                    if left.strip() not in blocked[path]:
-                        blocked[path].append(left.strip())
-
-        return blocked
-
-    def _is_repeat_blocked_target(self, path: str, recently_blocked: dict[str, list[str]]) -> bool:
-        normalized = self._normalize_path(path)
-        reasons = recently_blocked.get(normalized, [])
-        if not reasons:
-            return False
-
-        hot_reasons = (
-            "replace on existing runtime helper",
-            "shrink-replace",
-            "pattern does not match",
-            "regex_replace action whose pattern does not match",
-            "blocked regex_replace",
-            "blocked shrink-replace",
-        )
-        lowered = " | ".join(reasons).lower()
-        return any(token in lowered for token in hot_reasons)
 
     def _filter_low_value_actions(
         self,
@@ -682,7 +622,8 @@ class WakeReviewer:
             missing_regex_anchor_paths: list[str] = []
             repeated_blocked_paths: list[str] = []
             repetitive_fallback_paths: list[str] = []
-            semantically_redundant_helper_paths: list[str] = []
+            cooldown_blocked_helper_paths: list[str] = []
+            cooldown_notes: list[str] = []
 
             for patch in action.patches or []:
                 patch_path = self._normalize_path(getattr(patch, "path", ""))
@@ -699,12 +640,14 @@ class WakeReviewer:
                     repeated_blocked_paths.append(patch_path)
                     continue
 
-                if self._similar_helper_family_recently_improved(
-                    action=action,
+                allowed_by_rotation, cooldown_note = self._helper_path_allowed_by_rotation(
                     patch_path=patch_path,
-                    recent_helper_successes=recent_helper_successes,
-                ):
-                    semantically_redundant_helper_paths.append(patch_path)
+                    memory_snapshot=memory_snapshot,
+                )
+                if not allowed_by_rotation:
+                    cooldown_blocked_helper_paths.append(patch_path)
+                    if cooldown_note:
+                        cooldown_notes.append(cooldown_note)
                     continue
 
                 if self._is_existing_runtime_helper_replace(repo_root, patch):
@@ -732,9 +675,10 @@ class WakeReviewer:
                 )
                 continue
 
-            if semantically_redundant_helper_paths:
+            if cooldown_blocked_helper_paths:
+                extra = f" ({' | '.join(cooldown_notes)})" if cooldown_notes else ""
                 removed_notes.append(
-                    f"Suppressed semantically redundant helper churn after recent helper success: {action.title} -> {', '.join(semantically_redundant_helper_paths)}"
+                    f"Suppressed helper churn during cooldown window: {action.title} -> {', '.join(cooldown_blocked_helper_paths)}{extra}"
                 )
                 continue
 
@@ -1322,14 +1266,17 @@ Repository snapshot:
         fallback_plan = self._default_architecture_plan(repo_root)
 
         actions: list[SelfEvolutionAction] = []
-        if proactive_action is not None:
-            actions.append(proactive_action)
-        elif run_health_action is not None:
-            actions.append(run_health_action)
-        elif digest_action is not None:
-            actions.append(digest_action)
-        elif fallback_action is not None:
-            actions.append(fallback_action)
+        helper_candidates = {
+            PROACTIVE_RUNTIME_PATH: proactive_action,
+            ERROR_DIGEST_RUNTIME_PATH: digest_action,
+            RUN_HEALTH_RUNTIME_PATH: run_health_action,
+            FALLBACK_RUNTIME_PATH: fallback_action,
+        }
+        for helper_path in self._helper_rotation_order():
+            action = helper_candidates.get(helper_path)
+            if action is not None:
+                actions.append(action)
+                break
 
         plans = [fallback_plan] if fallback_plan is not None else []
 
@@ -1438,27 +1385,37 @@ Repository snapshot:
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
 
         if not review.self_evolution_actions:
-            proactive_action = self._proactive_runtime_action(repo_root)
-            if proactive_action is not None:
-                review.self_evolution_actions = [proactive_action]
-                review.execution_notes.append("Proactive runtime improvement injected while repo is green.")
-            else:
-                run_health_action = self._run_health_action(repo_root)
-                if run_health_action is not None:
-                    review.self_evolution_actions = [run_health_action]
-                    review.execution_notes.append("Run-health runtime improvement injected while repo is green.")
-                else:
-                    digest_action = self._error_digest_action(repo_root)
-                    if digest_action is not None:
-                        review.self_evolution_actions = [digest_action]
-                        review.execution_notes.append("Error-digest runtime improvement injected while repo is green.")
-                    else:
-                        fallback_action = self._fallback_patch_action(repo_root)
-                        if fallback_action is not None:
-                            review.self_evolution_actions = [fallback_action]
-                            review.execution_notes.append(
-                                "Fallback self-evolution patch injected because reviewer returned no executable patch."
-                            )
+            helper_candidates = {
+                PROACTIVE_RUNTIME_PATH: (self._proactive_runtime_action(repo_root), "Proactive runtime improvement injected while repo is green."),
+                ERROR_DIGEST_RUNTIME_PATH: (self._error_digest_action(repo_root), "Error-digest runtime improvement injected while repo is green."),
+                RUN_HEALTH_RUNTIME_PATH: (self._run_health_action(repo_root), "Run-health runtime improvement injected while repo is green."),
+                FALLBACK_RUNTIME_PATH: (self._fallback_patch_action(repo_root), "Fallback self-evolution patch injected because reviewer returned no executable patch."),
+            }
+            cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
+
+            chosen_action = None
+            chosen_note = ""
+            for helper_path in self._helper_rotation_order():
+                action, note = helper_candidates.get(helper_path, (None, ""))
+                if action is None:
+                    continue
+                if helper_path in cooldown_paths:
+                    continue
+                chosen_action = action
+                chosen_note = note
+                break
+
+            if chosen_action is None:
+                for helper_path in self._helper_rotation_order():
+                    action, note = helper_candidates.get(helper_path, (None, ""))
+                    if action is not None:
+                        chosen_action = action
+                        chosen_note = note
+                        break
+
+            if chosen_action is not None:
+                review.self_evolution_actions = [chosen_action]
+                review.execution_notes.append(chosen_note)
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
