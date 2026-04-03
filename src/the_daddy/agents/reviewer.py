@@ -85,7 +85,15 @@ class WakeReviewer:
     def _repo_snapshot(self, repo_root: Path) -> dict[str, Any]:
         tracked: list[str] = []
         preview_files: list[dict[str, str]] = []
+        preview_paths: set[str] = set()
         ignored_parts = {".git", ".venv", "venv", "__pycache__", "doctor_local", ".pytest_cache", "build", "dist"}
+        forced_preview_paths = {
+            PROACTIVE_RUNTIME_PATH,
+            FALLBACK_RUNTIME_PATH,
+            ARCHITECTURE_RUNTIME_PATH,
+            ERROR_DIGEST_RUNTIME_PATH,
+            RUN_HEALTH_RUNTIME_PATH,
+        }
 
         for path in sorted(repo_root.rglob("*")):
             if not path.is_file():
@@ -96,14 +104,20 @@ class WakeReviewer:
             rel = str(path.relative_to(repo_root))
             tracked.append(rel)
 
-            if len(preview_files) < 40 and path.suffix in {".py", ".md", ".yml", ".yaml", ".toml", ".json"}:
+            should_preview = (
+                rel in forced_preview_paths
+                or (len(preview_files) < 40 and path.suffix in {".py", ".md", ".yml", ".yaml", ".toml", ".json"})
+            )
+
+            if should_preview and rel not in preview_paths:
                 try:
                     preview_files.append(
                         {
                             "path": rel,
-                            "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:6000],
+                            "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:12000],
                         }
                     )
+                    preview_paths.add(rel)
                 except Exception:
                     continue
 
