@@ -857,10 +857,57 @@ class WakeReviewer:
 
     def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / FALLBACK_RUNTIME_PATH
+        existing = self._read_text(target)
+
+        if "def fallback_review_summary(" not in existing:
+            function_block = """
+
+
+def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(details or {})
+    payload["reason"] = reason
+    payload["source"] = "wake_reviewer_fallback"
+    return payload
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=FALLBACK_RUNTIME_PATH,
+                    title="Append safe reviewer fallback summary helper",
+                    description="Append a bounded fallback summary helper without replacing the existing runtime helper file.",
+                    function_name="fallback_review_summary",
+                    function_block=function_block,
+                )
+
+        if "def summarize_fallback_reason_counts(" not in existing:
+            function_block = """
+
+
+def summarize_fallback_reason_counts(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    counts: dict[str, int] = {}
+
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+
+    return {
+        "reason_count": len(items),
+        "unique_reasons": len(counts),
+        "counts": counts,
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=FALLBACK_RUNTIME_PATH,
+                    title="Append fallback reason-count helper",
+                    description="Append a bounded helper that summarizes fallback reason counts on the existing fallback runtime helper using regex_replace.",
+                    function_name="summarize_fallback_reason_counts",
+                    function_block=function_block,
+                )
+
         if target.exists():
             return None
 
-        new_content = '''from __future__ import annotations
+        new_content = """from __future__ import annotations
 
 from typing import Any
 
@@ -870,7 +917,21 @@ def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) 
     payload["reason"] = reason
     payload["source"] = "wake_reviewer_fallback"
     return payload
-'''
+
+
+def summarize_fallback_reason_counts(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    counts: dict[str, int] = {}
+
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+
+    return {
+        "reason_count": len(items),
+        "unique_reasons": len(counts),
+        "counts": counts,
+    }
+"""
         return SelfEvolutionAction(
             title="Add safe reviewer fallback helper",
             description="Create a non-protected runtime helper so fallback review output still produces an executable bounded patch.",
@@ -887,10 +948,57 @@ def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) 
 
     def _proactive_runtime_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / PROACTIVE_RUNTIME_PATH
+        existing = self._read_text(target)
+
+        if "def summarize_self_evolution_skips(" not in existing:
+            function_block = """
+
+
+def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    blocked = [item for item in items if item.lower().startswith("blocked ")]
+    return {
+        "total_reasons": len(items),
+        "blocked_count": len(blocked),
+        "blocked_reasons": blocked,
+        "all_reasons": items,
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=PROACTIVE_RUNTIME_PATH,
+                    title="Append normalized self-evolution trace helper",
+                    description="Append a bounded helper function to the existing trace summary runtime helper using regex_replace.",
+                    function_name="summarize_self_evolution_skips",
+                    function_block=function_block,
+                )
+
+        if "def summarize_build_action_titles(" not in existing:
+            function_block = """
+
+
+def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    return {
+        "count": len(titles),
+        "titles": titles[:10],
+        "first_title": titles[0] if titles else "",
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=PROACTIVE_RUNTIME_PATH,
+                    title="Append compact build-action summary helper",
+                    description="Append a bounded helper that summarizes build-action titles on the existing trace summary runtime helper using regex_replace.",
+                    function_name="summarize_build_action_titles",
+                    function_block=function_block,
+                )
+
         if target.exists():
             return None
 
-        new_content = '''from __future__ import annotations
+        new_content = """from __future__ import annotations
 
 from collections import Counter
 from typing import Any
@@ -909,7 +1017,28 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
         "event_counts": dict(counts),
         "last_event": items[-1] if items else None,
     }
-'''
+
+
+def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    blocked = [item for item in items if item.lower().startswith("blocked ")]
+    return {
+        "total_reasons": len(items),
+        "blocked_count": len(blocked),
+        "blocked_reasons": blocked,
+        "all_reasons": items,
+    }
+
+
+def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    return {
+        "count": len(titles),
+        "titles": titles[:10],
+        "first_title": titles[0] if titles else "",
+    }
+"""
         return SelfEvolutionAction(
             title="Add runtime trace summarizer utility",
             description="Proactively add a bounded runtime observability helper so future runs can reason about trace event distributions without test farming.",
@@ -923,7 +1052,6 @@ def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
                 )
             ],
         )
-
 
     def _error_digest_action(self, repo_root: Path) -> SelfEvolutionAction | None:
         target = repo_root / ERROR_DIGEST_RUNTIME_PATH
@@ -1198,10 +1326,71 @@ def summarize_mode_distribution(runs: list[dict[str, Any]] | None = None) -> dic
 
     def _default_architecture_plan(self, repo_root: Path) -> ArchitecturePlan | None:
         target = repo_root / ARCHITECTURE_RUNTIME_PATH
+        existing = self._read_text(target)
+
+        if "def architecture_probe_summary(" not in existing:
+            function_block = """
+
+
+def architecture_probe_summary(summary: str, files_touched: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": summary,
+        "files_touched": files_touched or [],
+        "source": "architecture_probe",
+    }
+"""
+            if target.exists():
+                patch = PatchAction(
+                    path=ARCHITECTURE_RUNTIME_PATH,
+                    operation="regex_replace",
+                    pattern="\\Z",
+                    replacement=function_block,
+                    description="Append architecture probe summary helper.",
+                )
+                return ArchitecturePlan(
+                    title="Branch-only bounded runtime architecture probe",
+                    summary="Append a bounded architecture probe helper to the existing architecture runtime helper.",
+                    rationale="Architecture mode must emit a real patch bundle that does not target protected core files.",
+                    route="branch",
+                    files_touched=[ARCHITECTURE_RUNTIME_PATH],
+                    patch_bundle=[patch],
+                    status="proposed",
+                )
+
+        if "def summarize_architecture_targets(" not in existing:
+            function_block = """
+
+
+def summarize_architecture_targets(files_touched: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (files_touched or []) if str(item).strip()]
+    return {
+        "target_count": len(items),
+        "targets": items,
+        "first_target": items[0] if items else "",
+    }
+"""
+            if target.exists():
+                patch = PatchAction(
+                    path=ARCHITECTURE_RUNTIME_PATH,
+                    operation="regex_replace",
+                    pattern="\\Z",
+                    replacement=function_block,
+                    description="Append architecture target summary helper.",
+                )
+                return ArchitecturePlan(
+                    title="Branch-only bounded architecture target summarizer",
+                    summary="Append a bounded helper that summarizes architecture target files on the existing architecture runtime helper.",
+                    rationale="Architecture mode should remain bounded while still improving architectural observability.",
+                    route="branch",
+                    files_touched=[ARCHITECTURE_RUNTIME_PATH],
+                    patch_bundle=[patch],
+                    status="proposed",
+                )
+
         if target.exists():
             return None
 
-        new_content = '''from __future__ import annotations
+        new_content = """from __future__ import annotations
 
 from typing import Any
 
@@ -1212,7 +1401,16 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
         "files_touched": files_touched or [],
         "source": "architecture_probe",
     }
-'''
+
+
+def summarize_architecture_targets(files_touched: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (files_touched or []) if str(item).strip()]
+    return {
+        "target_count": len(items),
+        "targets": items,
+        "first_target": items[0] if items else "",
+    }
+"""
         patch = PatchAction(
             path=ARCHITECTURE_RUNTIME_PATH,
             operation="replace_file",
@@ -1228,7 +1426,6 @@ def architecture_probe_summary(summary: str, files_touched: list[str] | None = N
             patch_bundle=[patch],
             status="proposed",
         )
-
 
     def _normalize_build_actions(self, review: ArchitectureReview) -> ArchitectureReview:
         normalized: list[PlannedWorkItem] = []
