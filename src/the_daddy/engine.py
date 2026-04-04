@@ -603,6 +603,9 @@ class DaddyEngine:
                     "summary": build_pressure_summary,
                 }
             )
+            review.execution_notes.append(
+                f"Build pressure summary emitted: active={bool(build_pressure_summary.get('active', False))} pressure_score={int(build_pressure_summary.get('pressure_score', 0) or 0)} related_files={int(build_pressure_summary.get('related_files_count', 0) or 0)}."
+            )
 
         summarize_run_health = getattr(run_health_runtime, "summarize_run_health", None)
         if callable(summarize_run_health):
