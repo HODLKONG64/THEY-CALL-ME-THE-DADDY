@@ -17,6 +17,7 @@ class ImprovementPlanner:
     RECENT_SUMMARY_WINDOW = 6
     NO_PATCH_STREAK_THRESHOLD = 3
     LOW_SUCCESS_RATE_THRESHOLD = 0.8
+    BUILD_PRESSURE_THRESHOLD = 1
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -77,6 +78,14 @@ class ImprovementPlanner:
                 return summary
         return None
 
+    def _recent_build_pressure_summary(self, state: Any) -> dict[str, Any] | None:
+        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
+        for run in reversed(runs):
+            summary = self._summary_event(run, "runtime_build_pressure_summary")
+            if summary:
+                return summary
+        return None
+
     def _recent_no_patch_streak(self, state: Any) -> int:
         streak = 0
         for run in reversed(self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)):
@@ -96,6 +105,12 @@ class ImprovementPlanner:
         if not summary:
             return False
         return int(summary.get("count", 0) or 0) > 0
+
+    def _has_recent_build_pressure(self, state: Any) -> bool:
+        summary = self._recent_build_pressure_summary(state)
+        if summary:
+            return bool(summary.get("active", False)) and int(summary.get("pressure_score", 0) or 0) >= self.BUILD_PRESSURE_THRESHOLD
+        return self._has_recent_build_summary_pressure(state)
 
     def plan_self_evolution(
         self,
@@ -135,6 +150,7 @@ class ImprovementPlanner:
             state: Any = memory.state if hasattr(memory, "state") else memory
             patch_velocity = self._recent_patch_velocity_summary(state)
             run_health = self._recent_run_health_summary(state)
+            build_pressure = self._recent_build_pressure_summary(state)
 
             if patch_velocity:
                 runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
@@ -153,6 +169,11 @@ class ImprovementPlanner:
                     reasons.append(
                         f"Recent run health success_rate={success_rate} across sample_size={sample_size}; keeping self-evolution conservative."
                     )
+
+            if build_pressure and bool(build_pressure.get("active", False)):
+                reasons.append(
+                    f"Build pressure remains active with pressure_score={int(build_pressure.get('pressure_score', 0) or 0)}."
+                )
 
         if effective_max <= 0:
             return PlannedSelfEvolution(
@@ -224,6 +245,7 @@ class ImprovementPlanner:
         run_health = self._recent_run_health_summary(state)
         no_patch_streak = self._recent_no_patch_streak(state)
         has_build_summary_pressure = self._has_recent_build_summary_pressure(state)
+        has_build_pressure = self._has_recent_build_pressure(state)
 
         if run_health:
             success_rate = float(run_health.get("success_rate", 0) or 0)
@@ -236,7 +258,7 @@ class ImprovementPlanner:
             sample_size = int(patch_velocity.get("sample_size", 0) or 0)
 
             if sample_size > 0 and runs_with_patches == 0:
-                if has_build_summary_pressure or no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD:
+                if has_build_pressure or has_build_summary_pressure or no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD:
                     return "build"
 
         planned_work = getattr(state, "planned_work", None)
