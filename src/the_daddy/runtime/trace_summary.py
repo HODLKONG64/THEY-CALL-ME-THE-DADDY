@@ -136,3 +136,32 @@ def summarize_build_pressure_source(build_pressure_summary: dict | None, build_a
         "pressure_score": 0,
         "active": False,
     }
+
+
+def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    unique_titles: list[str] = []
+    helper_paths: list[str] = []
+    helper_counts: dict[str, int] = {}
+
+    for item in items:
+        title = str(item.get("title", "")).strip()
+        if title and title not in unique_titles:
+            unique_titles.append(title)
+
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if not path_text:
+                continue
+            helper_counts[path_text] = helper_counts.get(path_text, 0) + 1
+            if path_text not in helper_paths:
+                helper_paths.append(path_text)
+
+    ranked = sorted(helper_counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "title_count": len(unique_titles),
+        "helper_path_count": len(helper_paths),
+        "top_helper_paths": ranked[:10],
+        "first_helper_path": ranked[0][0] if ranked else "",
+        "active": bool(unique_titles) or bool(helper_paths),
+    }
