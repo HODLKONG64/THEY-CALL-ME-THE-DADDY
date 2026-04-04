@@ -46,6 +46,7 @@ STRATEGY_AGENT_PATH = "src/the_daddy/agents/strategy_agent.py"
 REFACTOR_AGENT_PATH = "src/the_daddy/agents/refactor_agent.py"
 EXPERIMENT_AGENT_PATH = "src/the_daddy/agents/experiment_agent.py"
 SELF_REWRITE_AGENT_PATH = "src/the_daddy/agents/self_rewrite_agent.py"
+GOAL_AGENT_PATH = "src/the_daddy/agents/goal_agent.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -61,6 +62,7 @@ SAFE_NEW_FILE_ALLOWLIST = {
     REFACTOR_AGENT_PATH,
     EXPERIMENT_AGENT_PATH,
     SELF_REWRITE_AGENT_PATH,
+    GOAL_AGENT_PATH,
 }
 
 ALLOWLISTED_RUNTIME_HELPERS = {
@@ -1288,6 +1290,82 @@ class WakeReviewer:
 
 
 
+
+    def _should_force_level8_goal_system(self, memory_snapshot: dict[str, Any]) -> bool:
+        metrics = self._pressure_escalation_metrics(memory_snapshot)
+        return (
+            metrics["pressure_score"] >= 7
+            and metrics["runs_without_patches"] >= 7
+            and metrics["average_patch_count"] <= 0.2
+            and metrics["success_rate"] >= 0.85
+        )
+
+    def _goal_agent_template(self) -> str:
+        return """from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class GoalDirective:
+    name: str
+    target_path: str
+    priority: int
+    summary: str
+
+
+class GoalAgent:
+    \"\"
+    Level 8 goal system.
+    Turns sustained pressure into explicit build goals so the system stops
+    waiting for obvious patches and starts driving a bounded roadmap.
+    \"\"
+
+    def propose(self) -> list[GoalDirective]:
+        return [
+            GoalDirective(
+                name="break-helper-dependence",
+                target_path="src/the_daddy/agents/improvement_planner.py",
+                priority=1,
+                summary="Prioritize planner-facing work over helper churn under sustained pressure.",
+            ),
+            GoalDirective(
+                name="spawn-next-safe-capability",
+                target_path="src/the_daddy/agents/strategy_agent.py",
+                priority=1,
+                summary="Create or extend bounded capability agents before default maintenance work.",
+            ),
+            GoalDirective(
+                name="strengthen-architecture-audit",
+                target_path="src/the_daddy/runtime/architecture_probe.py",
+                priority=2,
+                summary="Improve architecture traceability only when it supports real planner action.",
+            ),
+        ]
+"""
+
+    def _level8_goal_system_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / GOAL_AGENT_PATH
+        if target.exists():
+            return None
+
+        return SelfEvolutionAction(
+            title="Spawn goal agent",
+            description="Create a bounded goal agent so the system can drive explicit roadmap goals under sustained pressure instead of default maintenance.",
+            risk="safe",
+            patches=[
+                PatchAction(
+                    path=GOAL_AGENT_PATH,
+                    operation="replace_file",
+                    new_content=self._goal_agent_template(),
+                    pattern=None,
+                    replacement=None,
+                    description="Create new bounded goal agent file.",
+                )
+            ],
+        )
+
+
     def _should_force_level7_self_rewrite(self, memory_snapshot: dict[str, Any]) -> bool:
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         return (
@@ -1899,7 +1977,7 @@ Rules:
 - Treat repository snapshot previews and on-disk helper/planner files as grounded current contents for regex_replace decisions.
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- Level 7 self-rewriting rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded self-rewrite agent file before helper churn.
+- Level 8 goal-system rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded goal agent file before self-rewrite fallback or helper churn.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
@@ -2032,6 +2110,18 @@ Repository snapshot:
             else:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
+
+        if not review.self_evolution_actions and self._should_force_level8_goal_system(memory_snapshot):
+            goal_action = self._level8_goal_system_action(repo_root)
+            if goal_action is not None and bool(getattr(goal_action, "patches", [])):
+                review.self_evolution_actions = [goal_action]
+                metrics = self._pressure_escalation_metrics(memory_snapshot)
+                review.execution_notes.append("Level 8 goal system engaged: a bounded goal agent file was forced under sustained pressure.")
+                review.execution_notes.append(
+                    f"Goal-system metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
+                )
+            elif (self._pressure_escalation_metrics(memory_snapshot).get("pressure_score", 0) >= 6):
+                review.execution_notes.append("Level 8 blocked maintenance fallback under sustained pressure so goal-directed evolution can take priority.")
 
         if not review.self_evolution_actions and self._should_force_level7_self_rewrite(memory_snapshot):
             rewrite_action = self._level7_self_rewrite_action(repo_root)
