@@ -46,20 +46,3 @@ def summarize_fallback_lane_status(
         "helper_targets": helper_paths[:10],
         "has_pressure": bool(titles) or bool(helper_paths),
     }
-
-
-def summarize_fallback_pressure_targets(build_actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = build_actions or []
-    targets: list[str] = []
-
-    for item in items:
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if path_text and path_text not in targets:
-                targets.append(path_text)
-
-    return {
-        "target_count": len(targets),
-        "targets": targets[:10],
-        "first_target": targets[0] if targets else "",
-    }
