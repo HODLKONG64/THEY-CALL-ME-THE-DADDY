@@ -1854,6 +1854,23 @@ Repository snapshot:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
 
+        forced_pressure = self._has_forced_helper_pressure(memory_snapshot)
+
+        if forced_pressure:
+            forced_action, forced_path, forced_note = self._forced_helper_pressure_action(
+                repo_root=repo_root,
+                memory_snapshot=memory_snapshot,
+            )
+            if forced_action is not None and bool(getattr(forced_action, "patches", [])):
+                review.self_evolution_actions = [forced_action]
+                review.execution_notes.append(
+                    "Forced helper override engaged due to flat patch velocity + active build pressure."
+                )
+                if forced_note:
+                    review.execution_notes.append(forced_note)
+                if forced_path:
+                    review.execution_notes.append(f"Forced helper target: {forced_path}")
+
         if not review.self_evolution_actions:
             helper_candidates = {
                 RUN_HEALTH_RUNTIME_PATH: (self._run_health_action(repo_root), "Run-health runtime improvement injected while repo is green."),
@@ -1870,7 +1887,6 @@ Repository snapshot:
                 ERROR_DIGEST_RUNTIME_PATH,
             ]
             cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
-            forced_pressure = self._has_forced_helper_pressure(memory_snapshot)
 
             chosen_action = None
             chosen_note = ""
@@ -1902,26 +1918,12 @@ Repository snapshot:
                     chosen_path = helper_path
                     break
 
-            if chosen_action is None and forced_pressure:
-                forced_action, forced_path, forced_note = self._forced_helper_pressure_action(
-                    repo_root=repo_root,
-                    memory_snapshot=memory_snapshot,
-                )
-                if forced_action is not None:
-                    chosen_action = forced_action
-                    chosen_note = forced_note
-                    chosen_path = forced_path
-
             if chosen_action is not None:
                 review.self_evolution_actions = [chosen_action]
                 if chosen_note:
                     review.execution_notes.append(chosen_note)
                 if chosen_path:
                     review.execution_notes.append(f"Cooldown-aware helper injection selected: {chosen_path}")
-                if forced_pressure:
-                    review.execution_notes.append(
-                        "Forced bounded helper injection because runtime summaries show flat patch velocity while build-action pressure remains active."
-                    )
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
