@@ -1696,6 +1696,7 @@ Rules:
 - Strong preference: if your idea is “better logging/observability,” target the allowlisted runtime helper files first, not a new module.
 - CRITICAL: if an allowlisted runtime helper file already exists, do not use replace_file against it.
 - CRITICAL: for an existing runtime helper file, either use regex_replace with a pattern that exists in the file or leave self_evolution_actions empty.
+- IMPORTANT: the repository snapshot preview and the on-disk helper file at repo_root count as current file contents. Do not say the file contents were 'not provided' when the helper exists in tracked_files and its preview/content can be read from disk.
 - CRITICAL: do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink-replace, or missing regex anchor.
 - CRITICAL: do not keep proposing reviewer_fallback.py once that file already exists.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
@@ -1845,7 +1846,7 @@ Repository snapshot:
                     "Do not retry recently blocked targets. "
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
-                    "When the repo is green, still look for one bounded runtime, observability, or safety improvement. "
+                    "When the repo is green, still look for one bounded runtime, observability, or safety improvement. Treat repository snapshot previews and on-disk helper files as grounded current contents for regex_replace decisions; do not claim an existing helper's contents are unavailable if it is already in tracked_files. "
                     "If no safe code action exists, prefer a clean no-op over documentation-only churn, except when recent runtime summaries show flat patch velocity with active build-action pressure, in which case emit one cooldown-allowed bounded helper action."
                 ),
                 prompt=prompt,
