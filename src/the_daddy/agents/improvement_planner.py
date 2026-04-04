@@ -45,6 +45,9 @@ class ImprovementPlanner:
     AUTONOMOUS_EXPANSION_PRESSURE_SCORE = 6
     AUTONOMOUS_EXPANSION_PATCHLESS_RUNS = 6
     AUTONOMOUS_EXPANSION_SUCCESS_RATE = 0.85
+    SELF_DIRECTED_ARCHITECTURE_PRESSURE_SCORE = 7
+    SELF_DIRECTED_ARCHITECTURE_PATCHLESS_RUNS = 7
+    SELF_DIRECTED_ARCHITECTURE_SUCCESS_RATE = 0.85
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -193,6 +196,30 @@ class ImprovementPlanner:
 
 
 
+
+
+    def summarize_self_directed_architecture_decision(self, state: Any) -> dict[str, Any]:
+        pressure = self.summarize_pressure_escalation_decision(state)
+        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
+        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
+        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
+        success_rate = float(pressure.get("success_rate", 0) or 0)
+
+        self_directed_architecture = (
+            pressure_score >= self.SELF_DIRECTED_ARCHITECTURE_PRESSURE_SCORE
+            and no_patch_streak >= self.SELF_DIRECTED_ARCHITECTURE_PATCHLESS_RUNS
+            and average_patch_count <= self.AGGRESSIVE_PATCH_VELOCITY_FLOOR
+            and success_rate >= self.SELF_DIRECTED_ARCHITECTURE_SUCCESS_RATE
+        )
+
+        return {
+            "pressure_score": pressure_score,
+            "no_patch_streak": no_patch_streak,
+            "average_patch_count": average_patch_count,
+            "success_rate": success_rate,
+            "self_directed_architecture": self_directed_architecture,
+        }
+
     def summarize_autonomous_expansion_decision(self, state: Any) -> dict[str, Any]:
         pressure = self.summarize_pressure_escalation_decision(state)
         pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
@@ -309,6 +336,11 @@ class ImprovementPlanner:
                     reasons.append(
                         "Level 4 autonomous expansion is armed: sustained pressure and prolonged patch drought now justify forced bounded expansion work."
                     )
+                    architecture_decision = self.summarize_self_directed_architecture_decision(state)
+                    if architecture_decision.get("self_directed_architecture", False):
+                        reasons.append(
+                            "Level 5 self-directed architecture is armed: sustained pressure now justifies planner-led architecture work instead of helper fallback."
+                        )
                 reasons.append(
                     f"Escalation metrics: pressure_score={decision['build_pressure_score']}, "
                     f"pressure_source={decision['build_pressure_source']}, "
