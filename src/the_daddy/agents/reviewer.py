@@ -1282,9 +1282,9 @@ class WakeReviewer:
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         return (
             metrics["pressure_score"] >= 3
-            and metrics["runs_without_patches"] >= 5
-            and metrics["average_patch_count"] < 0.3
-            and metrics["success_rate"] >= 0.95
+            and metrics["runs_without_patches"] >= 4
+            and metrics["average_patch_count"] <= 0.2
+            and metrics["success_rate"] >= 0.85
         )
 
     def _pressure_escalation_action(self, repo_root: Path) -> SelfEvolutionAction | None:
@@ -1587,7 +1587,7 @@ Rules:
 - Treat repository snapshot previews and on-disk helper/planner files as grounded current contents for regex_replace decisions.
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- Level 2 safe rule: when pressure_score is high, patch velocity is weak, and run health stays strong, prefer one grounded append-only patch against an existing tracked planner file before returning to helper-only churn.
+- Level 3 aggressive rule: when pressure_score is high, patch velocity is weak, and run health stays strong enough, prefer one grounded append-only patch against an existing tracked planner file before returning to helper-only churn.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
@@ -1726,7 +1726,7 @@ Repository snapshot:
             if escalation_action is not None and bool(getattr(escalation_action, "patches", [])):
                 review.self_evolution_actions = [escalation_action]
                 metrics = self._pressure_escalation_metrics(memory_snapshot)
-                review.execution_notes.append("Level 2 safe escalation engaged: append-only pressure-to-action trigger selected a grounded planner patch.")
+                review.execution_notes.append("Level 3 escalation engaged: append-only pressure-to-action trigger selected a grounded planner patch.")
                 review.execution_notes.append(
                     f"Escalation metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
                 )

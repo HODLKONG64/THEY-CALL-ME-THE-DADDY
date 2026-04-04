@@ -37,8 +37,11 @@ class ImprovementPlanner:
     PRESSURE_ESCALATION_MIN_SCORE = 3
     PATCHLESS_ESCALATION_MIN_RUNS = 5
     PATCH_VELOCITY_FLOOR = 0.3
-    HIGH_HEALTH_SUCCESS_RATE = 0.95
+    HIGH_HEALTH_SUCCESS_RATE = 0.85
     MAX_LEVEL2_ACTIONS = 2
+    AGGRESSIVE_PRESSURE_SCORE = 5
+    AGGRESSIVE_PATCHLESS_RUNS = 4
+    AGGRESSIVE_PATCH_VELOCITY_FLOOR = 0.2
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -160,12 +163,19 @@ class ImprovementPlanner:
         build_pressure_source = self._build_pressure_source(state)
         build_pressure_active = self._build_pressure_active(state)
 
+        aggressive_mode = (
+            build_pressure_score >= self.AGGRESSIVE_PRESSURE_SCORE
+            and no_patch_streak >= self.AGGRESSIVE_PATCHLESS_RUNS
+            and average_patch_count <= self.AGGRESSIVE_PATCH_VELOCITY_FLOOR
+            and success_rate >= self.HIGH_HEALTH_SUCCESS_RATE
+        )
+
         force_deeper_action = (
             build_pressure_score >= self.PRESSURE_ESCALATION_MIN_SCORE
             and no_patch_streak >= self.PATCHLESS_ESCALATION_MIN_RUNS
             and average_patch_count < self.PATCH_VELOCITY_FLOOR
             and success_rate >= self.HIGH_HEALTH_SUCCESS_RATE
-        )
+        ) or aggressive_mode
 
         return {
             "build_pressure_score": build_pressure_score,
@@ -174,6 +184,7 @@ class ImprovementPlanner:
             "no_patch_streak": no_patch_streak,
             "average_patch_count": average_patch_count,
             "success_rate": success_rate,
+            "aggressive_mode": aggressive_mode,
             "force_deeper_action": force_deeper_action,
         }
 
@@ -264,14 +275,15 @@ class ImprovementPlanner:
                 effective_max = max(1, min(self.MAX_LEVEL2_ACTIONS, len(safe_actions), max_actions))
                 decision = self.summarize_pressure_escalation_decision(state)
                 reasons.append(
-                    "Level 2 escalation engaged: strong pressure with healthy but under-producing patch velocity justifies deeper bounded action."
+                    "Level 3 escalation engaged: strong pressure with healthy but under-producing patch velocity justifies deeper bounded action."
                 )
                 reasons.append(
                     f"Escalation metrics: pressure_score={decision['build_pressure_score']}, "
                     f"pressure_source={decision['build_pressure_source']}, "
                     f"no_patch_streak={decision['no_patch_streak']}, "
                     f"average_patch_count={decision['average_patch_count']}, "
-                    f"success_rate={decision['success_rate']}."
+                    f"success_rate={decision['success_rate']}, "
+                    f"aggressive_mode={decision['aggressive_mode']}."
                 )
 
         if effective_max <= 0:
