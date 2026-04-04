@@ -108,3 +108,31 @@ def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) 
         "top_paths": ranked[:10],
         "first_path": ranked[0][0] if ranked else "",
     }
+
+def summarize_build_pressure_source(build_pressure_summary: dict | None, build_action_summary: dict | None) -> dict[str, object]:
+    """Return a tiny normalized view of build-pressure provenance."""
+    pressure_summary = build_pressure_summary if isinstance(build_pressure_summary, dict) else {}
+    action_summary = build_action_summary if isinstance(build_action_summary, dict) else {}
+
+    if pressure_summary:
+        pressure_score = int(pressure_summary.get("pressure_score", 0) or 0)
+        active = bool(pressure_summary.get("active", False))
+        return {
+            "source": "build_pressure_summary",
+            "pressure_score": pressure_score,
+            "active": active,
+        }
+
+    fallback_count = int(action_summary.get("count", 0) or 0)
+    if fallback_count > 0:
+        return {
+            "source": "build_action_summary_fallback",
+            "pressure_score": fallback_count,
+            "active": True,
+        }
+
+    return {
+        "source": "none",
+        "pressure_score": 0,
+        "active": False,
+    }
