@@ -76,6 +76,511 @@ BANNED_INVENTED_MODULE_FILENAMES = {
     "logging.py",
 }
 
+HELPER_SLOT_CAPS = {
+    PROACTIVE_RUNTIME_PATH: 8,
+    ERROR_DIGEST_RUNTIME_PATH: 6,
+    RUN_HEALTH_RUNTIME_PATH: 6,
+    FALLBACK_RUNTIME_PATH: 5,
+    ARCHITECTURE_RUNTIME_PATH: 5,
+}
+
+HELPER_GROWTH_REGISTRY: dict[str, list[dict[str, str]]] = {
+    PROACTIVE_RUNTIME_PATH: [
+        {
+            "function_name": "summarize_self_evolution_skips",
+            "title": "Append normalized self-evolution trace helper",
+            "description": "Append a bounded helper function to the existing trace summary runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    blocked = [item for item in items if item.lower().startswith("blocked ")]
+    return {
+        "total_reasons": len(items),
+        "blocked_count": len(blocked),
+        "blocked_reasons": blocked,
+        "all_reasons": items,
+    }
+""",
+        },
+        {
+            "function_name": "summarize_build_action_titles",
+            "title": "Append compact build-action summary helper",
+            "description": "Append a bounded helper that summarizes build-action titles on the existing trace summary runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    return {
+        "count": len(titles),
+        "titles": titles[:10],
+        "first_title": titles[0] if titles else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_build_pressure_paths",
+            "title": "Append build-pressure path summary helper",
+            "description": "Append a bounded helper that summarizes build-pressure related files on the existing trace summary runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if not path_text:
+                continue
+            paths[path_text] = paths.get(path_text, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_helper_lane_status",
+            "title": "Append helper-lane saturation summary helper",
+            "description": "Append a bounded helper that summarizes helper-lane saturation and build pressure on the existing trace summary runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    unique_titles: list[str] = []
+    helper_paths: list[str] = []
+    helper_counts: dict[str, int] = {}
+
+    for item in items:
+        title = str(item.get("title", "")).strip()
+        if title and title not in unique_titles:
+            unique_titles.append(title)
+
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if not path_text:
+                continue
+            helper_counts[path_text] = helper_counts.get(path_text, 0) + 1
+            if path_text not in helper_paths:
+                helper_paths.append(path_text)
+
+    ranked = sorted(helper_counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "title_count": len(unique_titles),
+        "helper_path_count": len(helper_paths),
+        "top_helper_paths": ranked[:10],
+        "first_helper_path": ranked[0][0] if ranked else "",
+        "active": bool(unique_titles) or bool(helper_paths),
+    }
+""",
+        },
+        {
+            "function_name": "summarize_recent_pressure_persistence",
+            "title": "Append recent-pressure persistence helper",
+            "description": "Append a bounded helper that tracks whether recent build pressure keeps pointing at the same files on the existing trace summary runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_recent_pressure_persistence(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    related_files: list[str] = []
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if path_text and path_text not in related_files:
+                related_files.append(path_text)
+
+    return {
+        "related_file_count": len(related_files),
+        "related_files": related_files[:10],
+        "active": bool(related_files),
+    }
+""",
+        },
+        {
+            "function_name": "summarize_planning_hint_state",
+            "title": "Append stable planning-hint helper",
+            "description": "Append a bounded helper that summarizes whether trace-level planning hints are present and stable on the existing trace summary runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_planning_hint_state(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    notes: list[str] = []
+
+    for item in items:
+        for note in item.get("notes", []) or []:
+            note_text = str(note).strip()
+            if note_text:
+                notes.append(note_text)
+
+    unique_notes = list(dict.fromkeys(notes))
+    return {
+        "title_count": len(titles),
+        "note_count": len(unique_notes),
+        "first_title": titles[0] if titles else "",
+        "first_note": unique_notes[0] if unique_notes else "",
+        "active": bool(titles) or bool(unique_notes),
+    }
+""",
+        },
+    ],
+    ERROR_DIGEST_RUNTIME_PATH: [
+        {
+            "function_name": "summarize_traceback_excerpt",
+            "title": "Append traceback extraction helper to error_digest",
+            "description": "Append a bounded traceback excerpt helper to the existing error digest runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
+    lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
+    tail = lines[-max_lines:]
+    return {
+        "line_count": len(lines),
+        "excerpt": tail,
+        "last_line": tail[-1] if tail else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_error_paths",
+            "title": "Append error-path summary helper to error_digest",
+            "description": "Append a bounded helper that summarizes recurring error paths on the existing error digest runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        path = str(item.get("path", "")).strip()
+        if not path:
+            continue
+        paths[path] = paths.get(path, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_error_messages",
+            "title": "Append error-message summary helper to error_digest",
+            "description": "Append a bounded helper that summarizes recurring error messages on the existing error digest runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_error_messages(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    counts: dict[str, int] = {}
+
+    for item in items:
+        message = str(item.get("error", "")).strip()
+        if not message:
+            continue
+        counts[message] = counts.get(message, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "message_count": len(counts),
+        "top_messages": ranked[:10],
+        "first_message": ranked[0][0] if ranked else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_error_event_kinds",
+            "title": "Append error-event kind summary helper to error_digest",
+            "description": "Append a bounded helper that summarizes recurring error event kinds on the existing error digest runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_error_event_kinds(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    counts: dict[str, int] = {}
+
+    for item in items:
+        event = str(item.get("event", "")).strip()
+        if not event:
+            continue
+        counts[event] = counts.get(event, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "kind_count": len(counts),
+        "top_kinds": ranked[:10],
+        "first_kind": ranked[0][0] if ranked else "",
+    }
+""",
+        },
+    ],
+    RUN_HEALTH_RUNTIME_PATH: [
+        {
+            "function_name": "summarize_run_velocity",
+            "title": "Append runtime run-velocity helper",
+            "description": "Append a bounded run-velocity helper to the existing run health runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_run_velocity(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = RECENT_VELOCITY_WINDOW,
+) -> dict[str, Any]:
+    items = runs or []
+    effective_window = max(1, int(window))
+    sample = items[-effective_window:] if items else []
+
+    success_count = sum(1 for item in sample if bool(item.get("success", False)))
+    failure_count = len(sample) - success_count
+
+    return {
+        "sample_size": len(sample),
+        "window": effective_window,
+        "successes": success_count,
+        "failures": failure_count,
+    }
+""",
+        },
+        {
+            "function_name": "summarize_mode_distribution",
+            "title": "Append runtime mode-distribution helper",
+            "description": "Append a bounded mode-distribution helper to the existing run health runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_mode_distribution(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = 20,
+) -> dict[str, Any]:
+    items = runs or []
+    effective_window = max(1, int(window))
+    sample = items[-effective_window:] if items else []
+    counts: dict[str, int] = {}
+
+    for item in sample:
+        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
+        counts[mode] = counts.get(mode, 0) + 1
+
+    return {
+        "sample_size": len(sample),
+        "window": effective_window,
+        "mode_counts": counts,
+        "distinct_modes": len(counts),
+    }
+""",
+        },
+        {
+            "function_name": "summarize_patchless_streak",
+            "title": "Append runtime patchless-streak helper",
+            "description": "Append a bounded helper that summarizes consecutive patchless runs on the existing run health runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_patchless_streak(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    streak = 0
+
+    for item in reversed(items):
+        patch_count = int(item.get("patch_count", 0) or 0)
+        if patch_count > 0:
+            break
+        streak += 1
+
+    latest_mode = ""
+    if items:
+        latest_mode = str(items[-1].get("selected_mode", "")).strip()
+
+    return {
+        "patchless_streak": streak,
+        "total_runs": len(items),
+        "latest_mode": latest_mode,
+        "active": streak > 0,
+    }
+""",
+        },
+        {
+            "function_name": "summarize_recent_patch_mix",
+            "title": "Append recent patch-mix helper",
+            "description": "Append a bounded helper that summarizes patched versus patchless runs on the existing run health runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_recent_patch_mix(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = 10,
+) -> dict[str, Any]:
+    items = (runs or [])[-max(1, int(window)):]
+    patch_counts = [int(item.get("patch_count", 0) or 0) for item in items]
+
+    return {
+        "sample_size": len(items),
+        "patched_runs": sum(1 for count in patch_counts if count > 0),
+        "patchless_runs": sum(1 for count in patch_counts if count == 0),
+        "total_patches": sum(patch_counts),
+    }
+""",
+        },
+    ],
+    FALLBACK_RUNTIME_PATH: [
+        {
+            "function_name": "fallback_review_summary",
+            "title": "Append safe reviewer fallback summary helper",
+            "description": "Append a bounded fallback summary helper without replacing the existing runtime helper file.",
+            "function_block": """
+
+def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(details or {})
+    payload["reason"] = reason
+    payload["source"] = "wake_reviewer_fallback"
+    return payload
+""",
+        },
+        {
+            "function_name": "summarize_fallback_reason_counts",
+            "title": "Append fallback reason-count helper",
+            "description": "Append a bounded helper that summarizes fallback reason counts on the existing fallback runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_fallback_reason_counts(reasons: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    counts: dict[str, int] = {}
+
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+
+    return {
+        "reason_count": len(items),
+        "unique_reasons": len(counts),
+        "counts": counts,
+    }
+""",
+        },
+        {
+            "function_name": "summarize_fallback_lane_status",
+            "title": "Append fallback lane-status helper",
+            "description": "Append a bounded helper that summarizes fallback-lane pressure and helper targets on the existing fallback runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_fallback_lane_status(
+    reasons: list[str] | None = None,
+    build_actions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
+    actions = build_actions or []
+    titles = [str(item.get("title", "")).strip() for item in actions if str(item.get("title", "")).strip()]
+    helper_paths: list[str] = []
+
+    for item in actions:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if path_text and path_text not in helper_paths:
+                helper_paths.append(path_text)
+
+    return {
+        "reason_count": len(items),
+        "build_action_count": len(titles),
+        "first_build_action": titles[0] if titles else "",
+        "helper_targets": helper_paths[:10],
+        "has_pressure": bool(titles) or bool(helper_paths),
+    }
+""",
+        },
+        {
+            "function_name": "summarize_fallback_pressure_targets",
+            "title": "Append fallback pressure-target helper",
+            "description": "Append a bounded helper that summarizes fallback pressure targets on the existing fallback runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_fallback_pressure_targets(build_actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = build_actions or []
+    targets: list[str] = []
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if path_text and path_text not in targets:
+                targets.append(path_text)
+
+    return {
+        "target_count": len(targets),
+        "targets": targets[:10],
+        "first_target": targets[0] if targets else "",
+    }
+""",
+        },
+    ],
+    ARCHITECTURE_RUNTIME_PATH: [
+        {
+            "function_name": "architecture_probe_summary",
+            "title": "Append architecture probe summary helper",
+            "description": "Append a bounded architecture probe helper to the existing architecture runtime helper using regex_replace.",
+            "function_block": """
+
+def architecture_probe_summary(summary: str, files_touched: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "summary": summary,
+        "files_touched": files_touched or [],
+        "source": "architecture_probe",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_architecture_targets",
+            "title": "Append architecture target summary helper",
+            "description": "Append a bounded helper that summarizes architecture target files on the existing architecture runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_architecture_targets(files_touched: list[str] | None = None) -> dict[str, Any]:
+    items = [str(item).strip() for item in (files_touched or []) if str(item).strip()]
+    return {
+        "target_count": len(items),
+        "targets": items,
+        "first_target": items[0] if items else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_patch_bundle_paths",
+            "title": "Append architecture patch-bundle summary helper",
+            "description": "Append a bounded helper that summarizes architecture patch-bundle target paths on the existing architecture runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_patch_bundle_paths(patch_bundle: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = patch_bundle or []
+    paths: list[str] = []
+
+    for item in items:
+        path_text = str(item.get("path", "")).strip()
+        if path_text and path_text not in paths:
+            paths.append(path_text)
+
+    return {
+        "patch_count": len(items),
+        "path_count": len(paths),
+        "paths": paths[:10],
+        "first_path": paths[0] if paths else "",
+    }
+""",
+        },
+        {
+            "function_name": "summarize_architecture_bundle_density",
+            "title": "Append architecture bundle-density helper",
+            "description": "Append a bounded helper that summarizes architecture bundle density on the existing architecture runtime helper using regex_replace.",
+            "function_block": """
+
+def summarize_architecture_bundle_density(patch_bundle: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = patch_bundle or []
+    return {
+        "patch_count": len(items),
+        "paths": [str(item.get("path", "")).strip() for item in items if str(item.get("path", "")).strip()][:10],
+    }
+""",
+        },
+    ],
+}
+
 
 class WakeReviewer:
     def __init__(self, settings: Settings) -> None:
@@ -87,13 +592,7 @@ class WakeReviewer:
         preview_files: list[dict[str, str]] = []
         preview_paths: set[str] = set()
         ignored_parts = {".git", ".venv", "venv", "__pycache__", "doctor_local", ".pytest_cache", "build", "dist"}
-        forced_preview_paths = {
-            PROACTIVE_RUNTIME_PATH,
-            FALLBACK_RUNTIME_PATH,
-            ARCHITECTURE_RUNTIME_PATH,
-            ERROR_DIGEST_RUNTIME_PATH,
-            RUN_HEALTH_RUNTIME_PATH,
-        }
+        forced_preview_paths = set(ALLOWLISTED_RUNTIME_HELPERS)
 
         for path in sorted(repo_root.rglob("*")):
             if not path.is_file():
@@ -216,6 +715,7 @@ class WakeReviewer:
             "patches": "patch",
             "streak": "streak",
             "lane": "lane",
+            "hint": "hint",
         }
 
         stopwords = {
@@ -600,64 +1100,6 @@ class WakeReviewer:
 
         return helper_events
 
-    def _similar_helper_family_recently_improved(
-        self,
-        *,
-        action: SelfEvolutionAction,
-        patch_path: str,
-        recent_helper_successes: dict[str, list[str]],
-    ) -> bool:
-        if patch_path not in ALLOWLISTED_RUNTIME_HELPERS:
-            return False
-
-        title_tokens = self._semantic_tokens(getattr(action, "title", ""))
-        desc_tokens = self._semantic_tokens(getattr(action, "description", ""))
-        action_tokens = title_tokens | desc_tokens
-
-        if not action_tokens:
-            return False
-
-        helper_semantic_groups = {
-            "trace_summary.py": {"trace", "observability", "runtime_observability", "trace_observability", "self_evolution"},
-            "error_digest.py": {"error", "digest", "failure", "observability", "runtime_observability"},
-            "run_health.py": {"run", "health", "success", "observability", "runtime_observability"},
-            "reviewer_fallback.py": {"fallback", "reviewer", "self_evolution", "observability"},
-            "architecture_probe.py": {"architecture", "probe", "observability"},
-        }
-
-        patch_name = Path(patch_path).name.lower()
-        patch_family = helper_semantic_groups.get(patch_name, set())
-        if not patch_family:
-            return False
-
-        for prior_path, prior_descriptions in recent_helper_successes.items():
-            if prior_path == patch_path:
-                continue
-            prior_name = Path(prior_path).name.lower()
-            prior_family = helper_semantic_groups.get(prior_name, set())
-            if not prior_family:
-                continue
-
-            family_overlap = patch_family & prior_family
-            if not family_overlap:
-                continue
-
-            prior_tokens: set[str] = set()
-            for desc in prior_descriptions:
-                prior_tokens |= self._semantic_tokens(desc)
-
-            if not prior_tokens:
-                continue
-
-            overlap = action_tokens & prior_tokens
-            if overlap and len(overlap) >= 2:
-                return True
-
-            if action_tokens & family_overlap and prior_tokens & family_overlap:
-                return True
-
-        return False
-
     def _recently_blocked_paths(self, memory_snapshot: dict[str, Any], limit: int = 6) -> dict[str, list[str]]:
         blocked: dict[str, list[str]] = {}
 
@@ -717,879 +1159,51 @@ class WakeReviewer:
         lowered = " | ".join(reasons).lower()
         return any(token in lowered for token in hot_reasons)
 
-    def _filter_low_value_actions(
-        self,
-        actions: list[SelfEvolutionAction],
-        tracked_files: list[str],
-        repo_root: Path,
-        memory_snapshot: dict[str, Any],
-    ) -> tuple[list[SelfEvolutionAction], list[str]]:
-        kept: list[SelfEvolutionAction] = []
-        removed_notes: list[str] = []
-        recently_blocked = self._recently_blocked_paths(memory_snapshot)
-        recent_helper_successes = self._recent_helper_successes(memory_snapshot)
+    def _count_helper_slots_present(self, existing_text: str, helper_path: str) -> int:
+        count = 0
+        for spec in HELPER_GROWTH_REGISTRY.get(helper_path, []):
+            if f"def {spec['function_name']}(" in existing_text:
+                count += 1
+        return count
 
-        for action in actions:
-            if self._is_banned_test_action(action):
-                removed_notes.append(f"Blocked permanently banned test-loop action: {action.title}")
-                continue
+    def _helper_has_capacity(self, helper_path: str, existing_text: str) -> bool:
+        cap = HELPER_SLOT_CAPS.get(helper_path, 0)
+        present = self._count_helper_slots_present(existing_text, helper_path)
+        return present < cap
 
-            if self._is_repetitive_test_action(action, tracked_files):
-                removed_notes.append(f"Suppressed repetitive test-only self-evolution action: {action.title}")
-                continue
-
-            invalid_paths: list[str] = []
-            existing_replace_paths: list[str] = []
-            missing_regex_anchor_paths: list[str] = []
-            repeated_blocked_paths: list[str] = []
-            repetitive_fallback_paths: list[str] = []
-            cooldown_blocked_helper_paths: list[str] = []
-            cooldown_notes: list[str] = []
-
-            for patch in action.patches or []:
-                patch_path = self._normalize_path(getattr(patch, "path", ""))
-
-                if not self._is_allowed_patch_path(patch_path, tracked_files):
-                    invalid_paths.append(patch_path)
-                    continue
-
-                if patch_path == FALLBACK_RUNTIME_PATH and patch_path in tracked_files:
-                    repetitive_fallback_paths.append(patch_path)
-                    continue
-
-                if self._is_repeat_blocked_target(patch_path, recently_blocked):
-                    repeated_blocked_paths.append(patch_path)
-                    continue
-
-                allowed_by_rotation, cooldown_note = self._helper_path_allowed_by_rotation(
-                    patch_path=patch_path,
-                    memory_snapshot=memory_snapshot,
-                )
-                if not allowed_by_rotation:
-                    cooldown_blocked_helper_paths.append(patch_path)
-                    if cooldown_note:
-                        cooldown_notes.append(cooldown_note)
-                    continue
-
-                if self._is_existing_runtime_helper_replace(repo_root, patch):
-                    existing_replace_paths.append(patch_path)
-                    continue
-
-                if not self._regex_patch_matches_current_file(repo_root, patch):
-                    missing_regex_anchor_paths.append(patch_path)
-
-            if invalid_paths:
-                removed_notes.append(
-                    f"Blocked self-evolution action with non-tracked, banned, or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
-                )
-                continue
-
-            if repetitive_fallback_paths:
-                removed_notes.append(
-                    f"Blocked repetitive fallback-helper farming: {action.title} -> {', '.join(repetitive_fallback_paths)}"
-                )
-                continue
-
-            if repeated_blocked_paths:
-                removed_notes.append(
-                    f"Blocked retry of recently-failed target: {action.title} -> {', '.join(repeated_blocked_paths)}"
-                )
-                continue
-
-            if cooldown_blocked_helper_paths:
-                extra = f" ({' | '.join(cooldown_notes)})" if cooldown_notes else ""
-                removed_notes.append(
-                    f"Suppressed helper churn during cooldown window: {action.title} -> {', '.join(cooldown_blocked_helper_paths)}{extra}"
-                )
-                continue
-
-            if existing_replace_paths:
-                removed_notes.append(
-                    f"Blocked replace_file on existing runtime helper: {action.title} -> {', '.join(existing_replace_paths)}"
-                )
-                continue
-
-            if missing_regex_anchor_paths:
-                removed_notes.append(
-                    f"Blocked regex_replace action whose pattern does not match current file: {action.title} -> {', '.join(missing_regex_anchor_paths)}"
-                )
-                continue
-
-            kept.append(action)
-
-        return kept, removed_notes
-
-    def _force_allowlisted_action_only(self, review: ArchitectureReview, repo_root: Path) -> ArchitectureReview:
-        proactive_action = self._proactive_runtime_action(repo_root)
-        run_health_action = self._run_health_action(repo_root)
-        digest_action = self._error_digest_action(repo_root)
-        fallback_action = self._fallback_patch_action(repo_root)
-
-        if proactive_action is not None:
-            review.self_evolution_actions = [proactive_action]
-            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
-            review.execution_notes.append(
-                "Reviewer output drifted onto invalid targets; replaced with allowlisted proactive runtime helper."
-            )
-            return review
-
-        if run_health_action is not None:
-            review.self_evolution_actions = [run_health_action]
-            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
-            review.execution_notes.append(
-                "Reviewer output drifted onto invalid targets; replaced with allowlisted run-health runtime helper."
-            )
-            return review
-
-        if digest_action is not None:
-            review.self_evolution_actions = [digest_action]
-            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
-            review.execution_notes.append(
-                "Reviewer output drifted onto invalid targets; replaced with allowlisted error-digest runtime helper."
-            )
-            return review
-
-        if fallback_action is not None:
-            review.self_evolution_actions = [fallback_action]
-            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
-            review.execution_notes.append(
-                "Reviewer output drifted onto invalid targets; replaced with allowlisted fallback runtime helper."
-            )
-            return review
-
-        review.self_evolution_actions = []
-        review.execution_notes.append(
-            "Reviewer output drifted onto invalid targets and no allowlisted helper remained available."
-        )
-        return review
-
-    def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
-        target = repo_root / FALLBACK_RUNTIME_PATH
+    def _next_helper_growth_action(self, repo_root: Path, helper_path: str) -> SelfEvolutionAction | None:
+        target = repo_root / helper_path
         existing = self._read_text(target)
 
-        if "def fallback_review_summary(" not in existing:
-            function_block = """
-
-def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(details or {})
-    payload["reason"] = reason
-    payload["source"] = "wake_reviewer_fallback"
-    return payload
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=FALLBACK_RUNTIME_PATH,
-                    title="Append safe reviewer fallback summary helper",
-                    description="Append a bounded fallback summary helper without replacing the existing runtime helper file.",
-                    function_name="fallback_review_summary",
-                    function_block=function_block,
-                )
-
-        if "def summarize_fallback_reason_counts(" not in existing:
-            function_block = """
-
-def summarize_fallback_reason_counts(reasons: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    counts: dict[str, int] = {}
-
-    for item in items:
-        counts[item] = counts.get(item, 0) + 1
-
-    return {
-        "reason_count": len(items),
-        "unique_reasons": len(counts),
-        "counts": counts,
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=FALLBACK_RUNTIME_PATH,
-                    title="Append fallback reason-count helper",
-                    description="Append a bounded helper that summarizes fallback reason counts on the existing fallback runtime helper using regex_replace.",
-                    function_name="summarize_fallback_reason_counts",
-                    function_block=function_block,
-                )
-
-        if "def summarize_fallback_lane_status(" not in existing:
-            function_block = """
-
-def summarize_fallback_lane_status(
-    reasons: list[str] | None = None,
-    build_actions: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    actions = build_actions or []
-    titles = [str(item.get("title", "")).strip() for item in actions if str(item.get("title", "")).strip()]
-    helper_paths: list[str] = []
-
-    for item in actions:
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if path_text and path_text not in helper_paths:
-                helper_paths.append(path_text)
-
-    return {
-        "reason_count": len(items),
-        "build_action_count": len(titles),
-        "first_build_action": titles[0] if titles else "",
-        "helper_targets": helper_paths[:10],
-        "has_pressure": bool(titles) or bool(helper_paths),
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=FALLBACK_RUNTIME_PATH,
-                    title="Append fallback lane-status helper",
-                    description="Append a bounded helper that summarizes fallback-lane pressure and helper targets on the existing fallback runtime helper using regex_replace.",
-                    function_name="summarize_fallback_lane_status",
-                    function_block=function_block,
-                )
-
-        if target.exists():
+        if target.exists() and not self._helper_has_capacity(helper_path, existing):
             return None
 
-        new_content = """from __future__ import annotations
+        for spec in HELPER_GROWTH_REGISTRY.get(helper_path, []):
+            if f"def {spec['function_name']}(" in existing:
+                continue
 
-from typing import Any
-
-
-def fallback_review_summary(reason: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(details or {})
-    payload["reason"] = reason
-    payload["source"] = "wake_reviewer_fallback"
-    return payload
-
-
-def summarize_fallback_reason_counts(reasons: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    counts: dict[str, int] = {}
-
-    for item in items:
-        counts[item] = counts.get(item, 0) + 1
-
-    return {
-        "reason_count": len(items),
-        "unique_reasons": len(counts),
-        "counts": counts,
-    }
-
-
-def summarize_fallback_lane_status(
-    reasons: list[str] | None = None,
-    build_actions: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    actions = build_actions or []
-    titles = [str(item.get("title", "")).strip() for item in actions if str(item.get("title", "")).strip()]
-    helper_paths: list[str] = []
-
-    for item in actions:
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if path_text and path_text not in helper_paths:
-                helper_paths.append(path_text)
-
-    return {
-        "reason_count": len(items),
-        "build_action_count": len(titles),
-        "first_build_action": titles[0] if titles else "",
-        "helper_targets": helper_paths[:10],
-        "has_pressure": bool(titles) or bool(helper_paths),
-    }
-"""
-        return SelfEvolutionAction(
-            title="Add safe reviewer fallback helper",
-            description="Create a non-protected runtime helper so fallback review output still produces an executable bounded patch.",
-            risk="safe",
-            patches=[
-                PatchAction(
-                    path=FALLBACK_RUNTIME_PATH,
-                    operation="replace_file",
-                    new_content=new_content,
-                    description="Add runtime reviewer fallback helper.",
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=helper_path,
+                    title=spec["title"],
+                    description=spec["description"],
+                    function_name=spec["function_name"],
+                    function_block=spec["function_block"],
                 )
-            ],
-        )
+
+        return None
 
     def _proactive_runtime_action(self, repo_root: Path) -> SelfEvolutionAction | None:
-        target = repo_root / PROACTIVE_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def summarize_self_evolution_skips(" not in existing:
-            function_block = """
-
-def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    blocked = [item for item in items if item.lower().startswith("blocked ")]
-    return {
-        "total_reasons": len(items),
-        "blocked_count": len(blocked),
-        "blocked_reasons": blocked,
-        "all_reasons": items,
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=PROACTIVE_RUNTIME_PATH,
-                    title="Append normalized self-evolution trace helper",
-                    description="Append a bounded helper function to the existing trace summary runtime helper using regex_replace.",
-                    function_name="summarize_self_evolution_skips",
-                    function_block=function_block,
-                )
-
-        if "def summarize_build_action_titles(" not in existing:
-            function_block = """
-
-def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = actions or []
-    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
-    return {
-        "count": len(titles),
-        "titles": titles[:10],
-        "first_title": titles[0] if titles else "",
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=PROACTIVE_RUNTIME_PATH,
-                    title="Append compact build-action summary helper",
-                    description="Append a bounded helper that summarizes build-action titles on the existing trace summary runtime helper using regex_replace.",
-                    function_name="summarize_build_action_titles",
-                    function_block=function_block,
-                )
-
-        if "def summarize_build_pressure_paths(" not in existing:
-            function_block = """
-
-def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = actions or []
-    paths: dict[str, int] = {}
-
-    for item in items:
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if not path_text:
-                continue
-            paths[path_text] = paths.get(path_text, 0) + 1
-
-    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "path_count": len(paths),
-        "top_paths": ranked[:10],
-        "first_path": ranked[0][0] if ranked else "",
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=PROACTIVE_RUNTIME_PATH,
-                    title="Append build-pressure path summary helper",
-                    description="Append a bounded helper that summarizes build-pressure related files on the existing trace summary runtime helper using regex_replace.",
-                    function_name="summarize_build_pressure_paths",
-                    function_block=function_block,
-                )
-
-        if "def summarize_helper_lane_status(" not in existing:
-            function_block = """
-
-def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = actions or []
-    unique_titles: list[str] = []
-    helper_paths: list[str] = []
-    helper_counts: dict[str, int] = {}
-
-    for item in items:
-        title = str(item.get("title", "")).strip()
-        if title and title not in unique_titles:
-            unique_titles.append(title)
-
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if not path_text:
-                continue
-            helper_counts[path_text] = helper_counts.get(path_text, 0) + 1
-            if path_text not in helper_paths:
-                helper_paths.append(path_text)
-
-    ranked = sorted(helper_counts.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "title_count": len(unique_titles),
-        "helper_path_count": len(helper_paths),
-        "top_helper_paths": ranked[:10],
-        "first_helper_path": ranked[0][0] if ranked else "",
-        "active": bool(unique_titles) or bool(helper_paths),
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=PROACTIVE_RUNTIME_PATH,
-                    title="Append helper-lane saturation summary helper",
-                    description="Append a bounded helper that summarizes helper-lane saturation and build pressure on the existing trace summary runtime helper using regex_replace.",
-                    function_name="summarize_helper_lane_status",
-                    function_block=function_block,
-                )
-
-        if target.exists():
-            return None
-
-        new_content = """from __future__ import annotations
-
-from collections import Counter
-from typing import Any
-
-
-def summarize_trace(trace: list[dict[str, Any]] | None) -> dict[str, Any]:
-    items = trace or []
-    counts = Counter()
-
-    for item in items:
-        event = str(item.get("event", "unknown")).strip() or "unknown"
-        counts[event] += 1
-
-    return {
-        "total_events": len(items),
-        "event_counts": dict(counts),
-        "last_event": items[-1] if items else None,
-    }
-
-
-def summarize_self_evolution_skips(reasons: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (reasons or []) if str(item).strip()]
-    blocked = [item for item in items if item.lower().startswith("blocked ")]
-    return {
-        "total_reasons": len(items),
-        "blocked_count": len(blocked),
-        "blocked_reasons": blocked,
-        "all_reasons": items,
-    }
-
-
-def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = actions or []
-    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
-    return {
-        "count": len(titles),
-        "titles": titles[:10],
-        "first_title": titles[0] if titles else "",
-    }
-
-
-def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = actions or []
-    paths: dict[str, int] = {}
-
-    for item in items:
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if not path_text:
-                continue
-            paths[path_text] = paths.get(path_text, 0) + 1
-
-    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "path_count": len(paths),
-        "top_paths": ranked[:10],
-        "first_path": ranked[0][0] if ranked else "",
-    }
-
-
-def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = actions or []
-    unique_titles: list[str] = []
-    helper_paths: list[str] = []
-    helper_counts: dict[str, int] = {}
-
-    for item in items:
-        title = str(item.get("title", "")).strip()
-        if title and title not in unique_titles:
-            unique_titles.append(title)
-
-        for path in item.get("related_files", []) or []:
-            path_text = str(path).strip()
-            if not path_text:
-                continue
-            helper_counts[path_text] = helper_counts.get(path_text, 0) + 1
-            if path_text not in helper_paths:
-                helper_paths.append(path_text)
-
-    ranked = sorted(helper_counts.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "title_count": len(unique_titles),
-        "helper_path_count": len(helper_paths),
-        "top_helper_paths": ranked[:10],
-        "first_helper_path": ranked[0][0] if ranked else "",
-        "active": bool(unique_titles) or bool(helper_paths),
-    }
-"""
-        return SelfEvolutionAction(
-            title="Add runtime trace summarizer utility",
-            description="Proactively add a bounded runtime observability helper so future runs can reason about trace event distributions without test farming.",
-            risk="safe",
-            patches=[
-                PatchAction(
-                    path=PROACTIVE_RUNTIME_PATH,
-                    operation="replace_file",
-                    new_content=new_content,
-                    description="Add runtime trace summarizer utility for observability.",
-                )
-            ],
-        )
+        return self._next_helper_growth_action(repo_root, PROACTIVE_RUNTIME_PATH)
 
     def _error_digest_action(self, repo_root: Path) -> SelfEvolutionAction | None:
-        target = repo_root / ERROR_DIGEST_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def summarize_traceback_excerpt(" not in existing:
-            function_block = """
-
-def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
-    lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
-    tail = lines[-max_lines:]
-    return {
-        "line_count": len(lines),
-        "excerpt": tail,
-        "last_line": tail[-1] if tail else "",
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=ERROR_DIGEST_RUNTIME_PATH,
-                    title="Append traceback extraction helper to error_digest",
-                    description="Append a bounded traceback excerpt helper to the existing error digest runtime helper using regex_replace.",
-                    function_name="summarize_traceback_excerpt",
-                    function_block=function_block,
-                )
-
-        if "def summarize_error_paths(" not in existing:
-            function_block = """
-
-def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    paths: dict[str, int] = {}
-
-    for item in items:
-        path = str(item.get("path", "")).strip()
-        if not path:
-            continue
-        paths[path] = paths.get(path, 0) + 1
-
-    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "path_count": len(paths),
-        "top_paths": ranked[:10],
-        "first_path": ranked[0][0] if ranked else "",
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=ERROR_DIGEST_RUNTIME_PATH,
-                    title="Append error-path summary helper to error_digest",
-                    description="Append a bounded helper that summarizes recurring error paths on the existing error digest runtime helper using regex_replace.",
-                    function_name="summarize_error_paths",
-                    function_block=function_block,
-                )
-
-        if "def summarize_error_messages(" not in existing:
-            function_block = """
-
-def summarize_error_messages(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    counts: dict[str, int] = {}
-
-    for item in items:
-        message = str(item.get("error", "")).strip()
-        if not message:
-            continue
-        counts[message] = counts.get(message, 0) + 1
-
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "message_count": len(counts),
-        "top_messages": ranked[:10],
-        "first_message": ranked[0][0] if ranked else "",
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=ERROR_DIGEST_RUNTIME_PATH,
-                    title="Append error-message summary helper to error_digest",
-                    description="Append a bounded helper that summarizes recurring error messages on the existing error digest runtime helper using regex_replace.",
-                    function_name="summarize_error_messages",
-                    function_block=function_block,
-                )
-
-        if target.exists():
-            return None
-
-        new_content = """from __future__ import annotations
-
-from collections import Counter
-from typing import Any
-
-
-def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    kinds = Counter()
-    recent: list[dict[str, Any]] = []
-
-    for item in items:
-        event = str(item.get("event", "unknown")).strip() or "unknown"
-        if event in {"patch_apply_failed", "pr_delivery_failed", "branch_prepare_failed"}:
-            kinds[event] += 1
-            if len(recent) < 5:
-                recent.append(item)
-
-    return {
-        "total_error_events": sum(kinds.values()),
-        "error_counts": dict(kinds),
-        "recent_errors": recent,
-    }
-
-
-def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
-    lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
-    tail = lines[-max_lines:]
-    return {
-        "line_count": len(lines),
-        "excerpt": tail,
-        "last_line": tail[-1] if tail else "",
-    }
-
-
-def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    paths: dict[str, int] = {}
-
-    for item in items:
-        path = str(item.get("path", "")).strip()
-        if not path:
-            continue
-        paths[path] = paths.get(path, 0) + 1
-
-    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "path_count": len(paths),
-        "top_paths": ranked[:10],
-        "first_path": ranked[0][0] if ranked else "",
-    }
-
-
-def summarize_error_messages(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = events or []
-    counts: dict[str, int] = {}
-
-    for item in items:
-        message = str(item.get("error", "")).strip()
-        if not message:
-            continue
-        counts[message] = counts.get(message, 0) + 1
-
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    return {
-        "message_count": len(counts),
-        "top_messages": ranked[:10],
-        "first_message": ranked[0][0] if ranked else "",
-    }
-"""
-        return SelfEvolutionAction(
-            title="Add runtime error digest helper",
-            description="Create a bounded runtime helper that summarizes recent error-class events and recurring error paths for safer diagnostics.",
-            risk="safe",
-            patches=[
-                PatchAction(
-                    path=ERROR_DIGEST_RUNTIME_PATH,
-                    operation="replace_file",
-                    new_content=new_content,
-                    description="Add runtime error digest helper.",
-                )
-            ],
-        )
+        return self._next_helper_growth_action(repo_root, ERROR_DIGEST_RUNTIME_PATH)
 
     def _run_health_action(self, repo_root: Path) -> SelfEvolutionAction | None:
-        target = repo_root / RUN_HEALTH_RUNTIME_PATH
-        existing = self._read_text(target)
+        return self._next_helper_growth_action(repo_root, RUN_HEALTH_RUNTIME_PATH)
 
-        if "def summarize_run_velocity(" not in existing:
-            function_block = """
-
-def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    sample = items[-5:]
-    success_count = sum(1 for item in sample if bool(item.get("success", False)))
-    failure_count = len(sample) - success_count
-    return {
-        "sample_size": len(sample),
-        "successes": success_count,
-        "failures": failure_count,
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=RUN_HEALTH_RUNTIME_PATH,
-                    title="Append runtime run-velocity helper",
-                    description="Append a bounded run-velocity helper to the existing run health runtime helper using regex_replace.",
-                    function_name="summarize_run_velocity",
-                    function_block=function_block,
-                )
-
-        if "def summarize_mode_distribution(" not in existing:
-            function_block = """
-
-def summarize_mode_distribution(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    counts: dict[str, int] = {}
-
-    for item in items[-20:]:
-        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
-        counts[mode] = counts.get(mode, 0) + 1
-
-    return {
-        "sample_size": min(len(items), 20),
-        "mode_counts": counts,
-        "distinct_modes": len(counts),
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=RUN_HEALTH_RUNTIME_PATH,
-                    title="Append runtime mode-distribution helper",
-                    description="Append a bounded mode-distribution helper to the existing run health runtime helper using regex_replace.",
-                    function_name="summarize_mode_distribution",
-                    function_block=function_block,
-                )
-
-        if "def summarize_patchless_streak(" not in existing:
-            function_block = """
-
-def summarize_patchless_streak(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    streak = 0
-
-    for item in reversed(items):
-        patch_count = int(item.get("patch_count", 0) or 0)
-        if patch_count > 0:
-            break
-        streak += 1
-
-    latest_mode = ""
-    if items:
-        latest_mode = str(items[-1].get("selected_mode", "")).strip()
-
-    return {
-        "patchless_streak": streak,
-        "total_runs": len(items),
-        "latest_mode": latest_mode,
-        "active": streak > 0,
-    }
-"""
-            if target.exists():
-                return self._append_regex_patch_action(
-                    path=RUN_HEALTH_RUNTIME_PATH,
-                    title="Append runtime patchless-streak helper",
-                    description="Append a bounded helper that summarizes consecutive patchless runs on the existing run health runtime helper using regex_replace.",
-                    function_name="summarize_patchless_streak",
-                    function_block=function_block,
-                )
-
-        if target.exists():
-            return None
-
-        new_content = """from __future__ import annotations
-
-from typing import Any
-
-
-def summarize_run_health(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    total_runs = len(items)
-    success_count = 0
-    failure_count = 0
-    latest_run = items[-1] if items else None
-
-    recent_modes: dict[str, int] = {}
-    for item in items[-10:]:
-        if bool(item.get("success", False)):
-            success_count += 1
-        else:
-            failure_count += 1
-
-        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
-        recent_modes[mode] = recent_modes.get(mode, 0) + 1
-
-    success_rate = 0.0
-    if total_runs > 0:
-        success_rate = round(success_count / total_runs, 4)
-
-    return {
-        "total_runs": total_runs,
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "success_rate": success_rate,
-        "recent_mode_counts": recent_modes,
-        "latest_run": latest_run,
-    }
-
-
-def summarize_run_velocity(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    sample = items[-5:]
-    success_count = sum(1 for item in sample if bool(item.get("success", False)))
-    failure_count = len(sample) - success_count
-    return {
-        "sample_size": len(sample),
-        "successes": success_count,
-        "failures": failure_count,
-    }
-
-
-def summarize_mode_distribution(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    counts: dict[str, int] = {}
-
-    for item in items[-20:]:
-        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
-        counts[mode] = counts.get(mode, 0) + 1
-
-    return {
-        "sample_size": min(len(items), 20),
-        "mode_counts": counts,
-        "distinct_modes": len(counts),
-    }
-
-
-def summarize_patchless_streak(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = runs or []
-    streak = 0
-
-    for item in reversed(items):
-        patch_count = int(item.get("patch_count", 0) or 0)
-        if patch_count > 0:
-            break
-        streak += 1
-
-    latest_mode = ""
-    if items:
-        latest_mode = str(items[-1].get("selected_mode", "")).strip()
-
-    return {
-        "patchless_streak": streak,
-        "total_runs": len(items),
-        "latest_mode": latest_mode,
-        "active": streak > 0,
-    }
-"""
-        return SelfEvolutionAction(
-            title="Add runtime run health helper",
-            description="Create a bounded runtime helper that summarizes recent run success, velocity, and mode distribution state.",
-            risk="safe",
-            patches=[
-                PatchAction(
-                    path=RUN_HEALTH_RUNTIME_PATH,
-                    operation="replace_file",
-                    new_content=new_content,
-                    description="Add runtime run health helper.",
-                )
-            ],
-        )
+    def _fallback_patch_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        return self._next_helper_growth_action(repo_root, FALLBACK_RUNTIME_PATH)
 
     def _default_build_action(self) -> PlannedWorkItem:
         return PlannedWorkItem(
@@ -1652,157 +1266,17 @@ def summarize_patchless_streak(runs: list[dict[str, Any]] | None = None) -> dict
         )
 
     def _default_architecture_plan(self, repo_root: Path) -> ArchitecturePlan | None:
-        target = repo_root / ARCHITECTURE_RUNTIME_PATH
-        existing = self._read_text(target)
-
-        if "def architecture_probe_summary(" not in existing:
-            function_block = """
-
-def architecture_probe_summary(summary: str, files_touched: list[str] | None = None) -> dict[str, Any]:
-    return {
-        "summary": summary,
-        "files_touched": files_touched or [],
-        "source": "architecture_probe",
-    }
-"""
-            if target.exists():
-                patch = PatchAction(
-                    path=ARCHITECTURE_RUNTIME_PATH,
-                    operation="regex_replace",
-                    pattern="\\Z",
-                    replacement=function_block,
-                    description="Append architecture probe summary helper.",
-                )
-                return ArchitecturePlan(
-                    title="Branch-only bounded runtime architecture probe",
-                    summary="Append a bounded architecture probe helper to the existing architecture runtime helper.",
-                    rationale="Architecture mode must emit a real patch bundle that does not target protected core files.",
-                    route="branch",
-                    files_touched=[ARCHITECTURE_RUNTIME_PATH],
-                    patch_bundle=[patch],
-                    status="proposed",
-                )
-
-        if "def summarize_architecture_targets(" not in existing:
-            function_block = """
-
-def summarize_architecture_targets(files_touched: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (files_touched or []) if str(item).strip()]
-    return {
-        "target_count": len(items),
-        "targets": items,
-        "first_target": items[0] if items else "",
-    }
-"""
-            if target.exists():
-                patch = PatchAction(
-                    path=ARCHITECTURE_RUNTIME_PATH,
-                    operation="regex_replace",
-                    pattern="\\Z",
-                    replacement=function_block,
-                    description="Append architecture target summary helper.",
-                )
-                return ArchitecturePlan(
-                    title="Branch-only bounded architecture target summarizer",
-                    summary="Append a bounded helper that summarizes architecture target files on the existing architecture runtime helper.",
-                    rationale="Architecture mode should remain bounded while still improving architectural observability.",
-                    route="branch",
-                    files_touched=[ARCHITECTURE_RUNTIME_PATH],
-                    patch_bundle=[patch],
-                    status="proposed",
-                )
-
-        if "def summarize_patch_bundle_paths(" not in existing:
-            function_block = """
-
-def summarize_patch_bundle_paths(patch_bundle: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = patch_bundle or []
-    paths: list[str] = []
-
-    for item in items:
-        path_text = str(item.get("path", "")).strip()
-        if path_text and path_text not in paths:
-            paths.append(path_text)
-
-    return {
-        "patch_count": len(items),
-        "path_count": len(paths),
-        "paths": paths[:10],
-        "first_path": paths[0] if paths else "",
-    }
-"""
-            if target.exists():
-                patch = PatchAction(
-                    path=ARCHITECTURE_RUNTIME_PATH,
-                    operation="regex_replace",
-                    pattern="\\Z",
-                    replacement=function_block,
-                    description="Append architecture patch-bundle summary helper.",
-                )
-                return ArchitecturePlan(
-                    title="Branch-only bounded architecture patch-bundle summarizer",
-                    summary="Append a bounded helper that summarizes architecture patch-bundle target paths on the existing architecture runtime helper.",
-                    rationale="Architecture mode should keep emitting grounded bounded bundle summaries after the first helper wave is saturated.",
-                    route="branch",
-                    files_touched=[ARCHITECTURE_RUNTIME_PATH],
-                    patch_bundle=[patch],
-                    status="proposed",
-                )
-
-        if target.exists():
+        action = self._next_helper_growth_action(repo_root, ARCHITECTURE_RUNTIME_PATH)
+        if action is None or not action.patches:
             return None
 
-        new_content = """from __future__ import annotations
-
-from typing import Any
-
-
-def architecture_probe_summary(summary: str, files_touched: list[str] | None = None) -> dict[str, Any]:
-    return {
-        "summary": summary,
-        "files_touched": files_touched or [],
-        "source": "architecture_probe",
-    }
-
-
-def summarize_architecture_targets(files_touched: list[str] | None = None) -> dict[str, Any]:
-    items = [str(item).strip() for item in (files_touched or []) if str(item).strip()]
-    return {
-        "target_count": len(items),
-        "targets": items,
-        "first_target": items[0] if items else "",
-    }
-
-
-def summarize_patch_bundle_paths(patch_bundle: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    items = patch_bundle or []
-    paths: list[str] = []
-
-    for item in items:
-        path_text = str(item.get("path", "")).strip()
-        if path_text and path_text not in paths:
-            paths.append(path_text)
-
-    return {
-        "patch_count": len(items),
-        "path_count": len(paths),
-        "paths": paths[:10],
-        "first_path": paths[0] if paths else "",
-    }
-"""
-        patch = PatchAction(
-            path=ARCHITECTURE_RUNTIME_PATH,
-            operation="replace_file",
-            new_content=new_content,
-            description="Add a bounded architecture probe helper in a non-protected runtime path.",
-        )
         return ArchitecturePlan(
-            title="Branch-only bounded runtime architecture probe",
-            summary="Stage one bounded branch-safe runtime helper for architecture-lane observability.",
-            rationale="Architecture mode must emit a real patch bundle that does not target protected core files.",
+            title=action.title,
+            summary=action.description,
+            rationale="Architecture mode should stay bounded and use existing helper-lane growth before broader structural work.",
             route="branch",
-            files_touched=[ARCHITECTURE_RUNTIME_PATH],
-            patch_bundle=[patch],
+            files_touched=[self._normalize_path(p.path) for p in action.patches if getattr(p, "path", "")],
+            patch_bundle=list(action.patches),
             status="proposed",
         )
 
@@ -2062,6 +1536,151 @@ def summarize_patch_bundle_paths(patch_bundle: list[dict[str, Any]] | None = Non
 
         return None, "", ""
 
+    def _filter_low_value_actions(
+        self,
+        actions: list[SelfEvolutionAction],
+        tracked_files: list[str],
+        repo_root: Path,
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[list[SelfEvolutionAction], list[str]]:
+        kept: list[SelfEvolutionAction] = []
+        removed_notes: list[str] = []
+        recently_blocked = self._recently_blocked_paths(memory_snapshot)
+
+        for action in actions:
+            if self._is_banned_test_action(action):
+                removed_notes.append(f"Blocked permanently banned test-loop action: {action.title}")
+                continue
+
+            if self._is_repetitive_test_action(action, tracked_files):
+                removed_notes.append(f"Suppressed repetitive test-only self-evolution action: {action.title}")
+                continue
+
+            invalid_paths: list[str] = []
+            existing_replace_paths: list[str] = []
+            missing_regex_anchor_paths: list[str] = []
+            repeated_blocked_paths: list[str] = []
+            repetitive_fallback_paths: list[str] = []
+            cooldown_blocked_helper_paths: list[str] = []
+            cooldown_notes: list[str] = []
+
+            for patch in action.patches or []:
+                patch_path = self._normalize_path(getattr(patch, "path", ""))
+
+                if not self._is_allowed_patch_path(patch_path, tracked_files):
+                    invalid_paths.append(patch_path)
+                    continue
+
+                if patch_path == FALLBACK_RUNTIME_PATH and patch_path in tracked_files:
+                    repetitive_fallback_paths.append(patch_path)
+                    continue
+
+                if self._is_repeat_blocked_target(patch_path, recently_blocked):
+                    repeated_blocked_paths.append(patch_path)
+                    continue
+
+                allowed_by_rotation, cooldown_note = self._helper_path_allowed_by_rotation(
+                    patch_path=patch_path,
+                    memory_snapshot=memory_snapshot,
+                )
+                if not allowed_by_rotation:
+                    cooldown_blocked_helper_paths.append(patch_path)
+                    if cooldown_note:
+                        cooldown_notes.append(cooldown_note)
+                    continue
+
+                if self._is_existing_runtime_helper_replace(repo_root, patch):
+                    existing_replace_paths.append(patch_path)
+                    continue
+
+                if not self._regex_patch_matches_current_file(repo_root, patch):
+                    missing_regex_anchor_paths.append(patch_path)
+
+            if invalid_paths:
+                removed_notes.append(
+                    f"Blocked self-evolution action with non-tracked, banned, or non-allowlisted paths: {action.title} -> {', '.join(invalid_paths)}"
+                )
+                continue
+
+            if repetitive_fallback_paths:
+                removed_notes.append(
+                    f"Blocked repetitive fallback-helper farming: {action.title} -> {', '.join(repetitive_fallback_paths)}"
+                )
+                continue
+
+            if repeated_blocked_paths:
+                removed_notes.append(
+                    f"Blocked retry of recently-failed target: {action.title} -> {', '.join(repeated_blocked_paths)}"
+                )
+                continue
+
+            if cooldown_blocked_helper_paths:
+                extra = f" ({' | '.join(cooldown_notes)})" if cooldown_notes else ""
+                removed_notes.append(
+                    f"Suppressed helper churn during cooldown window: {action.title} -> {', '.join(cooldown_blocked_helper_paths)}{extra}"
+                )
+                continue
+
+            if existing_replace_paths:
+                removed_notes.append(
+                    f"Blocked replace_file on existing runtime helper: {action.title} -> {', '.join(existing_replace_paths)}"
+                )
+                continue
+
+            if missing_regex_anchor_paths:
+                removed_notes.append(
+                    f"Blocked regex_replace action whose pattern does not match current file: {action.title} -> {', '.join(missing_regex_anchor_paths)}"
+                )
+                continue
+
+            kept.append(action)
+
+        return kept, removed_notes
+
+    def _force_allowlisted_action_only(self, review: ArchitectureReview, repo_root: Path) -> ArchitectureReview:
+        proactive_action = self._proactive_runtime_action(repo_root)
+        run_health_action = self._run_health_action(repo_root)
+        digest_action = self._error_digest_action(repo_root)
+        fallback_action = self._fallback_patch_action(repo_root)
+
+        if proactive_action is not None:
+            review.self_evolution_actions = [proactive_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted proactive runtime helper."
+            )
+            return review
+
+        if run_health_action is not None:
+            review.self_evolution_actions = [run_health_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted run-health runtime helper."
+            )
+            return review
+
+        if digest_action is not None:
+            review.self_evolution_actions = [digest_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted error-digest runtime helper."
+            )
+            return review
+
+        if fallback_action is not None:
+            review.self_evolution_actions = [fallback_action]
+            review.build_actions = [self._derive_build_action(review) or self._default_build_action()]
+            review.execution_notes.append(
+                "Reviewer output drifted onto invalid targets; replaced with allowlisted fallback runtime helper."
+            )
+            return review
+
+        review.self_evolution_actions = []
+        review.execution_notes.append(
+            "Reviewer output drifted onto invalid targets and no allowlisted helper remained available."
+        )
+        return review
+
     def _build_prompt(
         self,
         memory_snapshot: dict[str, Any],
@@ -2126,6 +1745,7 @@ Rules:
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array and avoid documentation-only churn.
 - If recent runtime summaries indicate flat patch velocity and non-empty build-action pressure, prefer emitting one cooldown-allowed bounded helper action rather than a no-op.
+- Helper growth is finite and must stay inside the allowlisted runtime-helper lane before any broader source changes are considered.
 
 Required JSON shape:
 {{
@@ -2237,7 +1857,11 @@ Repository snapshot:
             strengths=["Repository is reachable and reviewer fallback is active."],
             weaknesses=[reason],
             recommendations=["Stabilise reviewer schema and runtime alignment."],
-            backlog_items=["Tighten schema alignment between reviewer, planner, and engine.", "Continue prioritizing helper-lane observability improvements over repetitive wake-review test churn.", "Consider future surfacing of build-action summaries in run traces only through bounded helper extensions."],
+            backlog_items=[
+                "Tighten schema alignment between reviewer, planner, and engine.",
+                "Continue prioritizing helper-lane observability improvements over repetitive wake-review test churn.",
+                "Keep helper growth finite and inside the allowlisted helper lane.",
+            ],
             self_evolution_actions=actions,
             build_actions=[self._default_build_action()],
             architecture_plans=plans,
@@ -2271,7 +1895,8 @@ Repository snapshot:
                     "Do not keep proposing reviewer_fallback.py once it already exists. "
                     "Prefer a fresh allowlisted helper before repeating stale helper ideas. "
                     "When the repo is green, still look for one bounded runtime, observability, or safety improvement. Treat repository snapshot previews and on-disk helper files as grounded current contents for regex_replace decisions; do not claim an existing helper's contents are unavailable if it is already in tracked_files. "
-                    "If no safe code action exists, prefer a clean no-op over documentation-only churn, except when recent runtime summaries show flat patch velocity with active build-action pressure, in which case emit one cooldown-allowed bounded helper action."
+                    "If no safe code action exists, prefer a clean no-op over documentation-only churn, except when recent runtime summaries show flat patch velocity with active build-action pressure, in which case emit one cooldown-allowed bounded helper action. "
+                    "Helper growth is finite and must stay inside the helper lane."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
@@ -2349,10 +1974,6 @@ Repository snapshot:
                 if forced_path:
                     review.execution_notes.append(f"Forced helper target: {forced_path}")
 
-        pressure_action = None
-        pressure_path = ""
-        pressure_note = ""
-
         if not review.self_evolution_actions and self._has_forced_helper_pressure(memory_snapshot):
             pressure_action, pressure_path, pressure_note = self._synthesize_action_from_build_pressure(
                 repo_root=repo_root,
@@ -2388,7 +2009,7 @@ Repository snapshot:
             ]
             cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
 
-            chosen_action = None
+            chosen_action: SelfEvolutionAction | None = None
             chosen_note = ""
             chosen_path = ""
 
@@ -2445,5 +2066,4 @@ Repository snapshot:
             review.architecture_plans = justified_plans
 
         review = self._normalize_build_actions(review)
-
         return review
