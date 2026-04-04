@@ -42,6 +42,9 @@ class ImprovementPlanner:
     AGGRESSIVE_PRESSURE_SCORE = 5
     AGGRESSIVE_PATCHLESS_RUNS = 4
     AGGRESSIVE_PATCH_VELOCITY_FLOOR = 0.2
+    AUTONOMOUS_EXPANSION_PRESSURE_SCORE = 6
+    AUTONOMOUS_EXPANSION_PATCHLESS_RUNS = 6
+    AUTONOMOUS_EXPANSION_SUCCESS_RATE = 0.85
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -188,6 +191,30 @@ class ImprovementPlanner:
             "force_deeper_action": force_deeper_action,
         }
 
+
+
+    def summarize_autonomous_expansion_decision(self, state: Any) -> dict[str, Any]:
+        pressure = self.summarize_pressure_escalation_decision(state)
+        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
+        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
+        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
+        success_rate = float(pressure.get("success_rate", 0) or 0)
+
+        autonomous_expansion = (
+            pressure_score >= self.AUTONOMOUS_EXPANSION_PRESSURE_SCORE
+            and no_patch_streak >= self.AUTONOMOUS_EXPANSION_PATCHLESS_RUNS
+            and average_patch_count <= self.AGGRESSIVE_PATCH_VELOCITY_FLOOR
+            and success_rate >= self.AUTONOMOUS_EXPANSION_SUCCESS_RATE
+        )
+
+        return {
+            "pressure_score": pressure_score,
+            "no_patch_streak": no_patch_streak,
+            "average_patch_count": average_patch_count,
+            "success_rate": success_rate,
+            "autonomous_expansion": autonomous_expansion,
+        }
+
     def _should_force_build_from_pressure(self, state: Any) -> bool:
         decision = self.summarize_pressure_escalation_decision(state)
         return bool(decision.get("force_deeper_action", False))
@@ -277,6 +304,11 @@ class ImprovementPlanner:
                 reasons.append(
                     "Level 3 escalation engaged: strong pressure with healthy but under-producing patch velocity justifies deeper bounded action."
                 )
+                autonomous = self.summarize_autonomous_expansion_decision(state)
+                if autonomous.get('autonomous_expansion', False):
+                    reasons.append(
+                        "Level 4 autonomous expansion is armed: sustained pressure and prolonged patch drought now justify forced bounded expansion work."
+                    )
                 reasons.append(
                     f"Escalation metrics: pressure_score={decision['build_pressure_score']}, "
                     f"pressure_source={decision['build_pressure_source']}, "

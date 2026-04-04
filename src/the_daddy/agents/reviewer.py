@@ -1278,6 +1278,55 @@ class WakeReviewer:
             "success_rate": float(run_health.get("success_rate", 0) or 0),
         }
 
+    def _should_force_level4_autonomous_expansion(self, memory_snapshot: dict[str, Any]) -> bool:
+        metrics = self._pressure_escalation_metrics(memory_snapshot)
+        return (
+            metrics["pressure_score"] >= 6
+            and metrics["runs_without_patches"] >= 6
+            and metrics["average_patch_count"] <= 0.2
+            and metrics["success_rate"] >= 0.85
+        )
+
+    def _autonomous_expansion_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / PRESSURE_ESCALATION_TARGET_PATH
+        existing = self._read_text(target)
+        if not existing:
+            return None
+        if "def summarize_autonomous_expansion_decision(" in existing:
+            return None
+
+        function_block = """
+
+def summarize_autonomous_expansion_decision(self, state: Any) -> dict[str, Any]:
+    pressure = self.summarize_pressure_escalation_decision(state)
+    pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
+    no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
+    average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
+    success_rate = float(pressure.get("success_rate", 0) or 0)
+
+    autonomous_expansion = (
+        pressure_score >= 6
+        and no_patch_streak >= 6
+        and average_patch_count <= 0.2
+        and success_rate >= 0.85
+    )
+
+    return {
+        "pressure_score": pressure_score,
+        "no_patch_streak": no_patch_streak,
+        "average_patch_count": average_patch_count,
+        "success_rate": success_rate,
+        "autonomous_expansion": autonomous_expansion,
+    }
+"""
+        return self._append_regex_patch_action(
+            path=PRESSURE_ESCALATION_TARGET_PATH,
+            title="Append autonomous expansion decision helper",
+            description="Append a bounded planner helper that arms forced autonomous expansion when pressure remains high and patch output stays flat.",
+            function_name="summarize_autonomous_expansion_decision",
+            function_block=function_block,
+        )
+
     def _should_force_level2_escalation(self, memory_snapshot: dict[str, Any]) -> bool:
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         return (
@@ -1587,7 +1636,7 @@ Rules:
 - Treat repository snapshot previews and on-disk helper/planner files as grounded current contents for regex_replace decisions.
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- Level 3 aggressive rule: when pressure_score is high, patch velocity is weak, and run health stays strong enough, prefer one grounded append-only patch against an existing tracked planner file before returning to helper-only churn.
+- Level 4 autonomous rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one grounded append-only planner expansion before returning to helper-only churn.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
@@ -1720,6 +1769,16 @@ Repository snapshot:
             else:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
+
+        if not review.self_evolution_actions and self._should_force_level4_autonomous_expansion(memory_snapshot):
+            autonomous_action = self._autonomous_expansion_action(repo_root)
+            if autonomous_action is not None and bool(getattr(autonomous_action, "patches", [])):
+                review.self_evolution_actions = [autonomous_action]
+                metrics = self._pressure_escalation_metrics(memory_snapshot)
+                review.execution_notes.append("Level 4 autonomous expansion engaged: append-only planner expansion was forced under prolonged pressure.")
+                review.execution_notes.append(
+                    f"Autonomous metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
+                )
 
         if not review.self_evolution_actions and self._should_force_level2_escalation(memory_snapshot):
             escalation_action = self._pressure_escalation_action(repo_root)
