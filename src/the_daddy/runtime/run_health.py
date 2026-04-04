@@ -128,3 +128,18 @@ def summarize_patchless_streak(runs: list[dict[str, Any]] | None = None) -> dict
         "latest_mode": latest_mode,
         "active": streak > 0,
     }
+
+
+def summarize_recent_patch_mix(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = 10,
+) -> dict[str, Any]:
+    items = (runs or [])[-max(1, int(window)):]
+    patch_counts = [int(item.get("patch_count", 0) or 0) for item in items]
+
+    return {
+        "sample_size": len(items),
+        "patched_runs": sum(1 for count in patch_counts if count > 0),
+        "patchless_runs": sum(1 for count in patch_counts if count == 0),
+        "total_patches": sum(patch_counts),
+    }
