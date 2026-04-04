@@ -45,6 +45,7 @@ PRESSURE_ESCALATION_TARGET_PATH = "src/the_daddy/agents/improvement_planner.py"
 STRATEGY_AGENT_PATH = "src/the_daddy/agents/strategy_agent.py"
 REFACTOR_AGENT_PATH = "src/the_daddy/agents/refactor_agent.py"
 EXPERIMENT_AGENT_PATH = "src/the_daddy/agents/experiment_agent.py"
+SELF_REWRITE_AGENT_PATH = "src/the_daddy/agents/self_rewrite_agent.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -59,6 +60,7 @@ SAFE_NEW_FILE_ALLOWLIST = {
     STRATEGY_AGENT_PATH,
     REFACTOR_AGENT_PATH,
     EXPERIMENT_AGENT_PATH,
+    SELF_REWRITE_AGENT_PATH,
 }
 
 ALLOWLISTED_RUNTIME_HELPERS = {
@@ -1285,6 +1287,70 @@ class WakeReviewer:
         }
 
 
+
+    def _should_force_level7_self_rewrite(self, memory_snapshot: dict[str, Any]) -> bool:
+        metrics = self._pressure_escalation_metrics(memory_snapshot)
+        return (
+            metrics["pressure_score"] >= 7
+            and metrics["runs_without_patches"] >= 7
+            and metrics["average_patch_count"] <= 0.2
+            and metrics["success_rate"] >= 0.85
+        )
+
+    def _self_rewrite_agent_template(self) -> str:
+        return """from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class SelfRewritePlan:
+    target_path: str
+    summary: str
+    mode: str = "append_only"
+
+
+class SelfRewriteAgent:
+    \"\"
+    Level 7 spawned agent.
+    Produces bounded self-rewrite plans for protected files without allowing destructive rewrites.
+    \"\"
+
+    def plan(self) -> list[SelfRewritePlan]:
+        return [
+            SelfRewritePlan(
+                target_path="src/the_daddy/agents/improvement_planner.py",
+                summary="Append a new planner-facing decision surface instead of mutating existing planner behavior destructively.",
+            ),
+            SelfRewritePlan(
+                target_path="src/the_daddy/agents/reviewer.py",
+                summary="Extend reviewer routing with one new bounded decision gate instead of replacing current safeguards.",
+            ),
+        ]
+"""
+
+    def _level7_self_rewrite_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / SELF_REWRITE_AGENT_PATH
+        if target.exists():
+            return None
+
+        return SelfEvolutionAction(
+            title="Spawn self-rewrite agent",
+            description="Create a bounded self-rewrite planning agent so the system can extend its own architecture without relying on helper fallback.",
+            risk="safe",
+            patches=[
+                PatchAction(
+                    path=SELF_REWRITE_AGENT_PATH,
+                    operation="replace_file",
+                    new_content=self._self_rewrite_agent_template(),
+                    pattern=None,
+                    replacement=None,
+                    description="Create new bounded self-rewrite agent file.",
+                )
+            ],
+        )
+
+
     def _should_force_level6_agent_spawning(self, memory_snapshot: dict[str, Any]) -> bool:
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         return (
@@ -1833,7 +1899,7 @@ Rules:
 - Treat repository snapshot previews and on-disk helper/planner files as grounded current contents for regex_replace decisions.
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- Level 6 agent-spawning rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded new agent file before planner fallback or helper churn.
+- Level 7 self-rewriting rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded self-rewrite agent file before helper churn.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
@@ -1966,6 +2032,18 @@ Repository snapshot:
             else:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
+
+        if not review.self_evolution_actions and self._should_force_level7_self_rewrite(memory_snapshot):
+            rewrite_action = self._level7_self_rewrite_action(repo_root)
+            if rewrite_action is not None and bool(getattr(rewrite_action, "patches", [])):
+                review.self_evolution_actions = [rewrite_action]
+                metrics = self._pressure_escalation_metrics(memory_snapshot)
+                review.execution_notes.append("Level 7 self-rewriting architecture engaged: a bounded self-rewrite agent file was forced under sustained pressure.")
+                review.execution_notes.append(
+                    f"Self-rewrite metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
+                )
+            elif (self._pressure_escalation_metrics(memory_snapshot).get("pressure_score", 0) >= 6):
+                review.execution_notes.append("Level 7 blocked helper fallback under sustained pressure so architecture spawning can take priority.")
 
         if not review.self_evolution_actions and self._should_force_level6_agent_spawning(memory_snapshot):
             spawn_action = self._level6_agent_spawn_action(repo_root)

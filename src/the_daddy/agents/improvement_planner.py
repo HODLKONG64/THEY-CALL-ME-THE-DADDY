@@ -51,6 +51,9 @@ class ImprovementPlanner:
     LEVEL6_AGENT_SPAWNING_PRESSURE_SCORE = 7
     LEVEL6_AGENT_SPAWNING_PATCHLESS_RUNS = 8
     LEVEL6_AGENT_SPAWNING_SUCCESS_RATE = 0.85
+    LEVEL7_SELF_REWRITE_PRESSURE_SCORE = 7
+    LEVEL7_SELF_REWRITE_PATCHLESS_RUNS = 7
+    LEVEL7_SELF_REWRITE_SUCCESS_RATE = 0.85
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -201,6 +204,29 @@ class ImprovementPlanner:
 
 
 
+
+
+    def summarize_level7_self_rewrite_decision(self, state: Any) -> dict[str, Any]:
+        pressure = self.summarize_pressure_escalation_decision(state)
+        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
+        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
+        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
+        success_rate = float(pressure.get("success_rate", 0) or 0)
+
+        level7_self_rewrite = (
+            pressure_score >= self.LEVEL7_SELF_REWRITE_PRESSURE_SCORE
+            and no_patch_streak >= self.LEVEL7_SELF_REWRITE_PATCHLESS_RUNS
+            and average_patch_count <= 0.2
+            and success_rate >= self.LEVEL7_SELF_REWRITE_SUCCESS_RATE
+        )
+
+        return {
+            "pressure_score": pressure_score,
+            "no_patch_streak": no_patch_streak,
+            "average_patch_count": average_patch_count,
+            "success_rate": success_rate,
+            "level7_self_rewrite": level7_self_rewrite,
+        }
 
     def summarize_level6_agent_spawning_decision(self, state: Any) -> dict[str, Any]:
         pressure = self.summarize_pressure_escalation_decision(state)
@@ -367,6 +393,11 @@ class ImprovementPlanner:
                         reasons.append(
                             "Level 5 self-directed architecture is armed: sustained pressure now justifies planner-led architecture work instead of helper fallback."
                         )
+                        level7 = self.summarize_level7_self_rewrite_decision(state)
+                        if level7.get("level7_self_rewrite", False):
+                            reasons.append(
+                                "Level 7 self-rewriting architecture is armed: extreme sustained pressure now justifies spawning a bounded self-rewrite capability."
+                            )
                 reasons.append(
                     f"Escalation metrics: pressure_score={decision['build_pressure_score']}, "
                     f"pressure_source={decision['build_pressure_source']}, "
