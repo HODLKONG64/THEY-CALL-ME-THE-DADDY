@@ -17,15 +17,9 @@ class ImprovementPlanner:
     """
     Planner-level pressure control.
 
-    This version does not just look at whether build actions exist.
-    It reads recent runtime summaries and uses them to steer:
-
-    - mode selection
-    - self-evolution aggressiveness
-    - build-vs-repair preference when the repo is green but stalled
-
-    The goal is to stop the system from sitting in a healthy no-op loop
-    when build pressure stays active and patch velocity is flat.
+    Level 2 extends the healthy-stalled logic:
+    it not only avoids no-op loops, it explicitly scores whether
+    build pressure is now strong enough to justify deeper action.
     """
 
     RECENT_SUMMARY_WINDOW = 8
@@ -33,6 +27,13 @@ class ImprovementPlanner:
     LOW_SUCCESS_RATE_THRESHOLD = 0.8
     BUILD_PRESSURE_THRESHOLD = 1
     HIGH_BUILD_PRESSURE_THRESHOLD = 3
+
+    # Level 2 pressure-to-action controls
+    PRESSURE_ESCALATION_MIN_SCORE = 3
+    PATCHLESS_ESCALATION_MIN_RUNS = 5
+    PATCH_VELOCITY_FLOOR = 0.3
+    HIGH_HEALTH_SUCCESS_RATE = 0.95
+    MAX_LEVEL2_ACTIONS = 2
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -127,6 +128,39 @@ class ImprovementPlanner:
     def _high_build_pressure(self, state: Any) -> bool:
         return self._build_pressure_score(state) >= self.HIGH_BUILD_PRESSURE_THRESHOLD
 
+    def _average_patch_count(self, state: Any) -> float:
+        summary = self._recent_patch_velocity_summary(state)
+        if not summary:
+            return 0.0
+        return float(summary.get("average_patch_count", 0) or 0)
+
+    def summarize_pressure_escalation_decision(self, state: Any) -> dict[str, Any]:
+        build_pressure_score = self._build_pressure_score(state)
+        no_patch_streak = self._recent_no_patch_streak(state)
+        average_patch_count = self._average_patch_count(state)
+
+        run_health = self._recent_run_health_summary(state)
+        success_rate = float(run_health.get("success_rate", 0) or 0) if run_health else 0.0
+
+        force_deeper_action = (
+            build_pressure_score >= self.PRESSURE_ESCALATION_MIN_SCORE
+            and no_patch_streak >= self.PATCHLESS_ESCALATION_MIN_RUNS
+            and average_patch_count < self.PATCH_VELOCITY_FLOOR
+            and success_rate >= self.HIGH_HEALTH_SUCCESS_RATE
+        )
+
+        return {
+            "build_pressure_score": build_pressure_score,
+            "no_patch_streak": no_patch_streak,
+            "average_patch_count": average_patch_count,
+            "success_rate": success_rate,
+            "force_deeper_action": force_deeper_action,
+        }
+
+    def _should_force_build_from_pressure(self, state: Any) -> bool:
+        decision = self.summarize_pressure_escalation_decision(state)
+        return bool(decision.get("force_deeper_action", False))
+
     def plan_self_evolution(
         self,
         review: ArchitectureReview,
@@ -192,9 +226,6 @@ class ImprovementPlanner:
                     f"Build pressure remains active with pressure_score={build_pressure_score}."
                 )
 
-            # Planner-level pressure control:
-            # if the repo is green, stalled, and pressure is meaningful,
-            # keep exactly one safe action alive rather than drifting back to no-op.
             if (
                 self._build_pressure_active(state)
                 and no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD
@@ -204,7 +235,6 @@ class ImprovementPlanner:
                     f"No-patch streak={no_patch_streak} with active build pressure; preserving one bounded self-evolution action."
                 )
 
-            # If pressure is very high and health is still good, allow up to 2 actions.
             if self._high_build_pressure(state):
                 if run_health:
                     success_rate = float(run_health.get("success_rate", 0) or 0)
@@ -215,6 +245,19 @@ class ImprovementPlanner:
                     reasons.append(
                         f"High build pressure detected (pressure_score={build_pressure_score}) with strong health; allowing up to {effective_max} safe actions."
                     )
+
+            if self._should_force_build_from_pressure(state):
+                effective_max = max(1, min(self.MAX_LEVEL2_ACTIONS, len(safe_actions), max_actions))
+                decision = self.summarize_pressure_escalation_decision(state)
+                reasons.append(
+                    "Level 2 escalation engaged: strong pressure with healthy but under-producing patch velocity justifies deeper bounded action."
+                )
+                reasons.append(
+                    f"Escalation metrics: pressure_score={decision['build_pressure_score']}, "
+                    f"no_patch_streak={decision['no_patch_streak']}, "
+                    f"average_patch_count={decision['average_patch_count']}, "
+                    f"success_rate={decision['success_rate']}."
+                )
 
         if effective_max <= 0:
             return PlannedSelfEvolution(
@@ -294,8 +337,9 @@ class ImprovementPlanner:
             if sample_size > 0 and success_rate < self.LOW_SUCCESS_RATE_THRESHOLD:
                 return "repair"
 
-        # Planner-level pressure control:
-        # stay in build when the repo is healthy but stalled under active pressure.
+        if self._should_force_build_from_pressure(state):
+            return "build"
+
         if patch_velocity:
             runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
             sample_size = int(patch_velocity.get("sample_size", 0) or 0)
@@ -304,7 +348,6 @@ class ImprovementPlanner:
                 if build_pressure_active or no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD:
                     return "build"
 
-        # Strong pressure can keep build mode alive even without patch-velocity summary.
         if build_pressure_active and build_pressure_score >= self.BUILD_PRESSURE_THRESHOLD:
             return "build"
 

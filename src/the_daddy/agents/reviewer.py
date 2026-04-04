@@ -41,6 +41,7 @@ FALLBACK_RUNTIME_PATH = "src/the_daddy/runtime/reviewer_fallback.py"
 ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
 ERROR_DIGEST_RUNTIME_PATH = "src/the_daddy/runtime/error_digest.py"
 RUN_HEALTH_RUNTIME_PATH = "src/the_daddy/runtime/run_health.py"
+PRESSURE_ESCALATION_TARGET_PATH = "src/the_daddy/agents/improvement_planner.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -987,6 +988,65 @@ class WakeReviewer:
             return True
         return False
 
+    def _pressure_escalation_metrics(self, memory_snapshot: dict[str, Any]) -> dict[str, Any]:
+        build_pressure = self._recent_trace_summary(memory_snapshot, "runtime_build_pressure_summary") or {}
+        patch_velocity = self._recent_trace_summary(memory_snapshot, "runtime_patch_velocity_summary") or {}
+        run_health = self._recent_trace_summary(memory_snapshot, "runtime_run_health_summary") or {}
+
+        return {
+            "pressure_score": int(build_pressure.get("pressure_score", 0) or 0),
+            "average_patch_count": float(patch_velocity.get("average_patch_count", 0) or 0),
+            "runs_without_patches": int(patch_velocity.get("runs_without_patches", 0) or 0),
+            "success_rate": float(run_health.get("success_rate", 0) or 0),
+        }
+
+    def _should_force_level2_escalation(self, memory_snapshot: dict[str, Any]) -> bool:
+        metrics = self._pressure_escalation_metrics(memory_snapshot)
+        return (
+            metrics["pressure_score"] >= 3
+            and metrics["runs_without_patches"] >= 5
+            and metrics["average_patch_count"] < 0.3
+            and metrics["success_rate"] >= 0.95
+        )
+
+    def _pressure_escalation_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / PRESSURE_ESCALATION_TARGET_PATH
+        existing = self._read_text(target)
+        if not existing:
+            return None
+        if "def summarize_pressure_escalation_decision(" in existing:
+            return None
+
+        function_block = """
+
+def summarize_pressure_escalation_decision(
+    build_pressure_score: int,
+    no_patch_streak: int,
+    average_patch_count: float,
+    success_rate: float,
+) -> dict[str, Any]:
+    force_deeper_action = (
+        int(build_pressure_score) >= 3
+        and int(no_patch_streak) >= 5
+        and float(average_patch_count) < 0.3
+        and float(success_rate) >= 0.95
+    )
+    return {
+        "build_pressure_score": int(build_pressure_score),
+        "no_patch_streak": int(no_patch_streak),
+        "average_patch_count": float(average_patch_count),
+        "success_rate": float(success_rate),
+        "force_deeper_action": force_deeper_action,
+    }
+"""
+        return self._append_regex_patch_action(
+            path=PRESSURE_ESCALATION_TARGET_PATH,
+            title="Append pressure escalation decision helper",
+            description="Append a bounded non-helper decision helper to improvement_planner so strong pressure can be converted into explicit planner action.",
+            function_name="summarize_pressure_escalation_decision",
+            function_block=function_block,
+        )
+
     def _existing_file_text(self, repo_root: Path, path: str) -> str:
         normalized = self._normalize_path(path)
         if not normalized:
@@ -1746,6 +1806,7 @@ Rules:
 - If no valid self_evolution patch target exists, return an empty self_evolution_actions array and avoid documentation-only churn.
 - If recent runtime summaries indicate flat patch velocity and non-empty build-action pressure, prefer emitting one cooldown-allowed bounded helper action rather than a no-op.
 - Helper growth is finite and must stay inside the allowlisted runtime-helper lane before any broader source changes are considered.
+- Level 2 rule: when pressure_score is high, patch velocity is weak, and run health stays strong, prefer one grounded non-helper patch against an existing tracked planner file before returning to helper-only churn.
 
 Required JSON shape:
 {{
@@ -1951,6 +2012,18 @@ Repository snapshot:
             else:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
+
+        if not review.self_evolution_actions and self._should_force_level2_escalation(memory_snapshot):
+            escalation_action = self._pressure_escalation_action(repo_root)
+            if escalation_action is not None and bool(getattr(escalation_action, "patches", [])):
+                review.self_evolution_actions = [escalation_action]
+                review.execution_notes.append(
+                    "Level 2 escalation engaged: pressure-to-action trigger selected a grounded non-helper patch."
+                )
+                metrics = self._pressure_escalation_metrics(memory_snapshot)
+                review.execution_notes.append(
+                    f"Escalation metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
+                )
 
         forced_pressure = self._has_forced_helper_pressure(memory_snapshot)
 
