@@ -165,3 +165,20 @@ def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) ->
         "first_helper_path": ranked[0][0] if ranked else "",
         "active": bool(unique_titles) or bool(helper_paths),
     }
+
+
+def summarize_recent_pressure_persistence(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    related_files: list[str] = []
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if path_text and path_text not in related_files:
+                related_files.append(path_text)
+
+    return {
+        "related_file_count": len(related_files),
+        "related_files": related_files[:10],
+        "active": bool(related_files),
+    }
