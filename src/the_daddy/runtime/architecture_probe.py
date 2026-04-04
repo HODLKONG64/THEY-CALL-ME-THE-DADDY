@@ -35,3 +35,11 @@ def summarize_patch_bundle_paths(patch_bundle: list[dict[str, Any]] | None = Non
         "paths": paths[:10],
         "first_path": paths[0] if paths else "",
     }
+
+
+def summarize_architecture_bundle_density(patch_bundle: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = patch_bundle or []
+    return {
+        "patch_count": len(items),
+        "paths": [str(item.get("path", "")).strip() for item in items if str(item.get("path", "")).strip()][:10],
+    }
