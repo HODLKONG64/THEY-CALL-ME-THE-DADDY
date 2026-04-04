@@ -42,6 +42,9 @@ ARCHITECTURE_RUNTIME_PATH = "src/the_daddy/runtime/architecture_probe.py"
 ERROR_DIGEST_RUNTIME_PATH = "src/the_daddy/runtime/error_digest.py"
 RUN_HEALTH_RUNTIME_PATH = "src/the_daddy/runtime/run_health.py"
 PRESSURE_ESCALATION_TARGET_PATH = "src/the_daddy/agents/improvement_planner.py"
+STRATEGY_AGENT_PATH = "src/the_daddy/agents/strategy_agent.py"
+REFACTOR_AGENT_PATH = "src/the_daddy/agents/refactor_agent.py"
+EXPERIMENT_AGENT_PATH = "src/the_daddy/agents/experiment_agent.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -53,6 +56,9 @@ SAFE_NEW_FILE_ALLOWLIST = {
     ARCHITECTURE_RUNTIME_PATH,
     ERROR_DIGEST_RUNTIME_PATH,
     RUN_HEALTH_RUNTIME_PATH,
+    STRATEGY_AGENT_PATH,
+    REFACTOR_AGENT_PATH,
+    EXPERIMENT_AGENT_PATH,
 }
 
 ALLOWLISTED_RUNTIME_HELPERS = {
@@ -1278,6 +1284,148 @@ class WakeReviewer:
             "success_rate": float(run_health.get("success_rate", 0) or 0),
         }
 
+
+    def _should_force_level6_agent_spawning(self, memory_snapshot: dict[str, Any]) -> bool:
+        metrics = self._pressure_escalation_metrics(memory_snapshot)
+        return (
+            metrics["pressure_score"] >= 7
+            and metrics["runs_without_patches"] >= 8
+            and metrics["average_patch_count"] <= 0.1
+            and metrics["success_rate"] >= 0.85
+        )
+
+    def _strategy_agent_template(self) -> str:
+        return """from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class StrategySignal:
+    title: str
+    description: str
+    priority: int = 1
+
+
+class StrategyAgent:
+    \"\"
+    Level 6 spawned agent.
+    Produces bounded strategy signals when the system is healthy but stagnant.
+    \"\"
+
+    def propose(self, memory_summary: dict[str, Any] | None = None) -> list[StrategySignal]:
+        summary = memory_summary or {}
+        pressure_score = int(summary.get("pressure_score", 0) or 0)
+        patch_drought = int(summary.get("runs_without_patches", 0) or 0)
+
+        signals: list[StrategySignal] = []
+        if pressure_score >= 5:
+            signals.append(
+                StrategySignal(
+                    title="Escalate bounded planner work",
+                    description="Pressure remains high; prefer planner-facing changes over helper churn.",
+                    priority=1,
+                )
+            )
+        if patch_drought >= 5:
+            signals.append(
+                StrategySignal(
+                    title="Break patch drought",
+                    description="Patch output has stalled; prioritize one bounded source-level move.",
+                    priority=1,
+                )
+            )
+        return signals
+"""
+
+    def _refactor_agent_template(self) -> str:
+        return """from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class RefactorHint:
+    path: str
+    reason: str
+
+
+class RefactorAgent:
+    \"\"
+    Level 6 spawned agent.
+    Suggests bounded refactor targets without mutating protected core files directly.
+    \"\"
+
+    def suggest(self) -> list[RefactorHint]:
+        return [
+            RefactorHint(
+                path="src/the_daddy/agents/improvement_planner.py",
+                reason="Planner pressure logic can be extended incrementally via append-only helpers.",
+            ),
+            RefactorHint(
+                path="src/the_daddy/runtime/architecture_probe.py",
+                reason="Architecture visibility can grow without widening operational risk.",
+            ),
+        ]
+"""
+
+    def _experiment_agent_template(self) -> str:
+        return """from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class ExperimentPlan:
+    name: str
+    target_path: str
+    summary: str
+
+
+class ExperimentAgent:
+    \"\"
+    Level 6 spawned agent.
+    Carries tiny bounded experiments instead of speculative rewrites.
+    \"\"
+
+    def plan(self) -> list[ExperimentPlan]:
+        return [
+            ExperimentPlan(
+                name="planner-pressure-audit",
+                target_path="src/the_daddy/agents/improvement_planner.py",
+                summary="Add a small planner-facing audit surface when pressure stays high.",
+            )
+        ]
+"""
+
+    def _level6_agent_spawn_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        targets = [
+            (STRATEGY_AGENT_PATH, "Spawn strategy agent", "Create a bounded strategy agent file so the system can generate planner-facing signals under sustained pressure.", self._strategy_agent_template()),
+            (REFACTOR_AGENT_PATH, "Spawn refactor agent", "Create a bounded refactor agent file so the system can suggest low-risk structural work instead of helper churn.", self._refactor_agent_template()),
+            (EXPERIMENT_AGENT_PATH, "Spawn experiment agent", "Create a bounded experiment agent file so the system can carry tiny safe experiments under prolonged pressure.", self._experiment_agent_template()),
+        ]
+
+        for path, title, description, content in targets:
+            if not (repo_root / path).exists():
+                return SelfEvolutionAction(
+                    title=title,
+                    description=description,
+                    risk="safe",
+                    patches=[
+                        PatchAction(
+                            path=path,
+                            operation="replace_file",
+                            new_content=content,
+                            pattern=None,
+                            replacement=None,
+                            description=f"Create new bounded agent file {Path(path).name}.",
+                        )
+                    ],
+                )
+        return None
+
+
     def _should_force_level5_architecture(self, memory_snapshot: dict[str, Any]) -> bool:
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         return (
@@ -1685,7 +1833,7 @@ Rules:
 - Treat repository snapshot previews and on-disk helper/planner files as grounded current contents for regex_replace decisions.
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- Level 5 self-directed architecture rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one grounded append-only planner architecture expansion before helper fallback is allowed.
+- Level 6 agent-spawning rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded new agent file before planner fallback or helper churn.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
@@ -1818,6 +1966,16 @@ Repository snapshot:
             else:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
+
+        if not review.self_evolution_actions and self._should_force_level6_agent_spawning(memory_snapshot):
+            spawn_action = self._level6_agent_spawn_action(repo_root)
+            if spawn_action is not None and bool(getattr(spawn_action, "patches", [])):
+                review.self_evolution_actions = [spawn_action]
+                metrics = self._pressure_escalation_metrics(memory_snapshot)
+                review.execution_notes.append("Level 6 agent spawning engaged: a new bounded agent file was forced under prolonged stagnation.")
+                review.execution_notes.append(
+                    f"Agent-spawn metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
+                )
 
         if not review.self_evolution_actions and self._should_force_level5_architecture(memory_snapshot):
             architecture_action = self._self_directed_architecture_action(repo_root)

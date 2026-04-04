@@ -48,6 +48,9 @@ class ImprovementPlanner:
     SELF_DIRECTED_ARCHITECTURE_PRESSURE_SCORE = 7
     SELF_DIRECTED_ARCHITECTURE_PATCHLESS_RUNS = 7
     SELF_DIRECTED_ARCHITECTURE_SUCCESS_RATE = 0.85
+    LEVEL6_AGENT_SPAWNING_PRESSURE_SCORE = 7
+    LEVEL6_AGENT_SPAWNING_PATCHLESS_RUNS = 8
+    LEVEL6_AGENT_SPAWNING_SUCCESS_RATE = 0.85
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -197,6 +200,29 @@ class ImprovementPlanner:
 
 
 
+
+
+    def summarize_level6_agent_spawning_decision(self, state: Any) -> dict[str, Any]:
+        pressure = self.summarize_pressure_escalation_decision(state)
+        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
+        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
+        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
+        success_rate = float(pressure.get("success_rate", 0) or 0)
+
+        level6_agent_spawning = (
+            pressure_score >= self.LEVEL6_AGENT_SPAWNING_PRESSURE_SCORE
+            and no_patch_streak >= self.LEVEL6_AGENT_SPAWNING_PATCHLESS_RUNS
+            and average_patch_count <= 0.1
+            and success_rate >= self.LEVEL6_AGENT_SPAWNING_SUCCESS_RATE
+        )
+
+        return {
+            "pressure_score": pressure_score,
+            "no_patch_streak": no_patch_streak,
+            "average_patch_count": average_patch_count,
+            "success_rate": success_rate,
+            "level6_agent_spawning": level6_agent_spawning,
+        }
 
     def summarize_self_directed_architecture_decision(self, state: Any) -> dict[str, Any]:
         pressure = self.summarize_pressure_escalation_decision(state)
