@@ -1732,6 +1732,59 @@ def summarize_architecture_targets(files_touched: list[str] | None = None) -> di
 
         return None, "", ""
 
+
+    def _synthesize_action_from_build_pressure(
+        self,
+        *,
+        repo_root: Path,
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[SelfEvolutionAction | None, str, str]:
+        pressure_summary = self._recent_trace_summary(memory_snapshot, "runtime_build_pressure_summary")
+        if not pressure_summary:
+            return None, "", ""
+
+        if not bool(pressure_summary.get("active", False)):
+            return None, "", ""
+
+        related_files = [
+            self._normalize_path(path)
+            for path in (pressure_summary.get("related_files", []) or [])
+            if str(path).strip()
+        ]
+        if not related_files:
+            return None, "", ""
+
+        helper_map = {
+            PROACTIVE_RUNTIME_PATH: lambda: self._proactive_runtime_action(repo_root),
+            ERROR_DIGEST_RUNTIME_PATH: lambda: self._error_digest_action(repo_root),
+            RUN_HEALTH_RUNTIME_PATH: lambda: self._run_health_action(repo_root),
+            FALLBACK_RUNTIME_PATH: lambda: self._fallback_patch_action(repo_root),
+            ARCHITECTURE_RUNTIME_PATH: lambda: (
+                SelfEvolutionAction(
+                    title=plan.title,
+                    description=plan.summary,
+                    risk="safe",
+                    patches=list(plan.patch_bundle),
+                )
+                if (plan := self._default_architecture_plan(repo_root)) is not None and plan.patch_bundle
+                else None
+            ),
+        }
+
+        for helper_path in related_files:
+            factory = helper_map.get(helper_path)
+            if not factory:
+                continue
+            action = factory()
+            if action is not None and bool(getattr(action, "patches", [])):
+                return (
+                    action,
+                    helper_path,
+                    "Synthesized bounded self-evolution action directly from normalized build-pressure summary.",
+                )
+
+        return None, "", ""
+
     def _build_prompt(
         self,
         memory_snapshot: dict[str, Any],
@@ -2018,6 +2071,28 @@ Repository snapshot:
                     review.execution_notes.append(forced_note)
                 if forced_path:
                     review.execution_notes.append(f"Forced helper target: {forced_path}")
+
+        pressure_action = None
+        pressure_path = ""
+        pressure_note = ""
+
+        if not review.self_evolution_actions and self._has_forced_helper_pressure(memory_snapshot):
+            pressure_action, pressure_path, pressure_note = self._synthesize_action_from_build_pressure(
+                repo_root=repo_root,
+                memory_snapshot=memory_snapshot,
+            )
+            if pressure_action is not None and bool(getattr(pressure_action, "patches", [])):
+                review.self_evolution_actions = [pressure_action]
+                review.execution_notes.append(
+                    "Planner-held build pressure synthesized a bounded self-evolution action before fallback no-op resolution."
+                )
+                if pressure_note:
+                    review.execution_notes.append(pressure_note)
+                if pressure_path:
+                    review.execution_notes.append(f"Pressure-synthesized helper target: {pressure_path}")
+                review.execution_notes.append(
+                    "Normalized build-pressure signal converted directly into a concrete helper patch."
+                )
 
         if not review.self_evolution_actions:
             helper_candidates = {
