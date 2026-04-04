@@ -89,3 +89,23 @@ def summarize_build_action_pressure(actions: list[dict[str, Any]] | None = None)
         "pressure_score": pressure_score,
         "active": pressure_score > 0,
     }
+
+
+
+def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if not path_text:
+                continue
+            paths[path_text] = paths.get(path_text, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
