@@ -64,3 +64,41 @@ def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -
         "titles": titles[:10],
         "first_title": titles[0] if titles else "",
     }
+
+
+
+def summarize_recent_build_action_pressure(runs: list[object], window: int = 6) -> dict[str, int | bool]:
+    """Return a compact summary of recent build-action pressure from run traces."""
+    recent_runs = list(runs[-max(1, int(window)):]) if runs else []
+    summary_count = 0
+    pressured_runs = 0
+
+    for run in recent_runs:
+        trace = getattr(run, "trace", None)
+        if trace is None and isinstance(run, dict):
+            trace = run.get("trace", [])
+        if not isinstance(trace, list):
+            continue
+
+        found_pressure = False
+        for event in trace:
+            if not isinstance(event, dict):
+                continue
+            if event.get("event") != "runtime_build_action_summary":
+                continue
+            summary = event.get("summary")
+            if not isinstance(summary, dict):
+                continue
+            count = int(summary.get("count", 0) or 0)
+            summary_count += count
+            if count > 0:
+                found_pressure = True
+        if found_pressure:
+            pressured_runs += 1
+
+    return {
+        "window": len(recent_runs),
+        "build_action_count": summary_count,
+        "pressured_runs": pressured_runs,
+        "has_pressure": summary_count > 0,
+    }
