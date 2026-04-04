@@ -1057,10 +1057,8 @@ def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -
         target = repo_root / ERROR_DIGEST_RUNTIME_PATH
         existing = self._read_text(target)
 
-        if "def summarize_traceback_excerpt(" in existing:
-            return None
-
-        function_block = """
+        if "def summarize_traceback_excerpt(" not in existing:
+            function_block = """
 
 
 def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
@@ -1072,15 +1070,47 @@ def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any
         "last_line": tail[-1] if tail else "",
     }
 """
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=ERROR_DIGEST_RUNTIME_PATH,
+                    title="Append traceback extraction helper to error_digest",
+                    description="Append a bounded traceback excerpt helper to the existing error digest runtime helper using regex_replace.",
+                    function_name="summarize_traceback_excerpt",
+                    function_block=function_block,
+                )
+
+        if "def summarize_error_paths(" not in existing:
+            function_block = """
+
+
+def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        path = str(item.get("path", "")).strip()
+        if not path:
+            continue
+        paths[path] = paths.get(path, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=ERROR_DIGEST_RUNTIME_PATH,
+                    title="Append error-path summary helper to error_digest",
+                    description="Append a bounded helper that summarizes recurring error paths on the existing error digest runtime helper using regex_replace.",
+                    function_name="summarize_error_paths",
+                    function_block=function_block,
+                )
 
         if target.exists():
-            return self._append_regex_patch_action(
-                path=ERROR_DIGEST_RUNTIME_PATH,
-                title="Append traceback extraction helper to error_digest",
-                description="Append a bounded traceback excerpt helper to the existing error digest runtime helper using regex_replace.",
-                function_name="summarize_traceback_excerpt",
-                function_block=function_block,
-            )
+            return None
 
         new_content = """from __future__ import annotations
 
@@ -1115,10 +1145,28 @@ def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any
         "excerpt": tail,
         "last_line": tail[-1] if tail else "",
     }
+
+
+def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        path = str(item.get("path", "")).strip()
+        if not path:
+            continue
+        paths[path] = paths.get(path, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
 """
         return SelfEvolutionAction(
             title="Add runtime error digest helper",
-            description="Create a bounded runtime helper that summarizes recent error-class events for safer diagnostics.",
+            description="Create a bounded runtime helper that summarizes recent error-class events and recurring error paths for safer diagnostics.",
             risk="safe",
             patches=[
                 PatchAction(
