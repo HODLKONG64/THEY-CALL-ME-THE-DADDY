@@ -14,10 +14,25 @@ class PlannedSelfEvolution:
 
 
 class ImprovementPlanner:
-    RECENT_SUMMARY_WINDOW = 6
+    """
+    Planner-level pressure control.
+
+    This version does not just look at whether build actions exist.
+    It reads recent runtime summaries and uses them to steer:
+
+    - mode selection
+    - self-evolution aggressiveness
+    - build-vs-repair preference when the repo is green but stalled
+
+    The goal is to stop the system from sitting in a healthy no-op loop
+    when build pressure stays active and patch velocity is flat.
+    """
+
+    RECENT_SUMMARY_WINDOW = 8
     NO_PATCH_STREAK_THRESHOLD = 3
     LOW_SUCCESS_RATE_THRESHOLD = 0.8
     BUILD_PRESSURE_THRESHOLD = 1
+    HIGH_BUILD_PRESSURE_THRESHOLD = 3
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -54,42 +69,29 @@ class ImprovementPlanner:
                     return summary
         return None
 
-    def _recent_patch_velocity_summary(self, state: Any) -> dict[str, Any] | None:
+    def _latest_summary(self, state: Any, event_name: str) -> dict[str, Any] | None:
         runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
         for run in reversed(runs):
-            summary = self._summary_event(run, "runtime_patch_velocity_summary")
+            summary = self._summary_event(run, event_name)
             if summary:
                 return summary
         return None
+
+    def _recent_patch_velocity_summary(self, state: Any) -> dict[str, Any] | None:
+        return self._latest_summary(state, "runtime_patch_velocity_summary")
 
     def _recent_run_health_summary(self, state: Any) -> dict[str, Any] | None:
-        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
-        for run in reversed(runs):
-            summary = self._summary_event(run, "runtime_run_health_summary")
-            if summary:
-                return summary
-        return None
+        return self._latest_summary(state, "runtime_run_health_summary")
 
     def _recent_build_action_summary(self, state: Any) -> dict[str, Any] | None:
-        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
-        for run in reversed(runs):
-            summary = self._summary_event(run, "runtime_build_action_summary")
-            if summary:
-                return summary
-        return None
+        return self._latest_summary(state, "runtime_build_action_summary")
 
     def _recent_build_pressure_summary(self, state: Any) -> dict[str, Any] | None:
-        runs = self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)
-        for run in reversed(runs):
-            summary = self._summary_event(run, "runtime_build_pressure_summary")
-            if summary:
-                return summary
-        return None
+        return self._latest_summary(state, "runtime_build_pressure_summary")
 
     def _recent_no_patch_streak(self, state: Any) -> int:
         streak = 0
         for run in reversed(self._recent_runs(state, self.RECENT_SUMMARY_WINDOW)):
-            patch_count = 0
             if isinstance(run, dict):
                 patch_count = int(run.get("patch_count", 0) or 0)
             else:
@@ -100,17 +102,30 @@ class ImprovementPlanner:
             streak += 1
         return streak
 
-    def _has_recent_build_summary_pressure(self, state: Any) -> bool:
-        summary = self._recent_build_action_summary(state)
-        if not summary:
-            return False
-        return int(summary.get("count", 0) or 0) > 0
-
-    def _has_recent_build_pressure(self, state: Any) -> bool:
+    def _build_pressure_score(self, state: Any) -> int:
         summary = self._recent_build_pressure_summary(state)
         if summary:
-            return bool(summary.get("active", False)) and int(summary.get("pressure_score", 0) or 0) >= self.BUILD_PRESSURE_THRESHOLD
-        return self._has_recent_build_summary_pressure(state)
+            return int(summary.get("pressure_score", 0) or 0)
+
+        fallback = self._recent_build_action_summary(state)
+        if fallback:
+            return int(fallback.get("count", 0) or 0)
+
+        return 0
+
+    def _build_pressure_active(self, state: Any) -> bool:
+        summary = self._recent_build_pressure_summary(state)
+        if summary:
+            return bool(summary.get("active", False)) and self._build_pressure_score(state) >= self.BUILD_PRESSURE_THRESHOLD
+
+        fallback = self._recent_build_action_summary(state)
+        if fallback:
+            return int(fallback.get("count", 0) or 0) > 0
+
+        return False
+
+    def _high_build_pressure(self, state: Any) -> bool:
+        return self._build_pressure_score(state) >= self.HIGH_BUILD_PRESSURE_THRESHOLD
 
     def plan_self_evolution(
         self,
@@ -143,7 +158,7 @@ class ImprovementPlanner:
                 reasons=["No valid safe actions found"],
             )
 
-        effective_max = max_actions
+        effective_max = max(1, int(max_actions))
         reasons: list[str] = []
 
         if memory is not None:
@@ -151,6 +166,8 @@ class ImprovementPlanner:
             patch_velocity = self._recent_patch_velocity_summary(state)
             run_health = self._recent_run_health_summary(state)
             build_pressure = self._recent_build_pressure_summary(state)
+            build_pressure_score = self._build_pressure_score(state)
+            no_patch_streak = self._recent_no_patch_streak(state)
 
             if patch_velocity:
                 runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
@@ -172,8 +189,32 @@ class ImprovementPlanner:
 
             if build_pressure and bool(build_pressure.get("active", False)):
                 reasons.append(
-                    f"Build pressure remains active with pressure_score={int(build_pressure.get('pressure_score', 0) or 0)}."
+                    f"Build pressure remains active with pressure_score={build_pressure_score}."
                 )
+
+            # Planner-level pressure control:
+            # if the repo is green, stalled, and pressure is meaningful,
+            # keep exactly one safe action alive rather than drifting back to no-op.
+            if (
+                self._build_pressure_active(state)
+                and no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD
+            ):
+                effective_max = max(1, min(effective_max, 1))
+                reasons.append(
+                    f"No-patch streak={no_patch_streak} with active build pressure; preserving one bounded self-evolution action."
+                )
+
+            # If pressure is very high and health is still good, allow up to 2 actions.
+            if self._high_build_pressure(state):
+                if run_health:
+                    success_rate = float(run_health.get("success_rate", 0) or 0)
+                else:
+                    success_rate = 1.0
+                if success_rate >= 0.95:
+                    effective_max = max(effective_max, min(2, len(safe_actions), max_actions))
+                    reasons.append(
+                        f"High build pressure detected (pressure_score={build_pressure_score}) with strong health; allowing up to {effective_max} safe actions."
+                    )
 
         if effective_max <= 0:
             return PlannedSelfEvolution(
@@ -244,8 +285,8 @@ class ImprovementPlanner:
         patch_velocity = self._recent_patch_velocity_summary(state)
         run_health = self._recent_run_health_summary(state)
         no_patch_streak = self._recent_no_patch_streak(state)
-        has_build_summary_pressure = self._has_recent_build_summary_pressure(state)
-        has_build_pressure = self._has_recent_build_pressure(state)
+        build_pressure_active = self._build_pressure_active(state)
+        build_pressure_score = self._build_pressure_score(state)
 
         if run_health:
             success_rate = float(run_health.get("success_rate", 0) or 0)
@@ -253,13 +294,19 @@ class ImprovementPlanner:
             if sample_size > 0 and success_rate < self.LOW_SUCCESS_RATE_THRESHOLD:
                 return "repair"
 
+        # Planner-level pressure control:
+        # stay in build when the repo is healthy but stalled under active pressure.
         if patch_velocity:
             runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
             sample_size = int(patch_velocity.get("sample_size", 0) or 0)
 
             if sample_size > 0 and runs_with_patches == 0:
-                if has_build_pressure or has_build_summary_pressure or no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD:
+                if build_pressure_active or no_patch_streak >= self.NO_PATCH_STREAK_THRESHOLD:
                     return "build"
+
+        # Strong pressure can keep build mode alive even without patch-velocity summary.
+        if build_pressure_active and build_pressure_score >= self.BUILD_PRESSURE_THRESHOLD:
+            return "build"
 
         planned_work = getattr(state, "planned_work", None)
         if isinstance(planned_work, list):
