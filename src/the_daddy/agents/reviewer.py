@@ -1537,6 +1537,59 @@ def summarize_architecture_targets(files_touched: list[str] | None = None) -> di
 
         return sample_size > 0 and runs_with_patches == 0 and build_action_count > 0
 
+
+    def _forced_helper_priority_order(self) -> list[str]:
+        return [
+            ERROR_DIGEST_RUNTIME_PATH,
+            RUN_HEALTH_RUNTIME_PATH,
+            FALLBACK_RUNTIME_PATH,
+            ARCHITECTURE_RUNTIME_PATH,
+            PROACTIVE_RUNTIME_PATH,
+        ]
+
+    def _make_forced_helper_action(self, repo_root: Path, helper_path: str) -> SelfEvolutionAction | None:
+        if helper_path == ERROR_DIGEST_RUNTIME_PATH:
+            return self._error_digest_action(repo_root)
+        if helper_path == RUN_HEALTH_RUNTIME_PATH:
+            return self._run_health_action(repo_root)
+        if helper_path == FALLBACK_RUNTIME_PATH:
+            return self._fallback_patch_action(repo_root)
+        if helper_path == PROACTIVE_RUNTIME_PATH:
+            return self._proactive_runtime_action(repo_root)
+        if helper_path == ARCHITECTURE_RUNTIME_PATH:
+            plan = self._default_architecture_plan(repo_root)
+            if isinstance(plan, ArchitecturePlan) and plan.patch_bundle:
+                return SelfEvolutionAction(
+                    title=plan.title,
+                    description=plan.summary,
+                    risk="safe",
+                    patches=list(plan.patch_bundle),
+                )
+            return None
+        return None
+
+    def _forced_helper_pressure_action(
+        self,
+        *,
+        repo_root: Path,
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[SelfEvolutionAction | None, str, str]:
+        cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
+
+        for helper_path in self._forced_helper_priority_order():
+            if helper_path in cooldown_paths:
+                continue
+            action = self._make_forced_helper_action(repo_root, helper_path)
+            if action is not None and bool(getattr(action, "patches", [])):
+                return action, helper_path, "Forced bounded helper injection selected from runtime summary pressure."
+
+        for helper_path in self._forced_helper_priority_order():
+            action = self._make_forced_helper_action(repo_root, helper_path)
+            if action is not None and bool(getattr(action, "patches", [])):
+                return action, helper_path, "Forced bounded helper injection selected after exhausting cooldown-safe helper lanes."
+
+        return None, "", ""
+
     def _build_prompt(
         self,
         memory_snapshot: dict[str, Any],
@@ -1843,36 +1896,21 @@ Repository snapshot:
                         break
                     continue
 
-                if isinstance(candidate, SelfEvolutionAction):
+                if isinstance(candidate, SelfEvolutionAction) and bool(getattr(candidate, "patches", [])):
                     chosen_action = candidate
                     chosen_note = note
                     chosen_path = helper_path
                     break
 
             if chosen_action is None and forced_pressure:
-                for helper_path in preferred_order:
-                    candidate, note = helper_candidates.get(helper_path, (None, ""))
-                    if candidate is None:
-                        continue
-
-                    if helper_path == ARCHITECTURE_RUNTIME_PATH and isinstance(candidate, ArchitecturePlan):
-                        if candidate.patch_bundle:
-                            chosen_action = SelfEvolutionAction(
-                                title=candidate.title,
-                                description=candidate.summary,
-                                risk="safe",
-                                patches=list(candidate.patch_bundle),
-                            )
-                            chosen_note = note
-                            chosen_path = helper_path
-                            break
-                        continue
-
-                    if isinstance(candidate, SelfEvolutionAction):
-                        chosen_action = candidate
-                        chosen_note = note
-                        chosen_path = helper_path
-                        break
+                forced_action, forced_path, forced_note = self._forced_helper_pressure_action(
+                    repo_root=repo_root,
+                    memory_snapshot=memory_snapshot,
+                )
+                if forced_action is not None:
+                    chosen_action = forced_action
+                    chosen_note = forced_note
+                    chosen_path = forced_path
 
             if chosen_action is not None:
                 review.self_evolution_actions = [chosen_action]
