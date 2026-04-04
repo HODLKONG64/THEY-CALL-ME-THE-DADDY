@@ -560,6 +560,7 @@ class DaddyEngine:
                 prior_runs.append(dict(item))
 
         run_payloads = prior_runs[-19:] + [self._run_payload(record)]
+        build_action_payloads = self._build_action_payloads(review)
 
         summarize_trace = getattr(trace_summary_runtime, "summarize_trace", None)
         if callable(summarize_trace):
@@ -585,11 +586,21 @@ class DaddyEngine:
 
         summarize_build_action_titles = getattr(trace_summary_runtime, "summarize_build_action_titles", None)
         if callable(summarize_build_action_titles):
-            build_action_summary = summarize_build_action_titles(self._build_action_payloads(review))
+            build_action_summary = summarize_build_action_titles(build_action_payloads)
             record.trace.append(
                 {
                     "event": "runtime_build_action_summary",
                     "summary": build_action_summary,
+                }
+            )
+
+        summarize_build_action_pressure = getattr(trace_summary_runtime, "summarize_build_action_pressure", None)
+        if callable(summarize_build_action_pressure):
+            build_pressure_summary = summarize_build_action_pressure(build_action_payloads)
+            record.trace.append(
+                {
+                    "event": "runtime_build_pressure_summary",
+                    "summary": build_pressure_summary,
                 }
             )
 
