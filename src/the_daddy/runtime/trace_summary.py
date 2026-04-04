@@ -109,8 +109,8 @@ def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) 
         "first_path": ranked[0][0] if ranked else "",
     }
 
+
 def summarize_build_pressure_source(build_pressure_summary: dict | None, build_action_summary: dict | None) -> dict[str, object]:
-    """Return a tiny normalized view of build-pressure provenance."""
     pressure_summary = build_pressure_summary if isinstance(build_pressure_summary, dict) else {}
     action_summary = build_action_summary if isinstance(build_action_summary, dict) else {}
 

@@ -47,6 +47,7 @@ def summarize_fallback_lane_status(
         "has_pressure": bool(titles) or bool(helper_paths),
     }
 
+
 def summarize_fallback_pressure_targets(build_actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     items = build_actions or []
     targets: list[str] = []
