@@ -995,6 +995,37 @@ def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -
                     function_block=function_block,
                 )
 
+        if "def summarize_build_pressure_paths(" not in existing:
+            function_block = """
+
+
+def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if not path_text:
+                continue
+            paths[path_text] = paths.get(path_text, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
+"""
+            if target.exists():
+                return self._append_regex_patch_action(
+                    path=PROACTIVE_RUNTIME_PATH,
+                    title="Append build-pressure path summary helper",
+                    description="Append a bounded helper that summarizes build-pressure related files on the existing trace summary runtime helper using regex_replace.",
+                    function_name="summarize_build_pressure_paths",
+                    function_block=function_block,
+                )
+
         if target.exists():
             return None
 
@@ -1037,6 +1068,25 @@ def summarize_build_action_titles(actions: list[dict[str, Any]] | None = None) -
         "count": len(titles),
         "titles": titles[:10],
         "first_title": titles[0] if titles else "",
+    }
+
+
+def summarize_build_pressure_paths(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if not path_text:
+                continue
+            paths[path_text] = paths.get(path_text, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
     }
 """
         return SelfEvolutionAction(
@@ -1574,17 +1624,22 @@ def summarize_architecture_targets(files_touched: list[str] | None = None) -> di
 
     def _has_forced_helper_pressure(self, memory_snapshot: dict[str, Any]) -> bool:
         patch_velocity = self._recent_trace_summary(memory_snapshot, "runtime_patch_velocity_summary")
+        build_pressure_summary = self._recent_trace_summary(memory_snapshot, "runtime_build_pressure_summary")
         build_action_summary = self._recent_trace_summary(memory_snapshot, "runtime_build_action_summary")
 
-        if not patch_velocity or not build_action_summary:
+        if not patch_velocity:
             return False
 
         runs_with_patches = int(patch_velocity.get("runs_with_patches", 0) or 0)
         sample_size = int(patch_velocity.get("sample_size", 0) or 0)
-        build_action_count = int(build_action_summary.get("count", 0) or 0)
 
-        return sample_size > 0 and runs_with_patches == 0 and build_action_count > 0
+        pressure_active = False
+        if build_pressure_summary:
+            pressure_active = bool(build_pressure_summary.get("active", False)) and int(build_pressure_summary.get("pressure_score", 0) or 0) > 0
+        elif build_action_summary:
+            pressure_active = int(build_action_summary.get("count", 0) or 0) > 0
 
+        return sample_size > 0 and runs_with_patches == 0 and pressure_active
 
     def _forced_helper_priority_order(self) -> list[str]:
         return [
@@ -1635,6 +1690,45 @@ def summarize_architecture_targets(files_touched: list[str] | None = None) -> di
             action = self._make_forced_helper_action(repo_root, helper_path)
             if action is not None and bool(getattr(action, "patches", [])):
                 return action, helper_path, "Forced bounded helper injection selected after exhausting cooldown-safe helper lanes."
+
+        return None, "", ""
+
+
+    def _bridge_build_pressure_action(
+        self,
+        *,
+        repo_root: Path,
+        memory_snapshot: dict[str, Any],
+    ) -> tuple[SelfEvolutionAction | None, str, str]:
+        pressure_summary = self._recent_trace_summary(memory_snapshot, "runtime_build_pressure_summary")
+        if not pressure_summary:
+            return None, "", ""
+
+        related_files = [str(path).strip() for path in pressure_summary.get("related_files", []) or [] if str(path).strip()]
+        if not related_files:
+            return None, "", ""
+
+        helper_map = {
+            ERROR_DIGEST_RUNTIME_PATH: ERROR_DIGEST_RUNTIME_PATH,
+            RUN_HEALTH_RUNTIME_PATH: RUN_HEALTH_RUNTIME_PATH,
+            FALLBACK_RUNTIME_PATH: FALLBACK_RUNTIME_PATH,
+            ARCHITECTURE_RUNTIME_PATH: ARCHITECTURE_RUNTIME_PATH,
+            PROACTIVE_RUNTIME_PATH: PROACTIVE_RUNTIME_PATH,
+        }
+
+        for related_path in related_files:
+            normalized = self._normalize_path(related_path)
+            helper_path = helper_map.get(normalized)
+            if not helper_path:
+                continue
+            action = self._make_forced_helper_action(repo_root, helper_path)
+            if action is not None and bool(getattr(action, "patches", [])):
+                return action, helper_path, "Grounded build-pressure bridge converted helper intent into a concrete bounded patch."
+
+        if PROACTIVE_RUNTIME_PATH in related_files or any(self._normalize_path(path) == PROACTIVE_RUNTIME_PATH for path in related_files):
+            action = self._make_forced_helper_action(repo_root, PROACTIVE_RUNTIME_PATH)
+            if action is not None and bool(getattr(action, "patches", [])):
+                return action, PROACTIVE_RUNTIME_PATH, "Grounded build-pressure bridge used trace summary helper contents from disk to construct a concrete bounded patch."
 
         return None, "", ""
 
@@ -1910,6 +2004,11 @@ Repository snapshot:
                 repo_root=repo_root,
                 memory_snapshot=memory_snapshot,
             )
+            if forced_action is None or not bool(getattr(forced_action, "patches", [])):
+                forced_action, forced_path, forced_note = self._bridge_build_pressure_action(
+                    repo_root=repo_root,
+                    memory_snapshot=memory_snapshot,
+                )
             if forced_action is not None and bool(getattr(forced_action, "patches", [])):
                 review.self_evolution_actions = [forced_action]
                 review.execution_notes.append(
