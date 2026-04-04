@@ -32,3 +32,22 @@ def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any
         "excerpt": tail,
         "last_line": tail[-1] if tail else "",
     }
+
+
+
+def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    paths: dict[str, int] = {}
+
+    for item in items:
+        path = str(item.get("path", "")).strip()
+        if not path:
+            continue
+        paths[path] = paths.get(path, 0) + 1
+
+    ranked = sorted(paths.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "path_count": len(paths),
+        "top_paths": ranked[:10],
+        "first_path": ranked[0][0] if ranked else "",
+    }
