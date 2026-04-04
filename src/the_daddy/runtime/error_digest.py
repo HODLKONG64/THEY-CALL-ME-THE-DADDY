@@ -23,7 +23,6 @@ def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, An
     }
 
 
-
 def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
     lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
     tail = lines[-max_lines:]
@@ -32,7 +31,6 @@ def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any
         "excerpt": tail,
         "last_line": tail[-1] if tail else "",
     }
-
 
 
 def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -68,4 +66,22 @@ def summarize_error_messages(events: list[dict[str, Any]] | None = None) -> dict
         "message_count": len(counts),
         "top_messages": ranked[:10],
         "first_message": ranked[0][0] if ranked else "",
+    }
+
+
+def summarize_error_event_kinds(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    counts: dict[str, int] = {}
+
+    for item in items:
+        event = str(item.get("event", "")).strip()
+        if not event:
+            continue
+        counts[event] = counts.get(event, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "kind_count": len(counts),
+        "top_kinds": ranked[:10],
+        "first_kind": ranked[0][0] if ranked else "",
     }
