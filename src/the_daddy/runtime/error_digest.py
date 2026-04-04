@@ -51,3 +51,21 @@ def summarize_error_paths(events: list[dict[str, Any]] | None = None) -> dict[st
         "top_paths": ranked[:10],
         "first_path": ranked[0][0] if ranked else "",
     }
+
+
+def summarize_error_messages(events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = events or []
+    counts: dict[str, int] = {}
+
+    for item in items:
+        message = str(item.get("error", "")).strip()
+        if not message:
+            continue
+        counts[message] = counts.get(message, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "message_count": len(counts),
+        "top_messages": ranked[:10],
+        "first_message": ranked[0][0] if ranked else "",
+    }
