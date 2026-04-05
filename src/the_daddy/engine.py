@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from .agents.diagnoser import Diagnoser
@@ -88,13 +87,22 @@ class DaddyEngine:
     def choose_mode(self, review):
         return self.planner.decide_mode(self.memory, review)
 
+    def _normalize_path(self, value: str) -> str:
+        return str(value or "").replace("\\", "/").strip().lower()
+
+    def _normalized_target_files(self, items: list[str]) -> list[str]:
+        out: list[str] = []
+        for item in items:
+            if not str(item).strip():
+                continue
+            norm = _resolve_upgrade_path(self._normalize_path(str(item)))
+            if norm and norm not in out:
+                out.append(norm)
+        return out
+
     def _enforce_upgrade_gate(self, record: RunRecord) -> None:
         advice = validate_upgrade_gate_for_settings(self.settings)
-        normalized_targets = [
-            _resolve_upgrade_path(self._normalize_path(item))
-            for item in list(advice.get("target_files", []) or [])
-            if str(item).strip()
-        ]
+        normalized_targets = self._normalized_target_files(list(advice.get("target_files", []) or []))
         advice["target_files"] = normalized_targets
         self.upgrade_advice = advice
         self.repair_mode_active = bool(advice.get("repair_mode", False))
@@ -110,25 +118,16 @@ class DaddyEngine:
             }
         )
 
-    def _normalize_path(self, value: str) -> str:
-        return str(value or "").replace("\\", "/").strip().lower()
-
     def _repair_mode_target_matches(self, patch_path: str, target_files: list[str]) -> bool:
         patch_norm = _resolve_upgrade_path(self._normalize_path(patch_path))
         if not patch_norm:
             return False
 
-        normalized_targets = [
-            _resolve_upgrade_path(self._normalize_path(item))
-            for item in target_files
-            if str(item).strip()
-        ]
+        normalized_targets = self._normalized_target_files(target_files)
         if not normalized_targets:
             return False
 
         for target in normalized_targets:
-            if not target:
-                continue
             if patch_norm == target:
                 return True
             if patch_norm.endswith(target):
@@ -140,12 +139,8 @@ class DaddyEngine:
     def _required_execution_targets(self) -> list[str]:
         if not self.upgrade_advice:
             return []
-        targets = [
-            _resolve_upgrade_path(self._normalize_path(item))
-            for item in list(self.upgrade_advice.get("target_files", []) or [])
-            if str(item).strip()
-        ]
-        allowed = {_resolve_upgrade_path(self._normalize_path(item)) for item in EXECUTION_PATH_TARGETS}
+        targets = self._normalized_target_files(list(self.upgrade_advice.get("target_files", []) or []))
+        allowed = {self._normalize_path(item) for item in EXECUTION_PATH_TARGETS}
         return [target for target in targets if target in allowed]
 
     def _repair_mode_completion_satisfied(self, record: RunRecord) -> bool:
@@ -267,7 +262,7 @@ class DaddyEngine:
         if same_reason_count < self._stuck_same_reason_limit():
             return []
 
-        target_files = list(self.upgrade_advice.get("target_files", []) or [])
+        target_files = self._normalized_target_files(list(self.upgrade_advice.get("target_files", []) or []))
         snapshots = self._target_file_snapshots()
         if not snapshots:
             record.trace.append(
@@ -295,10 +290,7 @@ class DaddyEngine:
             file_snapshots=snapshots,
         )
 
-        allowed_targets = {
-            _resolve_upgrade_path(self._normalize_path(path))
-            for path in target_files
-        }
+        allowed_targets = {self._normalize_path(path) for path in target_files}
         filtered = [
             change for change in list(plan.get("changes", []) or [])
             if _resolve_upgrade_path(self._normalize_path(getattr(change, "path", ""))) in allowed_targets

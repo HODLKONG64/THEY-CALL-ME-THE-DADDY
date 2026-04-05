@@ -88,11 +88,11 @@ class DoctorExecutor:
         trace_tail: list[dict[str, Any]] | None = None,
         file_snapshots: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        target_files = [
-            _resolve_upgrade_path(self._normalize_path(item))
-            for item in list(advice.get("target_files", []) or [])
-            if str(item).strip()
-        ]
+        target_files = []
+        for item in list(advice.get("target_files", []) or []):
+            if not str(item).strip():
+                continue
+            target_files.append(_resolve_upgrade_path(self._normalize_path(str(item))))
 
         changes: list[PatchAction] = []
 
