@@ -8,6 +8,7 @@ from typing import Any
 from ..config import Settings
 from ..core.self_check import summarize_self_check
 from ..core.conflict_recovery import summarize_conflict_state, build_conflict_recovery_plan
+from ..core.failure_parser import summarize_failure_signal
 from ..models import (
     ArchitecturePlan,
     ArchitectureReview,
@@ -613,12 +614,13 @@ class WakeReviewer:
         rules = self._load_rules()
         return bool(rules.get("rules", {}).get("recover_on_merge_conflict", False))
 
-    def _repo_snapshot(self, repo_root: Path) -> dict[str, Any]:
+    def _repo_snapshot(self, repo_root: Path, extra_preview_paths: list[str] | None = None) -> dict[str, Any]:
         tracked: list[str] = []
         preview_files: list[dict[str, str]] = []
         preview_paths: set[str] = set()
         ignored_parts = {".git", ".venv", "venv", "__pycache__", "doctor_local", ".pytest_cache", "build", "dist"}
         forced_preview_paths = set(ALLOWLISTED_RUNTIME_HELPERS) | {PRESSURE_ESCALATION_TARGET_PATH}
+        forced_preview_paths |= {self._normalize_path(path) for path in (extra_preview_paths or []) if self._normalize_path(path)}
 
         for path in sorted(repo_root.rglob("*")):
             if not path.is_file():
@@ -1596,9 +1598,32 @@ def summarize_pressure_escalation_decision(
         review.execution_notes.append("Reviewer output drifted onto invalid targets and no allowlisted helper remained available.")
         return review
 
-    def _build_prompt(self, memory_snapshot: dict[str, Any], repo_snapshot: dict[str, Any], recent_summary: str) -> str:
+    def _recent_failure_signal(self, memory_snapshot: dict[str, Any]) -> dict[str, Any]:
+        runs = memory_snapshot.get("runs", []) or []
+        for run in reversed(runs[-8:]):
+            if not isinstance(run, dict):
+                continue
+            if bool(run.get("success", False)):
+                continue
+            summary = summarize_failure_signal(run)
+            if summary.get("has_signal", False):
+                return summary
+        return {
+            "run_id": "",
+            "failed_node": "",
+            "file_path": "",
+            "line_number": 0,
+            "function_name": "",
+            "error_type": "",
+            "error_message": "",
+            "candidate_paths": [],
+            "has_signal": False,
+        }
+
+    def _build_prompt(self, memory_snapshot: dict[str, Any], repo_snapshot: dict[str, Any], recent_summary: str, failure_signal: dict[str, Any]) -> str:
         memory_json = json.dumps(memory_snapshot, indent=2)[:18000]
         repo_json = json.dumps(repo_snapshot, indent=2)[:26000]
+        failure_json = json.dumps(failure_signal or {}, indent=2)[:4000]
 
         allowlisted_new_files = "\n".join(f"  * {path}" for path in sorted(SAFE_NEW_FILE_ALLOWLIST))
         banned_paths = "\n".join(f"  * {path}" for path in sorted(BANNED_SELF_EVOLUTION_PATHS))
@@ -1637,6 +1662,8 @@ Rules:
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
 - Level 2 safe rule: when pressure_score is high, patch velocity is weak, and run health stays strong, prefer one grounded append-only patch against an existing tracked planner file before returning to helper-only churn.
+- If recent failure_signal has a tracked source path or traceback path, prefer a targeted patch against that failing tracked file before any helper-lane keep-alive patch.
+- Use failure_signal only when it is grounded in recent verification output; do not invent file targets.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
@@ -1659,6 +1686,9 @@ Recent summary:
 
 Current memory snapshot:
 {memory_json}
+
+Recent failure signal:
+{failure_json}
 
 Repository snapshot:
 {repo_json}
@@ -1700,8 +1730,9 @@ Repository snapshot:
         if self.client is None:
             return self._fallback_review(repo_root, "OpenAI client unavailable.")
 
-        repo_snapshot = self._repo_snapshot(repo_root)
-        prompt = self._build_prompt(memory_snapshot, repo_snapshot, recent_summary)
+        failure_signal = self._recent_failure_signal(memory_snapshot)
+        repo_snapshot = self._repo_snapshot(repo_root, extra_preview_paths=failure_signal.get("candidate_paths", []))
+        prompt = self._build_prompt(memory_snapshot, repo_snapshot, recent_summary, failure_signal)
 
         try:
             data = self.client.generate_json(
@@ -1738,6 +1769,11 @@ Repository snapshot:
         if action_notes:
             review.execution_notes.extend(action_notes)
 
+        if failure_signal.get("has_signal", False):
+            review.execution_notes.append(
+                f"Recent failure context available: path={failure_signal.get('file_path', '') or failure_signal.get('failed_node', '')} error={failure_signal.get('error_type', '')}."
+            )
+
         filtered_backlog, removed_backlog = self._filter_repetitive_backlog_items(review.backlog_items, memory_snapshot)
         review.backlog_items = filtered_backlog
         if removed_backlog:
@@ -1766,6 +1802,8 @@ Repository snapshot:
         no_patch_limit = int(thresholds.get("no_patch_streak_limit", 3) or 3)
 
         if not review.self_evolution_actions:
+            if failure_signal.get("has_signal", False):
+                review.execution_notes.append("No targeted failure repair was emitted from the current grounded failure signal; helper fallback remains allowed only to keep the workflow alive.")
             metrics = self._pressure_escalation_metrics(memory_snapshot)
             if (
                 metrics.get("pressure_score", 0) >= force_pressure

@@ -19,13 +19,16 @@
     "bounded_patches_only": true,
     "recover_on_merge_conflict": true,
     "retry_smaller_after_failure": true,
-    "recover_on_next_run_after_failure": true
+    "recover_on_next_run_after_failure": true,
+    "target_recent_failure_before_helper_fallback": true
   },
   "thresholds": {
     "pressure_score_force_action": 6,
     "no_patch_streak_limit": 3,
     "max_retry_attempts": 3,
-    "success_rate_minimum": 0.7
+    "success_rate_minimum": 0.7,
+    "max_failure_recovery_lookback_runs": 2,
+    "max_proven_success_anchors": 2
   },
   "fallback_strategy": {
     "on_no_patch": "force_bounded_patch",

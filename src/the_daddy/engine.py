@@ -13,6 +13,7 @@ from .core.failure_recovery import (
     restore_from_rollback_manifest,
     summarize_failure_recovery_state,
 )
+from .core.self_check import load_rules
 from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
@@ -415,7 +416,13 @@ class DaddyEngine:
         return patches
 
     def _recover_from_previous_failures(self, record: RunRecord) -> None:
-        failed_runs = recent_failed_runs(self.memory.state, limit=3)
+        rules = load_rules()
+        thresholds = rules.get("thresholds", {})
+        failed_runs = recent_failed_runs(
+            self.memory.state,
+            limit=int(thresholds.get("max_failure_recovery_lookback_runs", 2) or 2),
+            max_success_anchors=int(thresholds.get("max_proven_success_anchors", 2) or 2),
+        )
         if not failed_runs:
             return
 

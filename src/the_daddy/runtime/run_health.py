@@ -143,17 +143,3 @@ def summarize_recent_patch_mix(
         "patchless_runs": sum(1 for count in patch_counts if count == 0),
         "total_patches": sum(patch_counts),
     }
-
-
-def recovery_tick_marker() -> dict[str, Any]:
-    return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
-    }
-
-
-def recovery_tick_marker_v2() -> dict[str, Any]:
-    return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
-    }
