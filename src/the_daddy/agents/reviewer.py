@@ -7,6 +7,7 @@ from typing import Any
 
 from ..config import Settings
 from ..core.self_check import summarize_self_check
+from ..core.conflict_recovery import summarize_conflict_state, build_conflict_recovery_plan
 from ..models import (
     ArchitecturePlan,
     ArchitectureReview,
@@ -605,6 +606,10 @@ class WakeReviewer:
         return {}
 
     def _rules_thresholds(self) -> dict[str, Any]:
+    def _conflict_rules_enabled(self) -> bool:
+        rules = self._load_rules()
+        return bool(rules.get("rules", {}).get("recover_on_merge_conflict", False))
+
         rules = self._load_rules()
         return rules.get("thresholds", {})
 
@@ -1116,6 +1121,7 @@ class WakeReviewer:
                 "Do not propose regex_replace unless the pattern exists in the current file.",
                 "Do not retry recently blocked targets immediately.",
                 "Critical planner files are append-only and protected against shrink patches.",
+                "If a PR is blocked by merge conflicts, fetch latest main, reapply the bounded patch, rerun verification, and reopen a replacement PR.",
             ],
         )
 
@@ -1905,4 +1911,23 @@ Repository snapshot:
         review.execution_notes.append(
             f"Self-check score={self_check['score']} passed={self_check['passed']} violations={','.join(self_check['violations']) or 'none'}."
         )
+        if self._conflict_rules_enabled():
+            conflict_state = summarize_conflict_state(
+                pr_has_conflicts=False,
+                changed_files=[
+                    self._normalize_path(getattr(patch, "path", ""))
+                    for action in (review.self_evolution_actions or [])
+                    for patch in (getattr(action, "patches", []) or [])
+                    if getattr(patch, "path", "")
+                ],
+                base_branch="main",
+            )
+            recovery_plan = build_conflict_recovery_plan(
+                branch_name="auto-recovery-branch",
+                changed_files=conflict_state.get("changed_files", []),
+                base_branch="main",
+            )
+            review.execution_notes.append(
+                f"Conflict recovery rule armed: requires_recovery={conflict_state['requires_recovery']} steps={','.join(recovery_plan['steps'])}."
+            )
         return review

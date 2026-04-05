@@ -67,3 +67,17 @@ The system is working when it can:
 - avoid repeating bad patches
 - continue producing safe PRs
 without human intervention.
+
+
+## Conflict recovery
+The agent must now also handle PR merge conflicts.
+
+If a PR is blocked by conflicts, the expected recovery loop is:
+1. fetch latest `main`
+2. rebase or recreate the branch
+3. reapply the bounded patch
+4. rerun verification
+5. push a replacement branch
+6. open a replacement PR
+
+A merge conflict is not treated as a terminal failure. It is a recovery event.

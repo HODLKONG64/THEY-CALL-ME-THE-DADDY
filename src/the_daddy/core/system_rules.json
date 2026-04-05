@@ -16,7 +16,8 @@
     "force_patch_under_pressure": true,
     "rollback_on_failure": true,
     "avoid_duplicate_patches": true,
-    "bounded_patches_only": true
+    "bounded_patches_only": true,
+    "recover_on_merge_conflict": true
   },
   "thresholds": {
     "pressure_score_force_action": 6,
@@ -27,7 +28,8 @@
   "fallback_strategy": {
     "on_no_patch": "force_bounded_patch",
     "on_repeat_no_patch": "shrink_patch_scope",
-    "on_failure": "rollback_and_retry_smaller"
+    "on_failure": "rollback_and_retry_smaller",
+    "on_merge_conflict": "rebase_reapply_reopen_pr"
   },
   "forbidden": [
     "large_unbounded_rewrites",
