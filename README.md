@@ -1,269 +1,311 @@
-🧠 THEY CALL ME THE DADDY :)
-Autonomous Self-Evolving Code Agent (Safe-Bounded Runtime System)
-🚀 OVERVIEW
+# 🧠 THEY CALL ME THE DADDY — Autonomous Agent System
 
-This system is a self-evolving AI runtime agent that:
+## 🔥 CURRENT STATE: PHASE 2 — SELF-REPAIR & SURVIVAL COMPLETE
 
-Executes tasks (e.g. pytest)
-Observes its own behaviour
-Generates structured runtime summaries
-Detects improvement opportunities
-Proposes safe, bounded changes
-Applies patches autonomously
-Opens and merges PRs
-Learns from its own execution history
+This system is no longer experimental.
 
-It is NOT a generic AI agent.
+The agent has reached a stable, self-healing baseline with:
 
-It is a controlled, rule-bound evolution engine designed to:
+* ✅ Continuous execution (no deadlocks, no silent failures)
+* ✅ Automatic patching & PR lifecycle (open → merge)
+* ✅ Rollback system (restore previous working state)
+* ✅ Cross-run recovery (fixes past failures before continuing)
+* ✅ Memory-backed decision system
+* ✅ Rule enforcement (no empty cycles, no idle loops)
 
-improve itself without breaking itself
+---
 
-🧩 CORE ARCHITECTURE
-1. Execution Engine
-
-Runs commands defined by:
-
-DADDY_COMMAND=pytest -q
-
-Outputs:
-
-success/failure
-trace events
-patch results
-summaries
-2. Runtime Trace System
-
-Every run produces a structured trace:
-
-trace: [
-  proposed_actions
-  patch_scoring
-  runtime_trace_summary
-  runtime_build_action_summary
-  runtime_build_pressure_summary
-  runtime_run_health_summary
-  runtime_patch_velocity_summary
-  runtime_fallback_reason_summary
-]
-
-This is the brain memory of the agent per run.
-
-3. Summary Layer (CORE INTELLIGENCE)
-
-All intelligence is derived from runtime summaries.
-
-🔹 Trace Summary
-event counts
-last action
-execution shape
-🔹 Build Action Summary
-tracks intended improvements
-titles of pending actions
-🔹 Build Pressure Summary (IMPORTANT)
-detects unapplied improvements
-tracks:
-related files
-pressure score
-active status
-🔹 Build Pressure Paths (NEW)
-identifies where pressure is accumulating
-maps pressure → files
-🔹 Run Health Summary
-success rate
-recent runs
-stability signal
-🔹 Patch Velocity Summary
-patch frequency
-detects stagnation
-🔁 SELF-EVOLUTION SYSTEM
-Trigger Conditions
-
-Self-evolution activates when:
-
-repo is stable (tests passing)
-improvement opportunity exists
-patch is safe + bounded
-not blocked by rules
-Key Behaviour
-
-The agent can:
-
-Propose actions
-Score patches
-Select safe route
-Apply patch
-Open PR
-Merge automatically
-🔥 Critical Upgrade (NEW)
-
-The system now includes:
-
-Pressure → Action Conversion
-
-If:
-
-patch velocity is low
-build pressure is active
-
-Then:
-
-Forced helper override engaged
-→ bounded helper patch is generated
-→ applied automatically
-
-This is the breakthrough that makes the system actually evolve, not just observe.
-
-🛡️ SAFETY RULES
-
-The system is heavily constrained.
-
-❌ BANNED
-wake-review invariant tests
-wake-review output tests
-wake-review contract tests
-self-evolution existence tests
-command runner modifications
-blind file replacement (replace_file on existing files)
-✅ ALLOWED
-existing runtime helper files
-small bounded patches
-append-only modifications
-regex-based injections
-observability improvements
-SAFE ZONES
-src/the_***/runtime/trace_summary.py
-src/the_***/runtime/error_digest.py
-src/the_***/runtime/run_health.py
-🧠 DECISION MODEL
-
-The agent prioritises:
-
-Runtime improvements over docs
-Helpers over core logic
-Observability over complexity
-Safe patches over risky refactors
-⚙️ ENVIRONMENT VARIABLES
-OPENAI_API_KEY
-GITHUB_TOKEN
-GITHUB_REPO
-
-R2_ENDPOINT_URL
-R2_ACCESS_KEY_ID
-R2_SECRET_ACCESS_KEY
-R2_BUCKET
-
-DADDY_COMMAND=pytest -q
-DADDY_TARGET_ROOT=.
-
-DADDY_ENABLE_SELF_EVOLUTION=true
-DADDY_ENABLE_ARCHITECTURE_LANE=true
-🔄 WORKFLOW
+## 🧠 WHAT THE AGENT ACTUALLY DOES TODAY
 
 Each run:
 
-Execute command
-Collect trace
-Generate summaries
-Detect pressure
-Decide:
-do nothing
-propose patch
-force patch (if pressure high)
-Apply patch
-Open PR
-Merge PR
-Store memory
-📈 CURRENT CAPABILITIES
+1. Loads memory + previous run history
+2. Detects if a previous run failed
+3. If failure detected:
 
-✅ Self-evolution (safe)
-✅ Pressure detection
-✅ Patch generation
-✅ PR automation
-✅ Merge automation
-✅ Runtime introspection
-✅ Stability tracking
-✅ Patch velocity tracking
-✅ Error path tracking
+   * restores from rollback manifest
+   * re-verifies system
+4. Reviews repo state (`reviewer.py`)
+5. Decides action (`improvement_planner.py`)
+6. Applies bounded patch (safe only)
+7. Runs tests (`pytest`)
+8. If failure:
 
-🧪 TEST STATUS
-20 passed consistently
-Success rate: 100%
+   * rolls back current patch
+   * retries next run from clean state
+9. Opens PR
+10. Auto-merges if safe
 
-System is currently:
+---
 
-stable + evolving
+## 🔁 CORE SYSTEM LAYERS
 
-🔥 WHAT JUST GOT UNLOCKED
+### 1. ENGINE (Execution Core)
 
-The system now:
+`engine.py`
 
-detects stagnation
-forces evolution when needed
-targets correct files automatically
-generates real patches from abstract intent
+* Orchestrates entire workflow
+* Handles:
 
-This is the shift from:
+  * rollback (current + previous runs)
+  * patch application
+  * verification
+  * PR lifecycle
+  * runtime summaries
 
-❌ “thinking about improving”
-→
-✅ “actually improving itself”
+---
 
-🧭 NEXT EVOLUTION PATH
+### 2. REVIEWER (Decision Brain)
 
-These are now unlocked:
+`reviewer.py`
 
-1. Planner Integration
+* Decides what to do each run
+* Enforces rules:
 
-Use build pressure to:
+  * no idle cycles
+  * force action under pressure
+* Can:
 
-influence future action selection
-prioritise high-pressure areas
-2. Trace Amplification
+  * trigger recovery patches
+  * escalate when system stalls
 
-Surface pressure more clearly in:
+---
 
-execution_notes
-logs
-summaries
-3. Cross-Helper Intelligence
+### 3. MEMORY SYSTEM
 
-Unify:
+`memory/repository.py` + R2
 
-trace_summary
-error_digest
-run_health
+* Stores:
 
-Into a shared pressure model
+  * runs
+  * failures
+  * patches
+  * rollback data
+* Enables:
 
-4. Multi-Patch Evolution
+  * cross-run recovery
+  * learning over time
 
-Allow:
+---
 
-small batch safe patches
-still bounded, but more impactful
-⚠️ LIMITATIONS
-Cannot modify core runtime safely yet
-Requires file visibility for safe patching
-Avoids large architectural changes
-No external crawling / reasoning beyond repo
-🧠 PHILOSOPHY
+### 4. FAILURE RECOVERY (NEW — CRITICAL)
 
-This system follows one rule:
+`core/failure_recovery.py`
 
-“Improve only what you can prove is safe.”
+* Detects previous failed runs
+* Restores last known good state
+* Verifies before continuing
 
-No guessing.
-No breaking.
-No overreach.
+This is what makes the system:
 
-🏁 SUMMARY
+> **self-healing across time, not just within one run**
+
+---
+
+### 5. SELF-CHECK SYSTEM
+
+`core/self_check.py`
+
+* Scores each run
+* Enforces:
+
+  * no empty cycles
+  * action under pressure
+* Prevents agent stagnation
+
+---
+
+### 6. CONFLICT RECOVERY
+
+`core/conflict_recovery.py`
+
+* Prepares system for:
+
+  * PR conflicts
+  * rebase + reapply logic
+
+---
+
+### 7. SYSTEM RULES
+
+`core/system_rules.json`
+
+Defines:
+
+* thresholds
+* fallback strategies
+* forbidden behaviors
+
+---
+
+## ⚠️ WHAT THE AGENT DOES NOT DO (YET)
+
+This is important.
+
+The agent currently **does NOT**:
+
+* ❌ intelligently fix failing tests
+* ❌ isolate root-cause bugs
+* ❌ perform deep code reasoning
+* ❌ target specific broken functions
+
+Instead it:
+
+> keeps system alive, stable, and progressing
+
+---
+
+## 🧭 CURRENT LIMITATION
+
+When failure happens, agent logic is:
+
+```
+failure → rollback → safe patch → continue
+```
+
+NOT:
+
+```
+failure → identify bug → fix bug → retry
+```
+
+---
+
+## 🚀 PHASE 3 (NEXT REQUIRED STEP)
+
+### 👉 FAILURE-DRIVEN REPAIR INTELLIGENCE
+
+Before adding any new role (crawler, coder, etc.), this MUST be built.
+
+---
+
+## 🔧 REQUIRED UPGRADE
+
+### 1. FAILURE PARSING
+
+Agent must read:
+
+* pytest output
+* stack traces
+* error messages
+
+Extract:
+
+* file path
+* function name
+* error type
+
+---
+
+### 2. TARGETED PATCHING
+
+Instead of random helper patches:
+
+* patch only failing file
+* minimal scoped fix
+* avoid touching unrelated files
+
+---
+
+### 3. RETRY LOOP
+
+```
+attempt fix → test → fail → refine → retry
+```
+
+---
+
+### 4. ESCALATION LADDER
+
+* small patch
+* refined patch
+* fallback to rollback
+* try alternate approach
+
+---
+
+### 5. DOCTOR AGENT EVOLUTION
+
+Doctor becomes:
+
+* debugger
+* failure interpreter
+* patch generator
+
+---
+
+## 🧠 FINAL STATE BEFORE PHASE 2 ROLE
+
+You should NOT assign a main role (crawler, coder, etc.) until:
+
+* agent can fix at least simple test failures automatically
+* agent can retry intelligently
+* agent reduces reliance on fallback patches
+
+---
+
+## 🚫 DO NOT DO YET
+
+Do NOT:
+
+* add web crawler
+* add external integrations
+* expand capabilities
+
+Until repair intelligence is complete.
+
+Otherwise:
+
+> you scale instability
+
+---
+
+## ✅ READY FOR PHASE 2 WHEN
+
+You see:
+
+* agent fixes failing tests without rollback
+* agent patches correct file consistently
+* agent retries before fallback
+* patch quality improves over runs
+
+---
+
+## 🧠 FINAL SUMMARY
 
 You now have:
 
-A self-aware runtime agent
-That measures its own behaviour
-Detects where improvement is needed
-Converts that into real code changes
-Ships them safely
-And learns over time
+> A self-repairing autonomous system that cannot die.
+
+You do NOT yet have:
+
+> A system that truly understands and fixes code.
+
+---
+
+## ⚡ NEXT COMMAND
+
+Build:
+
+👉 **failure-driven repair layer**
+
+Only after that:
+
+👉 assign main role (crawler, coder, etc.)
+
+---
+
+## 🔥 TRUTH
+
+Most agents fail because they:
+
+* break
+* loop
+* stall
+* corrupt themselves
+
+Yours does none of that.
+
+Now make it:
+
+> **intelligent, not just immortal**
