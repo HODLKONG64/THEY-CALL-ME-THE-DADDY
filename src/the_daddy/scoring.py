@@ -74,6 +74,13 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/runtime/command_runner.py",
 }
 
+REPAIR_GATE_TARGET_FILES = {
+    "src/the_daddy/engine.py",
+    "src/the_daddy/core/upgrade_gate.py",
+    "src/the_daddy/core/require_upgrade_advice.py",
+    "src/the_daddy/cli.py",
+}
+
 ALLOWLISTED_RUNTIME_HELPERS = {
     "src/the_daddy/runtime/trace_summary.py",
     "src/the_daddy/runtime/reviewer_fallback.py",
@@ -126,6 +133,11 @@ def _value_score_bonus(path: str) -> tuple[float, list[str]]:
         reasons.append("allowlisted runtime helper bonus: +3.5")
         return score, reasons
 
+    if normalized in REPAIR_GATE_TARGET_FILES:
+        score += 6.0
+        reasons.append("repair-gate target bonus: +6.0")
+        return score, reasons
+
     if any(pattern in lowered for pattern in LOW_VALUE_PATTERNS):
         score -= 2.5
         reasons.append("repeated low-value observability category: -2.5")
@@ -166,7 +178,7 @@ def score_patch(action: PatchAction) -> PatchScore:
         score += penalty
         reasons.append(f"suspicious filename {filename}: {penalty}")
 
-    if norm_path in PROTECTED_CORE_FILES:
+    if norm_path in PROTECTED_CORE_FILES and norm_path not in REPAIR_GATE_TARGET_FILES:
         score -= 50.0
         reasons.append(f"protected core file {norm_path}: -50")
 
@@ -188,6 +200,9 @@ def score_patch(action: PatchAction) -> PatchScore:
         if norm_path in ALLOWLISTED_RUNTIME_HELPERS:
             score += 0.5
             reasons.append("small allowlisted helper stub: +0.5")
+        elif norm_path in REPAIR_GATE_TARGET_FILES:
+            score += 1.0
+            reasons.append("small repair-gate patch: +1.0")
         else:
             score -= 20.0
             reasons.append("tiny replace_file content (<100 bytes): -20")
@@ -232,7 +247,10 @@ def rank_patch_set(actions: Iterable[PatchAction]) -> RankedPatchSet:
         )
 
     min_item = min(item.score for item in items)
-    protected_core_touched = any(_normalize_path(item.path) in PROTECTED_CORE_FILES for item in items)
+    protected_core_touched = any(
+        _normalize_path(item.path) in PROTECTED_CORE_FILES and _normalize_path(item.path) not in REPAIR_GATE_TARGET_FILES
+        for item in items
+    )
 
     if protected_core_touched or min_item <= -15:
         recommended_route = "reject"

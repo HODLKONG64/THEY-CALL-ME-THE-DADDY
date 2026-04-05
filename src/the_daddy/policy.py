@@ -64,6 +64,13 @@ PROTECTED_CORE_FILES = {
     "src/the_daddy/runtime/command_runner.py",
 }
 
+REPAIR_GATE_TARGET_FILES = {
+    "src/the_daddy/engine.py",
+    "src/the_daddy/core/upgrade_gate.py",
+    "src/the_daddy/core/require_upgrade_advice.py",
+    "src/the_daddy/cli.py",
+}
+
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
 }
@@ -142,7 +149,7 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
         if not any(path.endswith(ext) for ext in SAFE_EXTENSIONS):
             reasons.append(f"Unsafe extension: {path}")
 
-        if path in PROTECTED_CORE_FILES:
+        if path in PROTECTED_CORE_FILES and path not in REPAIR_GATE_TARGET_FILES:
             reasons.append(f"Protected core file cannot be auto-patched: {path}")
 
         if path in BANNED_SELF_EVOLUTION_PATHS:
