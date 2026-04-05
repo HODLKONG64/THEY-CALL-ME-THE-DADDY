@@ -925,6 +925,17 @@ class DaddyEngine:
 
         self._emit_runtime_summaries(record=record, review=review)
 
+        if self.repair_mode_active and not getattr(record, "patches_applied", None):
+            record.success = False
+            record.summary = "Repair mode pending required upgrade"
+            record.trace.append(
+                {
+                    "event": "repair_mode_completion_blocked",
+                    "reason": "required upgrade suggestion not completed",
+                    "target_files": list(self.upgrade_advice.get("target_files", []) or []) if self.upgrade_advice else [],
+                }
+            )
+
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:
             try:
