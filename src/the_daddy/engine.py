@@ -6,14 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-# --- PATH RESOLVER (OPENAI TARGET FIX) ---
-def _resolve_upgrade_path(path: str) -> str:
-    if not isinstance(path, str):
-        return path
-    return path.replace('the_***', 'the_daddy')
-
 from .agents.diagnoser import Diagnoser
+from .agents.doctor_executor import DoctorExecutor
 from .agents.improvement_planner import ImprovementPlanner
 from .agents.reviewer import WakeReviewer
 from .config import Settings, get_settings
@@ -23,7 +17,7 @@ from .core.failure_recovery import (
     summarize_failure_recovery_state,
 )
 from .core.self_check import load_rules
-from .core.upgrade_gate import UpgradeGateError, validate_upgrade_gate_for_settings
+from .core.upgrade_gate import validate_upgrade_gate_for_settings
 from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
@@ -39,6 +33,13 @@ from .runtime.file_tools import apply_patch_action
 from .runtime.iterative_depth_learner import IterativeDepthLearner
 from .runtime.learning_journal import build_learning_journal_entry
 from .scoring import rank_patch_set
+
+
+def _resolve_upgrade_path(path: str) -> str:
+    if not isinstance(path, str):
+        return path
+    return path.replace("the_***", "the_daddy")
+
 
 EXECUTION_PATH_TARGETS = {
     "src/the_daddy/engine.py",
@@ -59,6 +60,7 @@ class DaddyEngine:
         self.reviewer = WakeReviewer(self.settings)
         self.planner = ImprovementPlanner()
         self.diagnoser = Diagnoser(self.settings)
+        self.doctor_executor = DoctorExecutor(self.settings)
         self.merge_judge = AutoMergeJudge()
         self.depth_learner = IterativeDepthLearner(
             max_depth=getattr(self.settings, "max_depth", 3)
@@ -88,6 +90,12 @@ class DaddyEngine:
 
     def _enforce_upgrade_gate(self, record: RunRecord) -> None:
         advice = validate_upgrade_gate_for_settings(self.settings)
+        normalized_targets = [
+            _resolve_upgrade_path(self._normalize_path(item))
+            for item in list(advice.get("target_files", []) or [])
+            if str(item).strip()
+        ]
+        advice["target_files"] = normalized_targets
         self.upgrade_advice = advice
         self.repair_mode_active = bool(advice.get("repair_mode", False))
         record.trace.append(
@@ -97,7 +105,7 @@ class DaddyEngine:
                 "repair_mode": bool(advice.get("repair_mode", False)),
                 "problem_type": str(advice.get("problem_type", "")),
                 "recommended_next_step": str(advice.get("recommended_next_step", "")),
-                "target_files": list(advice.get("target_files", []) or []),
+                "target_files": normalized_targets,
                 "generated_at": str(advice.get("generated_at", "")),
             }
         )
@@ -110,7 +118,11 @@ class DaddyEngine:
         if not patch_norm:
             return False
 
-        normalized_targets = [_resolve_upgrade_path(self._normalize_path(item)) for item in target_files if str(item).strip()]
+        normalized_targets = [
+            _resolve_upgrade_path(self._normalize_path(item))
+            for item in target_files
+            if str(item).strip()
+        ]
         if not normalized_targets:
             return False
 
@@ -140,14 +152,17 @@ class DaddyEngine:
         required_targets = self._required_execution_targets()
         if not required_targets:
             return True
-        changed_files = {_resolve_upgrade_path(self._normalize_path(path)) for path in self._changed_files_from_record(record)}
+        changed_files = {
+            _resolve_upgrade_path(self._normalize_path(path))
+            for path in self._changed_files_from_record(record)
+        }
         return any(path in changed_files for path in required_targets)
 
     def _enforce_repair_mode_targets(self, patches: list, record: RunRecord) -> list:
         if not self.repair_mode_active or not self.upgrade_advice:
             return patches
 
-        target_files = [_resolve_upgrade_path(p) for p in list(self.upgrade_advice.get("target_files", []) or [])]
+        target_files = list(self.upgrade_advice.get("target_files", []) or [])
         filtered = [
             patch for patch in patches
             if self._repair_mode_target_matches(getattr(patch, "path", ""), target_files)
@@ -197,7 +212,6 @@ class DaddyEngine:
         )
         return []
 
-
     def _load_runtime_rules(self) -> dict[str, Any]:
         rules_path = self.settings.target_root / "src/the_daddy/core/system_rules.json"
         try:
@@ -225,7 +239,7 @@ class DaddyEngine:
 
     def _target_file_snapshots(self) -> list[dict[str, Any]]:
         snapshots: list[dict[str, Any]] = []
-        target_files = [_resolve_upgrade_path(p) for p in list(self.upgrade_advice.get("target_files", []) or [])] if self.upgrade_advice else []
+        target_files = list(self.upgrade_advice.get("target_files", []) or []) if self.upgrade_advice else []
         for raw_path in target_files:
             norm = _resolve_upgrade_path(self._normalize_path(raw_path))
             if not norm or not norm.startswith("src/"):
@@ -253,7 +267,7 @@ class DaddyEngine:
         if same_reason_count < self._stuck_same_reason_limit():
             return []
 
-        target_files = [_resolve_upgrade_path(p) for p in list(self.upgrade_advice.get("target_files", []) or [])]
+        target_files = list(self.upgrade_advice.get("target_files", []) or [])
         snapshots = self._target_file_snapshots()
         if not snapshots:
             record.trace.append(
@@ -265,59 +279,37 @@ class DaddyEngine:
             )
             return []
 
-        blocker_payload = {
-            "summary": blocker,
-            "problem_type": self.upgrade_advice.get("problem_type", ""),
-            "recommended_next_step": self.upgrade_advice.get("recommended_next_step", ""),
-            "target_files": target_files,
-            "trace_tail": (getattr(record, "trace", []) or [])[-12:],
-        }
-
-        prior_attempts = []
-        for run in list(getattr(self.memory.state, "runs", []) or [])[-4:]:
-            try:
-                prior_attempts.append(run.model_dump(mode="json"))
-            except Exception:
-                prior_attempts.append({"summary": str(getattr(run, "summary", ""))})
-
         record.trace.append(
             {
                 "event": "stuck_state_openai_escalation",
-                "reason": "Agent stuck; escalated to OpenAI for exact repair guidance.",
+                "reason": "Agent stuck; escalating to local doctor executor for exact repair guidance already approved by OpenAI.",
                 "target_files": target_files,
                 "same_reason_count": same_reason_count,
             }
         )
 
-        try:
-            plan = self.diagnoser.diagnose(
-                command=self.settings.command,
-                output=json.dumps(blocker_payload, indent=2)[:80000],
-                files=snapshots,
-                prior_attempts=prior_attempts,
-            )
-        except Exception as exc:
-            record.trace.append(
-                {
-                    "event": "doctor_takeover_failed",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-            )
-            return []
+        plan = self.doctor_executor.plan_patches(
+            repo_root=self.settings.target_root,
+            advice=self.upgrade_advice,
+            trace_tail=(getattr(record, "trace", []) or [])[-12:],
+            file_snapshots=snapshots,
+        )
 
-        allowed_targets = {_resolve_upgrade_path(self._normalize_path(path)) for path in target_files}
+        allowed_targets = {
+            _resolve_upgrade_path(self._normalize_path(path))
+            for path in target_files
+        }
         filtered = [
-            change for change in list(getattr(plan, "changes", []) or [])
+            change for change in list(plan.get("changes", []) or [])
             if _resolve_upgrade_path(self._normalize_path(getattr(change, "path", ""))) in allowed_targets
         ]
 
         record.trace.append(
             {
                 "event": "doctor_agent_takeover",
-                "diagnosis": str(getattr(plan, "diagnosis", "")),
-                "root_cause": str(getattr(plan, "root_cause", "")),
-                "proposed_paths": [getattr(change, "path", "") for change in list(getattr(plan, "changes", []) or [])],
+                "diagnosis": str(plan.get("diagnosis", "")),
+                "root_cause": str(plan.get("root_cause", "")),
+                "proposed_paths": [getattr(change, "path", "") for change in list(plan.get("changes", []) or [])],
                 "allowed_paths": [getattr(change, "path", "") for change in filtered],
             }
         )
