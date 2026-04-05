@@ -150,3 +150,10 @@ def recovery_tick_marker() -> dict[str, Any]:
         "status": "recovery_tick",
         "source": "forced_safe_recovery_patch",
     }
+
+
+def recovery_tick_marker_v2() -> dict[str, Any]:
+    return {
+        "status": "recovery_tick",
+        "source": "forced_safe_recovery_patch",
+    }
