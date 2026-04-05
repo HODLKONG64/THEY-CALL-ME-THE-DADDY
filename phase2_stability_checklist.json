@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "phase": "phase_2_stability",
+  "goal": "remove_deadlocks_and_lock_safe_decision_flow",
+  "must_be_true_before_phase_3": [
+    "reviewer_does_not_return_early_under_extreme_pressure",
+    "engine_does_not_default_to_build_action_before_forced_safe_extension_check",
+    "no_silent_noop_runs_when_pressure_score_gte_7_and_runs_without_patches_gte_7",
+    "pr_flow_recovers_after_no_action_runs",
+    "rollback_path_remains_intact",
+    "core_files_are_protected_from_shrink_or_replace"
+  ],
+  "validation_targets": [
+    "src/the_daddy/agents/reviewer.py",
+    "src/the_daddy/agents/improvement_planner.py",
+    "src/the_daddy/engine.py"
+  ],
+  "done_when": [
+    "at_least_one_real_bounded_patch_is_emitted_after_deadlock_state",
+    "tests_pass",
+    "pr_is_opened",
+    "safe_merge_is_possible"
+  ]
+}

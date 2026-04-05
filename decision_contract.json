@@ -1,0 +1,119 @@
+{
+  "version": "1.0",
+  "purpose": "eliminate_no_action_deadlock_and_lock_safe_fallback_order",
+  "scope": [
+    "reviewer",
+    "improvement_planner",
+    "engine_orchestrator"
+  ],
+  "decision_sequence": [
+    {
+      "step": 1,
+      "name": "grounded_patch_attempt",
+      "rule": "Attempt a grounded bounded patch first.",
+      "required": true
+    },
+    {
+      "step": 2,
+      "name": "safe_helper_lane_attempt",
+      "rule": "If no grounded patch exists, allow safe helper-lane improvement only when it supports survival, stability, or awareness and does not duplicate recent churn.",
+      "required": true
+    },
+    {
+      "step": 3,
+      "name": "deadlock_diagnosis",
+      "rule": "If no patch is emitted, record why in execution notes and trace.",
+      "required": true
+    },
+    {
+      "step": 4,
+      "name": "extreme_pressure_check",
+      "rule": "If pressure is extreme and patch output is zero or near zero, do not silently default to idle maintenance.",
+      "required": true,
+      "metrics": {
+        "pressure_score_gte": 7,
+        "runs_without_patches_gte": 7,
+        "average_patch_count_lte": 0.2,
+        "success_rate_gte": 0.85
+      }
+    },
+    {
+      "step": 5,
+      "name": "forced_safe_creation_or_extension",
+      "rule": "Under extreme pressure, force one safe bounded action before any default build action. Prefer extending an existing safe capability file over speculative new architecture.",
+      "required": true,
+      "allowed_targets_order": [
+        "src/the_daddy/agents/improvement_planner.py",
+        "src/the_daddy/agents/reviewer.py",
+        "src/the_daddy/runtime/run_health.py",
+        "src/the_daddy/runtime/error_digest.py",
+        "src/the_daddy/runtime/trace_summary.py",
+        "src/the_daddy/runtime/architecture_probe.py",
+        "src/the_daddy/runtime/reviewer_fallback.py"
+      ],
+      "allowed_operations": [
+        "append",
+        "safe_regex_replace"
+      ]
+    },
+    {
+      "step": 6,
+      "name": "default_build_action_last",
+      "rule": "Default build action is the last fallback only when extreme-pressure forced creation does not qualify.",
+      "required": true
+    }
+  ],
+  "hard_rules": {
+    "never_silent_noop_under_extreme_pressure": true,
+    "never_skip_trace_reasoning": true,
+    "never_replace_core_file_wholesale": true,
+    "never_shrink_core_file": true,
+    "must_prefer_existing_safe_targets": true,
+    "must_keep_pr_flow_alive": true
+  },
+  "reviewer_contract": {
+    "if_no_actions_found": [
+      "append_execution_note_explaining_why",
+      "continue_to_escalation_checks",
+      "do_not_return_early_if_extreme_pressure_qualifies"
+    ],
+    "forbidden_behaviors": [
+      "return_clean_noop_without_reason",
+      "return_before_extreme_pressure_check",
+      "speculative_multi_agent_expansion"
+    ]
+  },
+  "planner_contract": {
+    "must_output_one_of": [
+      "repair",
+      "build",
+      "architecture"
+    ],
+    "if_reviewer_returns_none_under_extreme_pressure": "force_one_safe_bounded_extension_or_creation",
+    "if_forced_action_not_possible": "record_no_remaining_safe_targets"
+  },
+  "engine_contract": {
+    "if_reviewer_returns_no_self_evolution_actions": {
+      "when_extreme_pressure_qualifies": "attempt_forced_safe_creation_or_extension_before_default_build_action",
+      "otherwise": "allow_default_build_action"
+    },
+    "verification_after_patch": "pytest -q",
+    "on_verification_failure": [
+      "rollback",
+      "record_failure_pattern",
+      "do_not_open_pr"
+    ],
+    "on_verification_success": [
+      "open_pr",
+      "auto_merge_if_safe"
+    ]
+  },
+  "success_definition": {
+    "minimum_success": [
+      "patch_count_gt_0_when_safe_target_exists",
+      "trace_contains_reasoned_path",
+      "pr_created_for_valid_patch",
+      "safe_merge_for_verified_patch"
+    ]
+  }
+}
