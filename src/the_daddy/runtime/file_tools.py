@@ -71,11 +71,6 @@ def _normalize_path(rel: str) -> str:
     return cleaned
 
 
-
-
-def _is_test_context() -> bool:
-    return "PYTEST_CURRENT_TEST" in os.environ
-
 def _looks_like_hallucinated_path(path: str) -> bool:
     normalized = _normalize_path(path)
 
@@ -96,14 +91,18 @@ def _looks_like_hallucinated_path(path: str) -> bool:
     return False
 
 
+
+
+def _is_test_context() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ
+
 def _safe_target(root: Path, rel: str) -> Path:
     cleaned = _normalize_path(rel)
 
     if not cleaned:
         raise ValueError("Empty patch path")
 
-    # Keep production patching locked to src/the_daddy, but allow isolated unit tests
-    # to exercise file operations against temporary files.
+    # NEW: hard scope lock so agent can only ever patch inside src/the_daddy
     if not cleaned.startswith("src/the_daddy/"):
         if not _is_test_context():
             raise ValueError(f"Blocked patch outside allowed scope: {cleaned}")

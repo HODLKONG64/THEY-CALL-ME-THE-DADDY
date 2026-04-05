@@ -854,8 +854,11 @@ class DaddyEngine:
         patches = self._enforce_repair_mode_targets(patches, record)
 
         if self.repair_mode_active and not patches:
-            raise UpgradeGateError(
-                "Repair mode active but no valid target patch remained after filtering."
+            record.trace.append(
+                {
+                    "event": "repair_mode_no_patches_remaining",
+                    "reason": "no valid patches after filtering",
+                }
             )
 
         if patches and self.settings.has_github and self._is_git_repo():
