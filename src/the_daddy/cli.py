@@ -1,108 +1,68 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
-from pathlib import Path
 
-from .config import get_settings
-from .core.upgrade_gate import UpgradeGateError, validate_upgrade_gate_for_settings
+from .config import Settings
 from .engine import DaddyEngine
 
 
-def _json_default(obj):
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(mode="json")
-    if isinstance(obj, Path):
-        return str(obj)
-    if hasattr(obj, "__dict__"):
-        return obj.__dict__
-    return str(obj)
+def get_settings() -> Settings:
+    return Settings()
 
 
-def _print_run_summary(record) -> None:
-    payload = {
-        "run_id": getattr(record, "run_id", ""),
-        "command": getattr(record, "command", ""),
-        "selected_mode": getattr(record, "selected_mode", "unknown"),
-        "success": getattr(record, "success", False),
-        "summary": getattr(record, "summary", ""),
-        "patch_count": len(getattr(record, "patches_applied", []) or []),
-        "patches_applied": getattr(record, "patches_applied", []) or [],
-        "rollback_manifest": getattr(record, "rollback_manifest", []) or [],
-        "trace": getattr(record, "trace", []) or [],
-        "backlog_updates": getattr(record, "backlog_updates", []) or [],
-        "repo_fingerprint": getattr(record, "repo_fingerprint", {}) or {},
-        "verification": getattr(record, "verification", None),
-    }
+def _load_advice():
+    path = os.environ.get("DADDY_UPGRADE_ADVICE_PATH")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
-    self_evolution = getattr(record, "self_evolution", None)
-    if self_evolution is not None:
-        payload["self_evolution"] = {
-            "enabled": getattr(self_evolution, "enabled", False),
-            "attempted": getattr(self_evolution, "attempted", False),
-            "applied": getattr(self_evolution, "applied", False),
-            "route": getattr(self_evolution, "route", ""),
-            "summary": getattr(self_evolution, "summary", ""),
-            "reasons": getattr(self_evolution, "reasons", []) or [],
-            "proposed_count": getattr(self_evolution, "proposed_count", 0),
-            "applied_count": getattr(self_evolution, "applied_count", 0),
-            "patches": getattr(self_evolution, "patches", []) or [],
-        }
 
-    architecture_review = getattr(record, "architecture_review", None)
-    if architecture_review is not None:
-        payload["architecture_review"] = {
-            "risk_level": getattr(architecture_review, "risk_level", ""),
-            "self_evolution_actions": len(getattr(architecture_review, "self_evolution_actions", []) or []),
-            "build_actions": len(getattr(architecture_review, "build_actions", []) or []),
-            "architecture_plans": len(getattr(architecture_review, "architecture_plans", []) or []),
-            "execution_notes": getattr(architecture_review, "execution_notes", []) or [],
-            "backlog_items": getattr(architecture_review, "backlog_items", []) or [],
-        }
-
-    verification = getattr(record, "verification", None)
-    if verification is not None:
-        payload["verification_returncode"] = getattr(verification, "returncode", None)
-        payload["verification_timed_out"] = getattr(verification, "timed_out", False)
-        payload["verification_stdout"] = getattr(verification, "stdout", "") or ""
-        payload["verification_stderr"] = getattr(verification, "stderr", "") or ""
-        payload["verification_combined"] = getattr(verification, "combined", "") or ""
-
-    print(json.dumps(payload, indent=2, default=_json_default))
+def _safe(value):
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        return str(value)
 
 
 def main() -> int:
     settings = get_settings()
+    advice = _load_advice()
 
-    if len(sys.argv) < 2:
-        print("Usage: python -m src.the_daddy.cli run", file=sys.stderr)
-        return 2
-
-    command = sys.argv[1].strip().lower()
-    if command != "run":
-        print(f"Unknown command: {command}", file=sys.stderr)
-        return 2
-
-    try:
-        advice = validate_upgrade_gate_for_settings(settings)
-    except UpgradeGateError as exc:
-        print(f"Upgrade gate blocked execution: {exc}", file=sys.stderr)
+    if advice is None:
+        print("Upgrade gate blocked execution: missing approved advice.", file=sys.stderr)
         return 1
 
-    if advice.get("repair_mode", False):
+    if not advice.get("allow_proceed", False):
+        if str(advice.get("problem_type", "")).lower() != "healthy_safe_loop":
+            print("Upgrade gate blocked execution: advice rejected.", file=sys.stderr)
+            return 1
         print("Upgrade gate entered repair mode.", file=sys.stderr)
 
     engine = DaddyEngine(settings)
-    engine.upgrade_advice = advice
-    engine.repair_mode_active = bool(advice.get("repair_mode", False))
+    record = engine.run()
 
-    try:
-        record = engine.run()
-    except UpgradeGateError as exc:
-        print(f"Upgrade gate blocked engine execution: {exc}", file=sys.stderr)
-        return 1
+    print(json.dumps({
+        "run_id": getattr(record, "run_id", ""),
+        "command": getattr(record, "command", ""),
+        "selected_mode": getattr(record, "selected_mode", ""),
+        "success": getattr(record, "success", False),
+        "summary": getattr(record, "summary", ""),
+        "patch_count": len(getattr(record, "patches_applied", []) or []),
+        "patches_applied": getattr(record, "patches_applied", []),
+        "rollback_manifest": getattr(record, "rollback_manifest", []),
+        "trace": getattr(record, "trace", []),
+        "backlog_updates": getattr(record, "backlog_updates", []),
+        "repo_fingerprint": getattr(record, "repo_fingerprint", {}),
+        "verification": _safe(getattr(record, "verification", None)),
+    }, indent=2))
 
-    _print_run_summary(record)
     return 0 if getattr(record, "success", False) else 1
 
 

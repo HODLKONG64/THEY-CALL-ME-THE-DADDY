@@ -117,7 +117,7 @@ def validate_upgrade_gate_for_settings(settings: Any) -> dict[str, Any]:
         return advice
 
     problem_type = str(advice.get("problem_type", "")).strip().lower()
-    if problem_type in {"healthy_safe_loop", "healthy_meaningful_progress"}:
+    if problem_type == "healthy_safe_loop":
         advice["repair_mode"] = True
         return advice
 

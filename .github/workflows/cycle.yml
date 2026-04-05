@@ -1,10 +1,55 @@
-# cycle.yml
+name: Gated Cycle
 
-name: daddy-cycle
-on: [push]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
-  run:
+  run-agent:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
-      - run: python -m src.the_daddy.cli run
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Generate OpenAI upgrade advice
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_UPGRADE_MODEL: gpt-5.4
+        run: |
+          python -m src.the_daddy.core.request_upgrade_advice --repo-root . --output doctor_local/upgrade_advice.json
+
+      - name: Validate OpenAI upgrade advice
+        run: |
+          python -m src.the_daddy.core.require_upgrade_advice doctor_local/upgrade_advice.json
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Run agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: HODLKONG64/THEY-CALL-ME-THE-DADDY
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DADDY_UPGRADE_ADVICE_PATH: doctor_local/upgrade_advice.json
+        run: python -m src.the_daddy.cli run

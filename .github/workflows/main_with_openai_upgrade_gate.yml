@@ -1,6 +1,7 @@
 name: Main With OpenAI Upgrade Gate
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -32,11 +33,11 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_UPGRADE_MODEL: gpt-5.4
         run: |
-          python -m src.the_daddy.core.request_upgrade_advice             --repo-root .             --output doctor_local/upgrade_advice.json
+          python -m src.the_daddy.core.request_upgrade_advice --repo-root . --output doctor_local/upgrade_advice.json
 
-      - name: Validate OpenAI upgrade advice (with repair mode)
+      - name: Validate OpenAI upgrade advice
         run: |
-          python -m src.the_daddy.core.require_upgrade_advice             doctor_local/upgrade_advice.json
+          python -m src.the_daddy.core.require_upgrade_advice doctor_local/upgrade_advice.json
 
       - name: Run tests
         run: pytest -q
@@ -52,6 +53,3 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           DADDY_UPGRADE_ADVICE_PATH: doctor_local/upgrade_advice.json
         run: python -m src.the_daddy.cli run
-
-      - name: Done
-        run: echo "Workflow complete"
