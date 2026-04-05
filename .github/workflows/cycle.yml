@@ -14,7 +14,7 @@ on:
       - ".github/workflows/pre_update_guard.yml"
   workflow_dispatch:
   schedule:
-    - cron: "0 */12 * * *"
+   
 
 permissions:
   contents: write
