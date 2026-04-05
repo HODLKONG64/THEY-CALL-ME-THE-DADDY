@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .agents.diagnoser import Diagnoser
@@ -356,6 +357,26 @@ if __name__ == "__main__":
     raise SystemExit(main())
 """
 
+    def _forced_engine_replace_source(self) -> str:
+        current = Path(__file__).read_text(encoding="utf-8")
+        needle = """        source_by_path = {
+            "src/the_daddy/core/upgrade_gate.py": self._forced_upgrade_gate_source(),
+            "src/the_daddy/core/require_upgrade_advice.py": self._forced_require_upgrade_advice_source(),
+            "src/the_daddy/engine.py": self._forced_engine_replace_source(),
+        }
+"""
+        replacement = """        source_by_path = {
+            "src/the_daddy/core/upgrade_gate.py": self._forced_upgrade_gate_source(),
+            "src/the_daddy/core/require_upgrade_advice.py": self._forced_require_upgrade_advice_source(),
+            "src/the_daddy/engine.py": self._forced_engine_replace_source(),
+        }
+"""
+        if '"src/the_daddy/engine.py": self._forced_engine_replace_source(),' in current:
+            return current
+        if needle not in current:
+            return current
+        return current.replace(needle, replacement, 1)
+
     def _build_forced_target_patches(self, record: RunRecord) -> list[PatchAction]:
         if not self.repair_mode_active or not self.upgrade_advice:
             return []
@@ -378,17 +399,6 @@ if __name__ == "__main__":
                     operation="replace_file",
                     new_content=new_content,
                     description="Forced repair-mode target patch for upgrade gate enforcement.",
-                )
-            )
-
-        if "src/the_daddy/engine.py" in normalized_targets:
-            forced.append(
-                PatchAction(
-                    path="src/the_daddy/engine.py",
-                    operation="regex_replace",
-                    pattern='self\.repair_mode_active = bool\(advice\.get\("repair_mode", False\)\)',
-                    replacement='self.repair_mode_active = bool(advice.get("repair_mode", False))\n        record.trace.append({"event": "forced_engine_target_patch", "repair_mode": self.repair_mode_active})',
-                    description="Forced repair-mode target patch for engine enforcement tracing.",
                 )
             )
 
