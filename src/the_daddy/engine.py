@@ -88,6 +88,58 @@ class DaddyEngine:
             }
         )
 
+    def _normalize_path(self, value: str) -> str:
+        return str(value or "").replace("\\", "/").strip().lower()
+
+    def _repair_mode_target_matches(self, patch_path: str, target_files: list[str]) -> bool:
+        patch_norm = self._normalize_path(patch_path)
+        if not patch_norm:
+            return False
+
+        normalized_targets = [self._normalize_path(item) for item in target_files if str(item).strip()]
+        if not normalized_targets:
+            return False
+
+        for target in normalized_targets:
+            if not target:
+                continue
+            if patch_norm == target:
+                return True
+            if patch_norm.endswith(target):
+                return True
+            if target in patch_norm:
+                return True
+        return False
+
+    def _enforce_repair_mode_targets(self, patches: list, record: RunRecord) -> list:
+        if not self.repair_mode_active or not self.upgrade_advice:
+            return patches
+
+        target_files = list(self.upgrade_advice.get("target_files", []) or [])
+        filtered = [
+            patch for patch in patches
+            if self._repair_mode_target_matches(getattr(patch, "path", ""), target_files)
+        ]
+
+        record.trace.append(
+            {
+                "event": "repair_mode_target_filter",
+                "target_files": target_files,
+                "input_patch_count": len(patches),
+                "output_patch_count": len(filtered),
+                "input_patch_paths": [getattr(p, "path", "") for p in patches],
+                "output_patch_paths": [getattr(p, "path", "") for p in filtered],
+            }
+        )
+
+        if filtered:
+            return filtered
+
+        raise UpgradeGateError(
+            "Repair mode active but no generated patch matched OpenAI target_files. "
+            "Refusing filler or unrelated mutation."
+        )
+
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
         return {
@@ -789,6 +841,12 @@ class DaddyEngine:
                     patches.extend(action.patches)
 
         patches = self._run_depth_gate(mode=mode, patches=patches, record=record)
+        patches = self._enforce_repair_mode_targets(patches, record)
+
+        if self.repair_mode_active and not patches:
+            raise UpgradeGateError(
+                "Repair mode active but no valid target patch remained after filtering."
+            )
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
