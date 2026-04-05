@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "core_mission": "survive_repair_patch_merge",
+  "loop": [
+    "review",
+    "propose_patch",
+    "apply_patch",
+    "run_tests",
+    "merge_if_safe",
+    "rollback_if_fail",
+    "diagnose_if_no_patch"
+  ],
+  "rules": {
+    "patch_constraints": [
+      "small",
+      "bounded",
+      "reversible",
+      "testable"
+    ],
+    "allowed_operations": [
+      "append",
+      "extend",
+      "regex_replace_safe"
+    ],
+    "forbidden_operations": [
+      "large_rewrites",
+      "destructive_changes",
+      "speculative_architecture"
+    ],
+    "test_rule": "tests_must_pass_before_merge",
+    "fallback_rule": "no_silent_deadlock",
+    "priority": [
+      "survival",
+      "repair",
+      "stability",
+      "capability",
+      "expansion"
+    ]
+  },
+  "phases": {
+    "repair": true,
+    "stability": true,
+    "awareness": true,
+    "capability": false,
+    "expansion": false
+  },
+  "pressure_behavior": {
+    "if_no_patch_and_high_pressure": "force_safe_patch_or_diagnose",
+    "never": "default_idle_noop"
+  }
+}
