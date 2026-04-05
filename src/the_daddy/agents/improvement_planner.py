@@ -228,6 +228,28 @@ class ImprovementPlanner:
             "synthetic_creation_required": synthetic_creation_required,
         }
 
+    def summarize_level9_multi_path_decision(self, state: Any) -> dict[str, Any]:
+        pressure = self.summarize_pressure_escalation_decision(state)
+        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
+        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
+        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
+        success_rate = float(pressure.get("success_rate", 0) or 0)
+
+        level9_multi_path = (
+            pressure_score >= 7
+            and no_patch_streak >= 7
+            and average_patch_count <= 0.2
+            and success_rate >= 0.85
+        )
+
+        return {
+            "pressure_score": pressure_score,
+            "no_patch_streak": no_patch_streak,
+            "average_patch_count": average_patch_count,
+            "success_rate": success_rate,
+            "level9_multi_path": level9_multi_path,
+        }
+
     def summarize_level8_goal_system_decision(self, state: Any) -> dict[str, Any]:
         pressure = self.summarize_pressure_escalation_decision(state)
         pressure_score = int(pressure.get("build_pressure_score", 0) or 0)

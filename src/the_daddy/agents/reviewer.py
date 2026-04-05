@@ -47,6 +47,7 @@ REFACTOR_AGENT_PATH = "src/the_daddy/agents/refactor_agent.py"
 EXPERIMENT_AGENT_PATH = "src/the_daddy/agents/experiment_agent.py"
 SELF_REWRITE_AGENT_PATH = "src/the_daddy/agents/self_rewrite_agent.py"
 GOAL_AGENT_PATH = "src/the_daddy/agents/goal_agent.py"
+MULTI_PATH_AGENT_PATH = "src/the_daddy/agents/multi_path_agent.py"
 
 BANNED_SELF_EVOLUTION_PATHS = {
     "src/the_daddy/runtime/command_runner.py",
@@ -63,6 +64,7 @@ SAFE_NEW_FILE_ALLOWLIST = {
     EXPERIMENT_AGENT_PATH,
     SELF_REWRITE_AGENT_PATH,
     GOAL_AGENT_PATH,
+    MULTI_PATH_AGENT_PATH,
 }
 
 ALLOWLISTED_RUNTIME_HELPERS = {
@@ -1291,6 +1293,151 @@ class WakeReviewer:
 
 
 
+
+    def _should_force_level9_multi_path(self, memory_snapshot: dict[str, Any]) -> bool:
+        metrics = self._pressure_escalation_metrics(memory_snapshot)
+        return (
+            metrics["pressure_score"] >= 7
+            and metrics["runs_without_patches"] >= 7
+            and metrics["average_patch_count"] <= 0.2
+            and metrics["success_rate"] >= 0.85
+        )
+
+    def _multi_path_agent_template(self) -> str:
+        return """from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass
+class EvolutionPath:
+    name: str
+    target_path: str
+    priority: int
+    summary: str
+
+
+class MultiPathAgent:
+    def propose(self) -> list[EvolutionPath]:
+        return [
+            EvolutionPath(
+                name="extend-goal-agent",
+                target_path="src/the_daddy/agents/goal_agent.py",
+                priority=1,
+                summary="Extend goal routing when pressure stays high and default maintenance is blocked.",
+            ),
+            EvolutionPath(
+                name="extend-self-rewrite-agent",
+                target_path="src/the_daddy/agents/self_rewrite_agent.py",
+                priority=2,
+                summary="Add another bounded rewrite-planning surface instead of falling back to helper churn.",
+            ),
+            EvolutionPath(
+                name="extend-strategy-agent",
+                target_path="src/the_daddy/agents/strategy_agent.py",
+                priority=3,
+                summary="Expand planner-facing strategy signals when the system remains healthy but stagnant.",
+            ),
+        ]
+"""
+
+    def _append_capability_extension_action(
+        self,
+        path: str,
+        function_name: str,
+        function_block: str,
+        title: str,
+        description: str,
+    ) -> SelfEvolutionAction | None:
+        existing = self._existing_file_text(repo_root, path) if False else None
+        return None
+
+    def _level9_multi_path_action(self, repo_root: Path) -> SelfEvolutionAction | None:
+        target = repo_root / MULTI_PATH_AGENT_PATH
+        if not target.exists():
+            return SelfEvolutionAction(
+                title="Spawn multi-path agent",
+                description="Create a bounded multi-path agent so the system can choose among multiple safe evolution paths under sustained pressure.",
+                risk="safe",
+                patches=[
+                    PatchAction(
+                        path=MULTI_PATH_AGENT_PATH,
+                        operation="replace_file",
+                        new_content=self._multi_path_agent_template(),
+                        pattern=None,
+                        replacement=None,
+                        description="Create new bounded multi-path agent file.",
+                    )
+                ],
+            )
+
+        path_specs = [
+            (
+                GOAL_AGENT_PATH,
+                "propose_parallel_goals",
+                """
+
+    def propose_parallel_goals(self) -> list[GoalDirective]:
+        return [
+            GoalDirective(
+                name="parallel-goal-audit",
+                target_path="src/the_daddy/agents/improvement_planner.py",
+                priority=1,
+                summary="Drive planner-facing work through a second bounded goal path.",
+            )
+        ]
+""",
+                "Extend goal agent with parallel-goal surface",
+                "Append a bounded parallel-goal method to goal_agent.py so the system can pursue more than one safe roadmap path.",
+            ),
+            (
+                SELF_REWRITE_AGENT_PATH,
+                "plan_secondary_rewrite",
+                """
+
+    def plan_secondary_rewrite(self) -> list[SelfRewritePlan]:
+        return [
+            SelfRewritePlan(
+                target_path="src/the_daddy/agents/reviewer.py",
+                summary="Append one additional bounded reviewer-routing extension under sustained pressure.",
+            )
+        ]
+""",
+                "Extend self-rewrite agent with secondary rewrite surface",
+                "Append a bounded secondary rewrite-planning method to self_rewrite_agent.py.",
+            ),
+            (
+                STRATEGY_AGENT_PATH,
+                "propose_secondary_strategy",
+                """
+
+    def propose_secondary_strategy(self) -> list[StrategySignal]:
+        return [
+            StrategySignal(
+                title="Second strategy lane",
+                description="Open an additional bounded strategy lane when the primary lane stalls.",
+                priority=2,
+            )
+        ]
+""",
+                "Extend strategy agent with secondary strategy surface",
+                "Append a bounded secondary strategy method to strategy_agent.py.",
+            ),
+        ]
+
+        for path, function_name, function_block, title, description in path_specs:
+            existing_text = self._existing_file_text(repo_root, path)
+            if existing_text and f"def {function_name}(" not in existing_text:
+                return self._append_regex_patch_action(
+                    path=path,
+                    title=title,
+                    description=description,
+                    function_name=function_name,
+                    function_block=function_block,
+                )
+        return None
+
+
     def _should_force_level8_goal_system(self, memory_snapshot: dict[str, Any]) -> bool:
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         return (
@@ -1958,7 +2105,7 @@ Rules:
 - Treat repository snapshot previews and on-disk helper/planner files as grounded current contents for regex_replace decisions.
 - Do not retry the same target if it was recently blocked for replace-on-existing-helper, shrink risk, or missing regex anchor.
 - Prefer a fresh allowlisted helper before repeating stale runtime-helper ideas.
-- Level 8 goal-system rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded goal agent file before self-rewrite fallback or helper churn.
+- Level 9 multi-path rule: when pressure_score is extreme, the patch drought is prolonged, and run health stays strong enough, force one bounded capability creation or extension path before goal fallback or helper churn.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
 
 Required JSON shape:
