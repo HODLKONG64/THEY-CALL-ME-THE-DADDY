@@ -28,14 +28,14 @@ def main() -> int:
 
     advice = _load_advice()
 
-    # HARD BLOCK BEFORE ENGINE RUN (fixes tests)
+    # BLOCK BEFORE ENGINE RUN (matches tests)
     if advice is None:
-        print("Upgrade gate missing approved advice.", file=sys.stderr)
+        print("Upgrade gate blocked execution: missing approved advice.", file=sys.stderr)
         return 1
 
     if not advice.get("allow_proceed", False):
         if str(advice.get("problem_type", "")).lower() != "healthy_safe_loop":
-            print("Upgrade not approved.", file=sys.stderr)
+            print("Upgrade gate blocked execution: advice rejected.", file=sys.stderr)
             return 1
 
     engine = DaddyEngine(settings)
