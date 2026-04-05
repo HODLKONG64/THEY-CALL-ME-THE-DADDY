@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from ..models import ArchitectureReview, MemoryState, SelfEvolutionAction
+from ..core.self_check import load_rules
 
 
 @dataclass
@@ -14,6 +15,10 @@ class PlannedSelfEvolution:
 
 
 class ImprovementPlanner:
+    def _rules_thresholds(self) -> dict[str, Any]:
+        rules = load_rules()
+        return rules.get("thresholds", {})
+
     """
     Planner-level pressure control.
 
@@ -374,3 +379,8 @@ class ImprovementPlanner:
             return "build"
 
         return "repair"
+
+
+    # RULES NOTE:
+    # This planner is expected to read thresholds from src/the_daddy/core/system_rules.json
+    # via _rules_thresholds() when deciding forced build / recovery behaviour.

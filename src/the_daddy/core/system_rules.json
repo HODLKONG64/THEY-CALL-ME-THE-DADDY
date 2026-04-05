@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "mission": "self_repair_first",
+  "priorities": [
+    "self_repair",
+    "recovery",
+    "stability",
+    "observability",
+    "decision_quality",
+    "memory"
+  ],
+  "rules": {
+    "no_deadlock": true,
+    "no_empty_cycles": true,
+    "require_patch_or_recovery": true,
+    "force_patch_under_pressure": true,
+    "rollback_on_failure": true,
+    "avoid_duplicate_patches": true,
+    "bounded_patches_only": true
+  },
+  "thresholds": {
+    "pressure_score_force_action": 6,
+    "no_patch_streak_limit": 3,
+    "max_retry_attempts": 3,
+    "success_rate_minimum": 0.7
+  },
+  "fallback_strategy": {
+    "on_no_patch": "force_bounded_patch",
+    "on_repeat_no_patch": "shrink_patch_scope",
+    "on_failure": "rollback_and_retry_smaller"
+  },
+  "forbidden": [
+    "large_unbounded_rewrites",
+    "duplicate_patches",
+    "touching_protected_files_without_reason",
+    "empty_return_cycles"
+  ]
+}
