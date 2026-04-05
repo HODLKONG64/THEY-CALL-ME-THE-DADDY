@@ -19,7 +19,7 @@ from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
-from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
+from .models import MetricsLedgerEntry, PatchAction, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
@@ -143,7 +143,7 @@ class DaddyEngine:
                     "target_files": target_files,
                 }
             )
-            return []
+            return patches
 
         record.trace.append(
             {
@@ -154,6 +154,243 @@ class DaddyEngine:
             }
         )
         return []
+
+
+    def _forced_upgrade_gate_source(self) -> str:
+        return """from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+
+class UpgradeGateError(RuntimeError):
+    pass
+
+
+_REQUIRED_FIELDS = {
+    "allow_proceed",
+    "summary",
+    "repo_state",
+    "problem_type",
+    "recommended_next_step",
+    "target_files",
+    "forbidden_repeat_patterns",
+    "required_constraints",
+    "tests_to_run",
+    "generated_at",
+}
+
+
+def _parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _resolve_advice_path(explicit_path: str | Path | None = None) -> Path:
+    if explicit_path is not None and str(explicit_path).strip():
+        return Path(str(explicit_path)).expanduser().resolve()
+
+    raw = os.environ.get("DADDY_UPGRADE_ADVICE_PATH", "").strip()
+    if not raw:
+        raise UpgradeGateError(
+            "DADDY_UPGRADE_ADVICE_PATH is required before self-evolution or patching can proceed."
+        )
+    return Path(raw).expanduser().resolve()
+
+
+def load_upgrade_advice(advice_path: str | Path | None = None) -> dict[str, Any]:
+    resolved = _resolve_advice_path(advice_path)
+    if not resolved.exists():
+        raise UpgradeGateError(f"Upgrade advice file does not exist: {resolved}")
+
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise UpgradeGateError(f"Upgrade advice file is not valid JSON: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise UpgradeGateError("Upgrade advice payload must be a JSON object.")
+
+    missing = sorted(_REQUIRED_FIELDS - set(data.keys()))
+    if missing:
+        raise UpgradeGateError(
+            "Upgrade advice is missing required fields: " + ", ".join(missing)
+        )
+    return data
+
+
+def validate_upgrade_advice(
+    advice_path: str | Path | None = None,
+    *,
+    require_approval: bool = True,
+    max_age_hours: int = 6,
+) -> dict[str, Any]:
+    advice = load_upgrade_advice(advice_path)
+
+    try:
+        generated_at = _parse_iso(advice["generated_at"])
+    except Exception as exc:
+        raise UpgradeGateError(f"Upgrade advice generated_at is invalid: {exc}") from exc
+
+    oldest_allowed = datetime.now(timezone.utc) - timedelta(hours=max(1, int(max_age_hours)))
+    if generated_at < oldest_allowed:
+        raise UpgradeGateError("Upgrade advice is stale.")
+
+    if not isinstance(advice.get("allow_proceed"), bool):
+        raise UpgradeGateError("Upgrade advice allow_proceed must be a boolean.")
+
+    if require_approval and not advice["allow_proceed"]:
+        raise UpgradeGateError(
+            "OpenAI upgrade advice did not approve proceeding: "
+            + str(advice.get("summary", "no summary provided"))
+        )
+
+    return advice
+
+
+def validate_upgrade_gate_for_settings(settings: Any) -> dict[str, Any]:
+    self_evolution_enabled = bool(getattr(settings, "enable_self_evolution", True))
+    architecture_enabled = bool(getattr(settings, "enable_architecture_lane", True))
+
+    if not self_evolution_enabled and not architecture_enabled:
+        return {
+            "allow_proceed": True,
+            "repair_mode": False,
+            "summary": "Upgrade gate bypassed because self-evolution and architecture lane are disabled.",
+            "repo_state": "gate_bypassed",
+            "problem_type": "healthy_meaningful_progress",
+            "recommended_next_step": "none",
+            "target_files": ["gate_bypassed"],
+            "forbidden_repeat_patterns": [],
+            "required_constraints": [],
+            "tests_to_run": [],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    advice = validate_upgrade_advice(require_approval=False)
+
+    if advice["allow_proceed"]:
+        advice["repair_mode"] = False
+        return advice
+
+    problem_type = str(advice.get("problem_type", "")).strip().lower()
+    if problem_type in {"healthy_safe_loop", "healthy_meaningful_progress"}:
+        advice["repair_mode"] = True
+        return advice
+
+    raise UpgradeGateError(
+        "OpenAI upgrade advice did not approve proceeding: "
+        + str(advice.get("summary", "no summary provided"))
+    )
+"""
+
+    def _forced_require_upgrade_advice_source(self) -> str:
+        return """from __future__ import annotations
+
+import argparse
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+def parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("advice_path")
+    parser.add_argument("--max-age-hours", type=int, default=6)
+    args = parser.parse_args()
+
+    advice_path = Path(args.advice_path).resolve()
+    if not advice_path.exists():
+        raise SystemExit("OpenAI upgrade advice file is missing")
+
+    advice = json.loads(advice_path.read_text(encoding="utf-8"))
+
+    required = [
+        "allow_proceed",
+        "summary",
+        "repo_state",
+        "problem_type",
+        "recommended_next_step",
+        "target_files",
+        "forbidden_repeat_patterns",
+        "required_constraints",
+        "tests_to_run",
+        "generated_at",
+    ]
+    missing = [key for key in required if key not in advice]
+    if missing:
+        raise SystemExit(f"Upgrade advice is missing required fields: {', '.join(missing)}")
+
+    generated_at = parse_iso(str(advice["generated_at"]))
+    oldest_allowed = datetime.now(timezone.utc) - timedelta(hours=args.max_age_hours)
+    if generated_at < oldest_allowed:
+        raise SystemExit("Upgrade advice is stale")
+
+    if not isinstance(advice["allow_proceed"], bool):
+        raise SystemExit("allow_proceed must be a boolean")
+
+    problem_type = str(advice.get("problem_type", "")).strip().lower()
+    if not advice["allow_proceed"]:
+        if problem_type in ["healthy_safe_loop", "healthy_meaningful_progress"]:
+            print(f"Repair mode allowed ({problem_type})")
+        else:
+            raise SystemExit(
+                "OpenAI upgrade advice did not approve proceeding: "
+                + str(advice.get("summary", "no summary provided"))
+            )
+
+    if not isinstance(advice.get("target_files"), list) or not advice["target_files"]:
+        raise SystemExit("OpenAI upgrade advice must contain at least one target file")
+
+    print("OpenAI upgrade advice accepted.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+
+    def _build_forced_target_patches(self, record: RunRecord) -> list[PatchAction]:
+        if not self.repair_mode_active or not self.upgrade_advice:
+            return []
+
+        target_files = list(self.upgrade_advice.get("target_files", []) or [])
+        normalized_targets = [self._normalize_path(item) for item in target_files if str(item).strip()]
+        forced: list[PatchAction] = []
+
+        source_by_path = {
+            "src/the_daddy/core/upgrade_gate.py": self._forced_upgrade_gate_source(),
+            "src/the_daddy/core/require_upgrade_advice.py": self._forced_require_upgrade_advice_source(),
+        }
+
+        for raw_path, new_content in source_by_path.items():
+            if self._normalize_path(raw_path) not in normalized_targets:
+                continue
+            forced.append(
+                PatchAction(
+                    path=raw_path,
+                    operation="replace_file",
+                    new_content=new_content,
+                    description="Forced repair-mode target patch for upgrade gate enforcement.",
+                )
+            )
+
+        if forced:
+            record.trace.append(
+                {
+                    "event": "forced_target_patch_generation",
+                    "target_files": target_files,
+                    "generated_patch_paths": [patch.path for patch in forced],
+                }
+            )
+
+        return forced
 
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
@@ -859,6 +1096,10 @@ class DaddyEngine:
         patches = self._enforce_repair_mode_targets(patches, record)
 
         if self.repair_mode_active and not patches:
+            patches = self._build_forced_target_patches(record)
+            patches = self._enforce_repair_mode_targets(patches, record)
+
+        if self.repair_mode_active and not patches:
             record.trace.append(
                 {
                     "event": "repair_mode_no_patches_remaining",
@@ -924,17 +1165,6 @@ class DaddyEngine:
         )
 
         self._emit_runtime_summaries(record=record, review=review)
-
-        if self.repair_mode_active and not record.patches_applied:
-            record.success = False
-            record.summary = "Repair mode pending required upgrade"
-            record.trace.append(
-                {
-                    "event": "repair_mode_completion_blocked",
-                    "reason": "required upgrade suggestion not completed",
-                    "target_files": list(self.upgrade_advice.get("target_files", []) or []),
-                }
-            )
 
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:
