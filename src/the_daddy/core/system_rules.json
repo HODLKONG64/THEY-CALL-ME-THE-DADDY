@@ -17,7 +17,9 @@
     "rollback_on_failure": true,
     "avoid_duplicate_patches": true,
     "bounded_patches_only": true,
-    "recover_on_merge_conflict": true
+    "recover_on_merge_conflict": true,
+    "retry_smaller_after_failure": true,
+    "recover_on_next_run_after_failure": true
   },
   "thresholds": {
     "pressure_score_force_action": 6,
@@ -29,7 +31,9 @@
     "on_no_patch": "force_bounded_patch",
     "on_repeat_no_patch": "shrink_patch_scope",
     "on_failure": "rollback_and_retry_smaller",
-    "on_merge_conflict": "rebase_reapply_reopen_pr"
+    "on_merge_conflict": "rebase_reapply_reopen_pr",
+    "on_run_failure": "rollback_and_retry_smaller",
+    "on_next_run_after_failure": "rollback_latest_failed_run_then_retry"
   },
   "forbidden": [
     "large_unbounded_rewrites",

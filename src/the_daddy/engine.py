@@ -8,6 +8,11 @@ from .agents.diagnoser import Diagnoser
 from .agents.improvement_planner import ImprovementPlanner
 from .agents.reviewer import WakeReviewer
 from .config import Settings, get_settings
+from .core.failure_recovery import (
+    recent_failed_runs,
+    restore_from_rollback_manifest,
+    summarize_failure_recovery_state,
+)
 from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
@@ -409,6 +414,106 @@ class DaddyEngine:
 
         return patches
 
+    def _recover_from_previous_failures(self, record: RunRecord) -> None:
+        failed_runs = recent_failed_runs(self.memory.state, limit=3)
+        if not failed_runs:
+            return
+
+        for failed_run in failed_runs:
+            summary = summarize_failure_recovery_state(failed_run)
+            record.trace.append(
+                {
+                    "event": "failure_recovery_candidate",
+                    "summary": summary,
+                }
+            )
+
+            if not summary.get("has_recovery_material", False):
+                continue
+
+            restore_result = restore_from_rollback_manifest(
+                self.settings.target_root,
+                failed_run.get("rollback_manifest", []),
+            )
+            record.trace.append(
+                {
+                    "event": "failure_recovery_restore_applied",
+                    "from_run_id": summary.get("run_id", ""),
+                    "restored_count": restore_result.get("restored_count", 0),
+                    "restored_paths": restore_result.get("restored_paths", []),
+                }
+            )
+
+            verification = run_command(
+                self.settings.command,
+                cwd=self.settings.target_root,
+                timeout_seconds=self.settings.run_timeout_seconds,
+            )
+
+            record.trace.append(
+                {
+                    "event": "failure_recovery_verification",
+                    "from_run_id": summary.get("run_id", ""),
+                    "returncode": verification.returncode,
+                    "timed_out": verification.timed_out,
+                }
+            )
+
+            if verification.returncode == 0:
+                record.trace.append(
+                    {
+                        "event": "failure_recovery_succeeded",
+                        "from_run_id": summary.get("run_id", ""),
+                    }
+                )
+                return
+
+        record.trace.append(
+            {
+                "event": "failure_recovery_exhausted",
+                "checked_failed_runs": len(failed_runs),
+            }
+        )
+
+    def _rollback_current_failure(self, record: RunRecord, mode: str) -> None:
+        if not getattr(record, "rollback_manifest", None):
+            return
+
+        restore_result = restore_from_rollback_manifest(
+            self.settings.target_root,
+            record.rollback_manifest,
+        )
+        record.trace.append(
+            {
+                "event": "current_failure_rollback_applied",
+                "restored_count": restore_result.get("restored_count", 0),
+                "restored_paths": restore_result.get("restored_paths", []),
+            }
+        )
+
+        verification = run_command(
+            self.settings.command,
+            cwd=self.settings.target_root,
+            timeout_seconds=self.settings.run_timeout_seconds,
+        )
+
+        record.trace.append(
+            {
+                "event": "current_failure_reverification",
+                "returncode": verification.returncode,
+                "timed_out": verification.timed_out,
+            }
+        )
+
+        if verification.returncode == 0:
+            record.summary = "Recovered after rollback"
+        else:
+            self.memory.record_failure_pattern(
+                self.memory.fingerprint((verification.stderr or verification.stdout)[:2000]),
+                {"route": mode, "diagnosis": "post-rollback verification failure"},
+                False,
+            )
+
     def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str, prepared_branch: str | None = None) -> None:
         changed_files = self._changed_files_from_record(record)
 
@@ -674,6 +779,7 @@ class DaddyEngine:
         run_id = make_run_id()
 
         record = RunRecord(run_id=run_id, command=self.settings.command)
+        self._recover_from_previous_failures(record)
         record.repo_fingerprint = self.repo_fingerprint()
         record.attempt_count = 1
 
@@ -775,6 +881,7 @@ class DaddyEngine:
 
             record.success = False
             record.summary = f"build: failed ({result.returncode}) but continuing"
+            self._rollback_current_failure(record, mode)
 
         record.self_evolution = self._build_self_evolution_record(
             review=review,

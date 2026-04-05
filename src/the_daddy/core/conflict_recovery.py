@@ -13,7 +13,7 @@ def summarize_conflict_state(
     return {
         "pr_has_conflicts": bool(pr_has_conflicts),
         "changed_files": files,
-        "base_branch": base_branch or "main",
+        "base_branch": base_branch,
         "requires_recovery": bool(pr_has_conflicts),
     }
 
