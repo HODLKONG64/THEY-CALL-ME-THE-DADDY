@@ -11,7 +11,7 @@ class UpgradeGateError(RuntimeError):
     pass
 
 
-REQUIRED_FIELDS = [
+_REQUIRED_FIELDS = {
     "allow_proceed",
     "summary",
     "repo_state",
@@ -22,7 +22,7 @@ REQUIRED_FIELDS = [
     "required_constraints",
     "tests_to_run",
     "generated_at",
-]
+}
 
 
 def _parse_iso(value: str) -> datetime:
@@ -47,13 +47,19 @@ def load_upgrade_advice(advice_path: str | Path | None = None) -> dict[str, Any]
         raise UpgradeGateError(f"Upgrade advice file does not exist: {resolved}")
 
     try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        data = json.loads(resolved.read_text(encoding="utf-8"))
     except Exception as exc:
-        raise UpgradeGateError(f"Upgrade advice file is unreadable or invalid JSON: {exc}") from exc
+        raise UpgradeGateError(f"Upgrade advice file is not valid JSON: {exc}") from exc
 
-    if not isinstance(payload, dict):
+    if not isinstance(data, dict):
         raise UpgradeGateError("Upgrade advice payload must be a JSON object.")
-    return payload
+
+    missing = sorted(_REQUIRED_FIELDS - set(data.keys()))
+    if missing:
+        raise UpgradeGateError(
+            "Upgrade advice is missing required fields: " + ", ".join(missing)
+        )
+    return data
 
 
 def validate_upgrade_advice(
@@ -64,19 +70,17 @@ def validate_upgrade_advice(
 ) -> dict[str, Any]:
     advice = load_upgrade_advice(advice_path)
 
-    missing = [key for key in REQUIRED_FIELDS if key not in advice]
-    if missing:
-        raise UpgradeGateError(f"Upgrade advice is missing required fields: {', '.join(missing)}")
+    try:
+        generated_at = _parse_iso(advice["generated_at"])
+    except Exception as exc:
+        raise UpgradeGateError(f"Upgrade advice generated_at is invalid: {exc}") from exc
 
-    if not isinstance(advice["allow_proceed"], bool):
-        raise UpgradeGateError("allow_proceed must be a boolean")
+    oldest_allowed = datetime.now(timezone.utc) - timedelta(hours=max(1, int(max_age_hours)))
+    if generated_at < oldest_allowed:
+        raise UpgradeGateError("Upgrade advice is stale.")
 
-    generated_at = _parse_iso(str(advice["generated_at"]))
-    if generated_at < datetime.now(timezone.utc) - timedelta(hours=max_age_hours):
-        raise UpgradeGateError("Upgrade advice is stale")
-
-    if not isinstance(advice.get("target_files"), list) or not advice["target_files"]:
-        raise UpgradeGateError("Upgrade advice must include at least one target file")
+    if not isinstance(advice.get("allow_proceed"), bool):
+        raise UpgradeGateError("Upgrade advice allow_proceed must be a boolean.")
 
     if require_approval and not advice["allow_proceed"]:
         raise UpgradeGateError(
@@ -107,6 +111,7 @@ def validate_upgrade_gate_for_settings(settings: Any) -> dict[str, Any]:
         }
 
     advice = validate_upgrade_advice(require_approval=False)
+
     if advice["allow_proceed"]:
         advice["repair_mode"] = False
         return advice
