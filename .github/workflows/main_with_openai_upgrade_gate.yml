@@ -1,0 +1,76 @@
+name: Main With OpenAI Upgrade Gate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clean local caches
+        run: |
+          find . -type d -name "__pycache__" -exec rm -rf {} +
+          find . -type f -name "*.pyc" -delete
+          rm -rf .pytest_cache build dist *.egg-info
+
+      - name: Remove cached junk from git index
+        run: git rm -r --cached --ignore-unmatch __pycache__ .pytest_cache build dist *.egg-info
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install . --no-cache-dir
+
+      - name: Generate OpenAI upgrade advice
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_UPGRADE_MODEL: gpt-5.4
+        run: |
+          python -m src.the_daddy.core.request_upgrade_advice             --repo-root .             --output doctor_local/upgrade_advice.json
+
+      - name: Validate OpenAI upgrade advice
+        run: |
+          python -m src.the_daddy.core.require_upgrade_advice             doctor_local/upgrade_advice.json
+
+      - name: Run tests before agent
+        run: pytest -q
+
+      - name: Configure git actor
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Run agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: HODLKONG64/THEY-CALL-ME-THE-DADDY
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DADDY_COMMAND: pytest -q
+          DADDY_TARGET_ROOT: .
+          DADDY_ENABLE_SELF_EVOLUTION: true
+          DADDY_ENABLE_ARCHITECTURE_LANE: true
+          PYTHONUNBUFFERED: "1"
+          DADDY_UPGRADE_ADVICE_PATH: doctor_local/upgrade_advice.json
+        run: python -m src.the_daddy.cli run
+
+      - name: Print completion marker
+        run: echo "Daddy cycle complete"

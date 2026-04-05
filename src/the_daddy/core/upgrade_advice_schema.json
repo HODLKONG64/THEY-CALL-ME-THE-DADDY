@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "type": "object",
+  "required": [
+    "allow_proceed",
+    "summary",
+    "repo_state",
+    "problem_type",
+    "recommended_next_step",
+    "target_files",
+    "forbidden_repeat_patterns",
+    "required_constraints",
+    "tests_to_run",
+    "generated_at"
+  ],
+  "problem_type_enum": [
+    "healthy_meaningful_progress",
+    "healthy_safe_loop",
+    "failing_repo",
+    "insufficient_context"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "rule": "workflow_must_not_continue_until_openai_upgrade_advice_exists_and_approves",
+  "requirements": [
+    "generate_openai_upgrade_advice_before_agent_run",
+    "validate_advice_file_before_tests_and_agent_execution",
+    "fail_workflow_if_allow_proceed_is_false",
+    "fail_workflow_if_target_files_is_empty",
+    "fail_workflow_if_advice_is_stale"
+  ],
+  "intent": [
+    "stop_safe_loop_progress",
+    "force_explicit_openai_audit_before_upgrade",
+    "require_named_upgrade_targets_before_workflow_continues"
+  ]
+}
