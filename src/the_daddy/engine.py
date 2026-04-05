@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from .agents.diagnoser import Diagnoser
@@ -20,7 +19,7 @@ from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
-from .models import MetricsLedgerEntry, PatchAction, RunRecord, SelfEvolutionExecution
+from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
@@ -32,12 +31,9 @@ from .runtime.iterative_depth_learner import IterativeDepthLearner
 from .runtime.learning_journal import build_learning_journal_entry
 from .scoring import rank_patch_set
 
-
 EXECUTION_PATH_TARGETS = {
     "src/the_daddy/engine.py",
     "src/the_daddy/cli.py",
-    ".github/workflows/cycle.yml",
-    ".github/workflows/main_with_openai_upgrade_gate.yml",
 }
 
 
@@ -120,6 +116,24 @@ class DaddyEngine:
                 return True
         return False
 
+    def _required_execution_targets(self) -> list[str]:
+        if not self.upgrade_advice:
+            return []
+        targets = [
+            self._normalize_path(item)
+            for item in list(self.upgrade_advice.get("target_files", []) or [])
+            if str(item).strip()
+        ]
+        allowed = {self._normalize_path(item) for item in EXECUTION_PATH_TARGETS}
+        return [target for target in targets if target in allowed]
+
+    def _repair_mode_completion_satisfied(self, record: RunRecord) -> bool:
+        required_targets = self._required_execution_targets()
+        if not required_targets:
+            return True
+        changed_files = {self._normalize_path(path) for path in self._changed_files_from_record(record)}
+        return any(path in changed_files for path in required_targets)
+
     def _enforce_repair_mode_targets(self, patches: list, record: RunRecord) -> list:
         if not self.repair_mode_active or not self.upgrade_advice:
             return patches
@@ -164,24 +178,15 @@ class DaddyEngine:
         )
         return []
 
-    def _required_execution_targets(self) -> list[str]:
-        if not self.upgrade_advice:
-            return []
-        targets = [
-            self._normalize_path(item)
-            for item in list(self.upgrade_advice.get("target_files", []) or [])
-            if str(item).strip()
-        ]
-        allowed = {self._normalize_path(item) for item in EXECUTION_PATH_TARGETS}
-        return [target for target in targets if target in allowed]
-
-    def _repair_mode_completion_satisfied(self, record: RunRecord) -> bool:
-        required_targets = self._required_execution_targets()
-        if not required_targets:
-            return True
-
-        changed_files = {self._normalize_path(path) for path in self._changed_files_from_record(record)}
-        return any(path in changed_files for path in required_targets)
+    def _build_forced_target_patches(self, record: RunRecord) -> list:
+        record.trace.append(
+            {
+                "event": "forced_target_patch_generation_skipped",
+                "reason": "engine/cli-only mode active; helper fallback disabled",
+                "required_execution_targets": self._required_execution_targets(),
+            }
+        )
+        return []
 
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
@@ -204,12 +209,7 @@ class DaddyEngine:
         rollback_manifest = []
 
         if not patches:
-            record.trace.append(
-                {
-                    "event": "patch_scoring",
-                    "result": "no_patches",
-                }
-            )
+            record.trace.append({"event": "patch_scoring", "result": "no_patches"})
             return applied, rollback_manifest, "none"
 
         scoring = self._score_patch_set(patches)
@@ -376,15 +376,7 @@ class DaddyEngine:
                 ]
             )
 
-        body_lines.extend(
-            [
-                "",
-                "### Summary",
-                summary,
-                "",
-                "### Changed files",
-            ]
-        )
+        body_lines.extend(["", "### Summary", summary, "", "### Changed files"])
 
         if changed_files:
             body_lines.extend([f"- `{path}`" for path in changed_files])
@@ -420,20 +412,15 @@ class DaddyEngine:
     def _can_use_pr_lane(self, record: RunRecord) -> tuple[bool, str]:
         if not getattr(record, "patches_applied", None):
             return False, "no_patches_applied"
-
         if not getattr(record, "success", False):
             return False, "verification_failed"
-
         if not self.settings.has_github:
             return False, "github_not_configured"
-
         if not self._is_git_repo():
             return False, "target_root_not_git_repo"
-
         changed_files = self._changed_files_from_record(record)
         if not changed_files:
             return False, "no_changed_files"
-
         return True, "ok"
 
     def _build_self_evolution_record(
@@ -453,10 +440,7 @@ class DaddyEngine:
 
         if patch_failures:
             notes.extend(
-                [
-                    f"{event.get('path', '')}: {event.get('error', '')}"
-                    for event in patch_failures
-                ]
+                [f"{event.get('path', '')}: {event.get('error', '')}" for event in patch_failures]
             )
 
         attempted = bool(patches)
@@ -483,13 +467,7 @@ class DaddyEngine:
             patches=list(applied_patches),
         )
 
-    def _run_depth_gate(
-        self,
-        *,
-        mode: str,
-        patches: list,
-        record: RunRecord,
-    ) -> list:
+    def _run_depth_gate(self, *, mode: str, patches: list, record: RunRecord) -> list:
         if not patches:
             return patches
 
@@ -551,12 +529,7 @@ class DaddyEngine:
 
         for failed_run in failed_runs:
             summary = summarize_failure_recovery_state(failed_run)
-            record.trace.append(
-                {
-                    "event": "failure_recovery_candidate",
-                    "summary": summary,
-                }
-            )
+            record.trace.append({"event": "failure_recovery_candidate", "summary": summary})
 
             if not summary.get("has_recovery_material", False):
                 continue
@@ -646,7 +619,6 @@ class DaddyEngine:
 
     def _deliver_patch_via_pr(self, record: RunRecord, policy_route: str, prepared_branch: str | None = None) -> None:
         changed_files = self._changed_files_from_record(record)
-
         if not changed_files:
             record.trace.append({"event": "pr_skipped", "reason": "no_changed_files"})
             return
@@ -663,7 +635,6 @@ class DaddyEngine:
             )
 
         committed_branch = self.git_tools.commit_current_branch_changes(record.run_id, changed_files)
-
         if not committed_branch:
             record.trace.append(
                 {"event": "pr_skipped", "reason": "no_pr_created", "changed_files": changed_files}
@@ -799,22 +770,6 @@ class DaddyEngine:
                 f"Run health summary emitted: success_rate={run_health_summary.get('success_rate', 0)} total_runs={run_health_summary.get('total_runs', 0)}."
             )
 
-        summarize_run_velocity = getattr(run_health_runtime, "summarize_run_velocity", None)
-        if callable(summarize_run_velocity):
-            run_velocity_summary = summarize_run_velocity(run_payloads)
-            record.trace.append({"event": "runtime_run_velocity_summary", "summary": run_velocity_summary})
-            review.execution_notes.append(
-                f"Run velocity summary emitted: sample_size={run_velocity_summary.get('sample_size', 0)} successes={run_velocity_summary.get('successes', 0)}."
-            )
-
-        summarize_patch_velocity = getattr(run_health_runtime, "summarize_patch_velocity", None)
-        if callable(summarize_patch_velocity):
-            patch_velocity_summary = summarize_patch_velocity(run_payloads)
-            record.trace.append({"event": "runtime_patch_velocity_summary", "summary": patch_velocity_summary})
-            review.execution_notes.append(
-                f"Patch velocity summary emitted: sample_size={patch_velocity_summary.get('sample_size', 0)} runs_with_patches={patch_velocity_summary.get('runs_with_patches', 0)}."
-            )
-
         summarize_fallback_reason_counts = getattr(reviewer_fallback_runtime, "summarize_fallback_reason_counts", None)
         if callable(summarize_fallback_reason_counts):
             fallback_reason_summary = summarize_fallback_reason_counts(
@@ -865,16 +820,6 @@ class DaddyEngine:
             }
         )
 
-        if getattr(review, "architecture_plans", None):
-            record.trace.append(
-                {
-                    "event": "architecture_plans_present",
-                    "count": len(review.architecture_plans),
-                    "titles": [getattr(plan, "title", "") for plan in review.architecture_plans],
-                    "note": "Architecture plans are recorded but not auto-applied in the build lane.",
-                }
-            )
-
         patches = []
         prepared_branch: str | None = None
 
@@ -886,13 +831,29 @@ class DaddyEngine:
         patches = self._run_depth_gate(mode=mode, patches=patches, record=record)
         patches = self._enforce_repair_mode_targets(patches, record)
 
+        if self.repair_mode_active:
+            required_execution_targets = self._required_execution_targets()
+            if required_execution_targets:
+                allowed_targets = set(required_execution_targets)
+                patches = [
+                    patch for patch in patches
+                    if self._normalize_path(getattr(patch, "path", "")) in allowed_targets
+                ]
+                record.trace.append(
+                    {
+                        "event": "forced_execution_target_mode",
+                        "required_execution_targets": required_execution_targets,
+                        "allowed_patch_paths": [getattr(patch, "path", "") for patch in patches],
+                        "helper_fallback_disabled": True,
+                    }
+                )
+
         if self.repair_mode_active and not patches:
             record.trace.append(
                 {
-                    "event": "repair_mode_completion_blocked",
-                    "reason": "required execution-path target not completed",
+                    "event": "repair_mode_no_patches_remaining",
+                    "reason": "no valid engine/cli execution-target patch was proposed",
                     "required_execution_targets": self._required_execution_targets(),
-                    "changed_files": self._changed_files_from_record(record),
                 }
             )
 
@@ -934,18 +895,17 @@ class DaddyEngine:
         if result.returncode == 0:
             record.success = True
             record.summary = "Success"
-            if self.repair_mode_active and self.upgrade_advice and not bool(self.upgrade_advice.get("allow_proceed", False)):
-                if not self._repair_mode_completion_satisfied(record):
-                    record.success = False
-                    record.summary = "Repair mode pending required upgrade"
-                    record.trace.append(
-                        {
-                            "event": "repair_mode_completion_blocked",
-                            "reason": "required execution-path target not completed",
-                            "required_execution_targets": self._required_execution_targets(),
-                            "changed_files": self._changed_files_from_record(record),
-                        }
-                    )
+            if self.repair_mode_active and not self._repair_mode_completion_satisfied(record):
+                record.success = False
+                record.summary = "Repair mode pending required engine/cli upgrade"
+                record.trace.append(
+                    {
+                        "event": "repair_mode_completion_blocked",
+                        "reason": "required execution-path target not completed",
+                        "required_execution_targets": self._required_execution_targets(),
+                        "changed_files": self._changed_files_from_record(record),
+                    }
+                )
         else:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
             self.memory.record_failure_pattern(
