@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "mission": "self_repair_first",
   "priorities": [
     "self_repair",
@@ -20,7 +20,10 @@
     "recover_on_merge_conflict": true,
     "retry_smaller_after_failure": true,
     "recover_on_next_run_after_failure": true,
-    "target_recent_failure_before_helper_fallback": true
+    "target_recent_failure_before_helper_fallback": true,
+    "stuck_state_openai_escalation": true,
+    "doctor_takeover_after_openai_fix": true,
+    "suppress_helper_fallback_when_execution_targets_required": true
   },
   "thresholds": {
     "pressure_score_force_action": 6,
@@ -28,7 +31,8 @@
     "max_retry_attempts": 3,
     "success_rate_minimum": 0.7,
     "max_failure_recovery_lookback_runs": 2,
-    "max_proven_success_anchors": 2
+    "max_proven_success_anchors": 2,
+    "stuck_same_reason_limit": 2
   },
   "fallback_strategy": {
     "on_no_patch": "force_bounded_patch",
@@ -36,12 +40,14 @@
     "on_failure": "rollback_and_retry_smaller",
     "on_merge_conflict": "rebase_reapply_reopen_pr",
     "on_run_failure": "rollback_and_retry_smaller",
-    "on_next_run_after_failure": "rollback_latest_failed_run_then_retry"
+    "on_next_run_after_failure": "rollback_latest_failed_run_then_retry",
+    "on_stuck_state": "request_fresh_openai_guidance_then_doctor_takeover"
   },
   "forbidden": [
     "large_unbounded_rewrites",
     "duplicate_patches",
     "touching_protected_files_without_reason",
-    "empty_return_cycles"
+    "empty_return_cycles",
+    "helper_lane_filler_when_execution_targets_are_required"
   ]
 }

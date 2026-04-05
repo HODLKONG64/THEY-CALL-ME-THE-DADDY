@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .agents.diagnoser import Diagnoser
@@ -187,6 +189,132 @@ class DaddyEngine:
             }
         )
         return []
+
+
+    def _load_runtime_rules(self) -> dict[str, Any]:
+        rules_path = self.settings.target_root / "src/the_daddy/core/system_rules.json"
+        try:
+            return json.loads(rules_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _stuck_same_reason_limit(self) -> int:
+        rules = self._load_runtime_rules()
+        thresholds = rules.get("thresholds", {})
+        return max(1, int(thresholds.get("stuck_same_reason_limit", 2) or 2))
+
+    def _recent_same_blocker_count(self, blocker: str) -> int:
+        if not blocker:
+            return 0
+        runs = list(getattr(self.memory.state, "runs", []) or [])
+        count = 0
+        for run in reversed(runs[-6:]):
+            summary = str(getattr(run, "summary", "") or "")
+            if blocker in summary:
+                count += 1
+            else:
+                break
+        return count
+
+    def _target_file_snapshots(self) -> list[dict[str, Any]]:
+        snapshots: list[dict[str, Any]] = []
+        target_files = list(self.upgrade_advice.get("target_files", []) or []) if self.upgrade_advice else []
+        for raw_path in target_files:
+            norm = self._normalize_path(raw_path)
+            if not norm or not norm.startswith("src/"):
+                continue
+            path = self.settings.target_root / norm
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                snapshots.append(
+                    {
+                        "path": norm,
+                        "content": path.read_text(encoding="utf-8", errors="ignore")[:20000],
+                    }
+                )
+            except Exception:
+                continue
+        return snapshots
+
+    def _doctor_takeover_patches(self, record: RunRecord) -> list:
+        if not self.repair_mode_active or not self.upgrade_advice:
+            return []
+
+        blocker = "Repair mode pending required engine/cli upgrade"
+        same_reason_count = self._recent_same_blocker_count(blocker)
+        if same_reason_count < self._stuck_same_reason_limit():
+            return []
+
+        target_files = list(self.upgrade_advice.get("target_files", []) or [])
+        snapshots = self._target_file_snapshots()
+        if not snapshots:
+            record.trace.append(
+                {
+                    "event": "stuck_state_openai_escalation",
+                    "reason": "no target file snapshots available for doctor takeover",
+                    "target_files": target_files,
+                }
+            )
+            return []
+
+        blocker_payload = {
+            "summary": blocker,
+            "problem_type": self.upgrade_advice.get("problem_type", ""),
+            "recommended_next_step": self.upgrade_advice.get("recommended_next_step", ""),
+            "target_files": target_files,
+            "trace_tail": (getattr(record, "trace", []) or [])[-12:],
+        }
+
+        prior_attempts = []
+        for run in list(getattr(self.memory.state, "runs", []) or [])[-4:]:
+            try:
+                prior_attempts.append(run.model_dump(mode="json"))
+            except Exception:
+                prior_attempts.append({"summary": str(getattr(run, "summary", ""))})
+
+        record.trace.append(
+            {
+                "event": "stuck_state_openai_escalation",
+                "reason": "Agent stuck; escalated to OpenAI for exact repair guidance.",
+                "target_files": target_files,
+                "same_reason_count": same_reason_count,
+            }
+        )
+
+        try:
+            plan = self.diagnoser.diagnose(
+                command=self.settings.command,
+                output=json.dumps(blocker_payload, indent=2)[:80000],
+                files=snapshots,
+                prior_attempts=prior_attempts,
+            )
+        except Exception as exc:
+            record.trace.append(
+                {
+                    "event": "doctor_takeover_failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            return []
+
+        allowed_targets = {self._normalize_path(path) for path in target_files}
+        filtered = [
+            change for change in list(getattr(plan, "changes", []) or [])
+            if self._normalize_path(getattr(change, "path", "")) in allowed_targets
+        ]
+
+        record.trace.append(
+            {
+                "event": "doctor_agent_takeover",
+                "diagnosis": str(getattr(plan, "diagnosis", "")),
+                "root_cause": str(getattr(plan, "root_cause", "")),
+                "proposed_paths": [getattr(change, "path", "") for change in list(getattr(plan, "changes", []) or [])],
+                "allowed_paths": [getattr(change, "path", "") for change in filtered],
+            }
+        )
+        return filtered
 
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
@@ -803,7 +931,7 @@ class DaddyEngine:
 
         self.memory.add_architecture_review(review)
 
-        mode = self.choose_mode(review)
+        mode = "repair" if self.repair_mode_active else self.choose_mode(review)
         record.selected_mode = mode
         record.architecture_review = review
         record.trace.append(
@@ -823,7 +951,7 @@ class DaddyEngine:
         patches = []
         prepared_branch: str | None = None
 
-        if mode == "build":
+        if mode in {"build", "repair"}:
             for action in getattr(review, "self_evolution_actions", []) or []:
                 if action.patches:
                     patches.extend(action.patches)
@@ -856,6 +984,9 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
+            takeover_patches = self._doctor_takeover_patches(record)
+            if takeover_patches:
+                patches = takeover_patches
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
