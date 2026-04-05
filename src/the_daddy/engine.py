@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
+# --- PATH RESOLVER (OPENAI TARGET FIX) ---
+def _resolve_upgrade_path(path: str) -> str:
+    if not isinstance(path, str):
+        return path
+    return path.replace('the_***', 'the_daddy')
+
 from .agents.diagnoser import Diagnoser
 from .agents.improvement_planner import ImprovementPlanner
 from .agents.reviewer import WakeReviewer
@@ -99,11 +106,11 @@ class DaddyEngine:
         return str(value or "").replace("\\", "/").strip().lower()
 
     def _repair_mode_target_matches(self, patch_path: str, target_files: list[str]) -> bool:
-        patch_norm = self._normalize_path(patch_path)
+        patch_norm = _resolve_upgrade_path(self._normalize_path(patch_path)
         if not patch_norm:
             return False
 
-        normalized_targets = [self._normalize_path(item) for item in target_files if str(item).strip()]
+        normalized_targets = [_resolve_upgrade_path(self._normalize_path(item) for item in target_files if str(item).strip()]
         if not normalized_targets:
             return False
 
@@ -122,25 +129,25 @@ class DaddyEngine:
         if not self.upgrade_advice:
             return []
         targets = [
-            self._normalize_path(item)
+            _resolve_upgrade_path(self._normalize_path(item)
             for item in list(self.upgrade_advice.get("target_files", []) or [])
             if str(item).strip()
         ]
-        allowed = {self._normalize_path(item) for item in EXECUTION_PATH_TARGETS}
+        allowed = {_resolve_upgrade_path(self._normalize_path(item) for item in EXECUTION_PATH_TARGETS}
         return [target for target in targets if target in allowed]
 
     def _repair_mode_completion_satisfied(self, record: RunRecord) -> bool:
         required_targets = self._required_execution_targets()
         if not required_targets:
             return True
-        changed_files = {self._normalize_path(path) for path in self._changed_files_from_record(record)}
+        changed_files = {_resolve_upgrade_path(self._normalize_path(path) for path in self._changed_files_from_record(record)}
         return any(path in changed_files for path in required_targets)
 
     def _enforce_repair_mode_targets(self, patches: list, record: RunRecord) -> list:
         if not self.repair_mode_active or not self.upgrade_advice:
             return patches
 
-        target_files = list(self.upgrade_advice.get("target_files", []) or [])
+        target_files = [_resolve_upgrade_path(p) for p in list(self.upgrade_advice.get("target_files", []) or [])]
         filtered = [
             patch for patch in patches
             if self._repair_mode_target_matches(getattr(patch, "path", ""), target_files)
@@ -218,9 +225,9 @@ class DaddyEngine:
 
     def _target_file_snapshots(self) -> list[dict[str, Any]]:
         snapshots: list[dict[str, Any]] = []
-        target_files = list(self.upgrade_advice.get("target_files", []) or []) if self.upgrade_advice else []
+        target_files = [_resolve_upgrade_path(p) for p in list(self.upgrade_advice.get("target_files", []) or [])] if self.upgrade_advice else []
         for raw_path in target_files:
-            norm = self._normalize_path(raw_path)
+            norm = _resolve_upgrade_path(self._normalize_path(raw_path)
             if not norm or not norm.startswith("src/"):
                 continue
             path = self.settings.target_root / norm
@@ -246,7 +253,7 @@ class DaddyEngine:
         if same_reason_count < self._stuck_same_reason_limit():
             return []
 
-        target_files = list(self.upgrade_advice.get("target_files", []) or [])
+        target_files = [_resolve_upgrade_path(p) for p in list(self.upgrade_advice.get("target_files", []) or [])]
         snapshots = self._target_file_snapshots()
         if not snapshots:
             record.trace.append(
@@ -299,10 +306,10 @@ class DaddyEngine:
             )
             return []
 
-        allowed_targets = {self._normalize_path(path) for path in target_files}
+        allowed_targets = {_resolve_upgrade_path(self._normalize_path(path) for path in target_files}
         filtered = [
             change for change in list(getattr(plan, "changes", []) or [])
-            if self._normalize_path(getattr(change, "path", "")) in allowed_targets
+            if _resolve_upgrade_path(self._normalize_path(getattr(change, "path", "")) in allowed_targets
         ]
 
         record.trace.append(
@@ -965,7 +972,7 @@ class DaddyEngine:
                 allowed_targets = set(required_execution_targets)
                 patches = [
                     patch for patch in patches
-                    if self._normalize_path(getattr(patch, "path", "")) in allowed_targets
+                    if _resolve_upgrade_path(self._normalize_path(getattr(patch, "path", "")) in allowed_targets
                 ]
                 record.trace.append(
                     {
