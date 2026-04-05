@@ -107,8 +107,12 @@ def main() -> int:
         print(f"Upgrade gate blocked execution: {exc}", file=sys.stderr)
         return 1
 
+    if advice.get("repair_mode", False):
+        print("Upgrade gate entered repair mode.", file=sys.stderr)
+
     engine = DaddyEngine(settings)
     engine.upgrade_advice = advice
+    engine.repair_mode_active = bool(advice.get("repair_mode", False))
 
     try:
         record = engine.run()

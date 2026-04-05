@@ -8,12 +8,12 @@ from the_daddy.config import Settings
 from the_daddy.engine import DaddyEngine
 
 
-def _write_advice(path: Path, *, allow_proceed: bool = True) -> Path:
+def _write_advice(path: Path, *, allow_proceed: bool = True, problem_type: str | None = None) -> Path:
     payload = {
         "allow_proceed": allow_proceed,
         "summary": "approved" if allow_proceed else "rejected",
         "repo_state": "test_repo_state",
-        "problem_type": "healthy_meaningful_progress" if allow_proceed else "healthy_safe_loop",
+        "problem_type": problem_type or ("healthy_meaningful_progress" if allow_proceed else "healthy_safe_loop"),
         "recommended_next_step": "run bounded upgrade",
         "target_files": ["src/the_daddy/engine.py"],
         "forbidden_repeat_patterns": [],
@@ -48,3 +48,21 @@ def test_engine_runs_with_approved_upgrade_advice(tmp_path, monkeypatch):
     engine = DaddyEngine(settings)
     result = engine.run()
     assert result is not None
+
+
+def test_engine_runs_in_repair_mode_for_safe_loop(tmp_path, monkeypatch):
+    advice_path = _write_advice(
+        tmp_path / "repair_mode.json",
+        allow_proceed=False,
+        problem_type="healthy_safe_loop",
+    )
+    monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+    settings = Settings(
+        target_root=tmp_path,
+        command="python -c \"print('ok')\"",
+    )
+    engine = DaddyEngine(settings)
+    result = engine.run()
+    assert result is not None
+    assert engine.repair_mode_active is True

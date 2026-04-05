@@ -114,6 +114,7 @@ def validate_upgrade_gate_for_settings(settings: Any) -> dict[str, Any]:
     if not self_evolution_enabled and not architecture_enabled:
         return {
             "allow_proceed": True,
+            "repair_mode": False,
             "summary": "Upgrade gate bypassed because self-evolution and architecture lane are disabled.",
             "repo_state": "gate_bypassed",
             "problem_type": "healthy_meaningful_progress",
@@ -125,4 +126,18 @@ def validate_upgrade_gate_for_settings(settings: Any) -> dict[str, Any]:
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    return validate_upgrade_advice()
+    advice = validate_upgrade_advice(require_approval=False)
+
+    if advice["allow_proceed"]:
+        advice["repair_mode"] = False
+        return advice
+
+    problem_type = str(advice.get("problem_type", "")).strip().lower()
+    if problem_type == "healthy_safe_loop":
+        advice["repair_mode"] = True
+        return advice
+
+    raise UpgradeGateError(
+        "OpenAI upgrade advice did not approve proceeding: "
+        + str(advice.get("summary", "no summary provided"))
+    )

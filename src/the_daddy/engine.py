@@ -50,6 +50,7 @@ class DaddyEngine:
             max_depth=getattr(self.settings, "max_depth", 3)
         )
         self.upgrade_advice: dict[str, Any] | None = None
+        self.repair_mode_active = False
 
         self.git_tools = GitBranchExecutor(
             repo_root=self.settings.target_root,
@@ -74,10 +75,12 @@ class DaddyEngine:
     def _enforce_upgrade_gate(self, record: RunRecord) -> None:
         advice = validate_upgrade_gate_for_settings(self.settings)
         self.upgrade_advice = advice
+        self.repair_mode_active = bool(advice.get("repair_mode", False))
         record.trace.append(
             {
-                "event": "upgrade_gate_approved",
+                "event": "upgrade_gate_checked",
                 "allow_proceed": bool(advice.get("allow_proceed", False)),
+                "repair_mode": bool(advice.get("repair_mode", False)),
                 "problem_type": str(advice.get("problem_type", "")),
                 "recommended_next_step": str(advice.get("recommended_next_step", "")),
                 "target_files": list(advice.get("target_files", []) or []),
@@ -264,6 +267,7 @@ class DaddyEngine:
             body_lines.extend(
                 [
                     f"- Upgrade gate approved: `{bool(self.upgrade_advice.get('allow_proceed', False))}`",
+                    f"- Repair mode: `{bool(self.upgrade_advice.get('repair_mode', False))}`",
                     f"- Upgrade gate problem type: `{self.upgrade_advice.get('problem_type', '')}`",
                 ]
             )
