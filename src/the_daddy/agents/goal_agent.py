@@ -13,7 +13,7 @@ class GoalDirective:
 
 class GoalAgent:
     """
-    Level 8 goal system.
+    Goal system.
     Turns sustained pressure into explicit build goals so the system stops
     waiting for obvious patches and starts driving a bounded roadmap.
     """
