@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -605,6 +606,92 @@ class WakeReviewer:
             except Exception:
                 return {}
         return {}
+
+    def _load_upgrade_target_files(self) -> list[str]:
+        raw = os.environ.get("DADDY_UPGRADE_ADVICE_PATH", "").strip()
+        if not raw:
+            return []
+        try:
+            path = Path(raw).expanduser().resolve()
+            if not path.exists():
+                return []
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            targets = payload.get("target_files", []) or []
+            return [self._normalize_path(str(item)) for item in targets if str(item).strip()]
+        except Exception:
+            return []
+
+    def _upgrade_target_set(self) -> set[str]:
+        return set(self._load_upgrade_target_files())
+
+    def _has_execution_target_requirement(self) -> bool:
+        targets = self._upgrade_target_set()
+        return any(
+            target in {
+                "src/the_daddy/engine.py",
+                "src/the_daddy/cli.py",
+            }
+            for target in targets
+        )
+
+    def _restrict_actions_to_upgrade_targets(self, review: ArchitectureReview) -> ArchitectureReview:
+        target_set = self._upgrade_target_set()
+        if not target_set:
+            return review
+
+        filtered_actions: list[SelfEvolutionAction] = []
+        removed_paths: list[str] = []
+
+        for action in review.self_evolution_actions or []:
+            kept_patches = []
+            for patch in action.patches or []:
+                patch_path = self._normalize_path(getattr(patch, "path", ""))
+                if patch_path in target_set:
+                    kept_patches.append(patch)
+                else:
+                    removed_paths.append(patch_path)
+
+            if kept_patches:
+                filtered_actions.append(
+                    SelfEvolutionAction(
+                        title=action.title,
+                        description=action.description,
+                        risk=action.risk,
+                        patches=kept_patches,
+                    )
+                )
+
+        review.self_evolution_actions = filtered_actions
+
+        if removed_paths:
+            review.execution_notes.append(
+                "Suppressed non-target self-evolution patches outside OpenAI target_files: "
+                + ", ".join(sorted(dict.fromkeys([path for path in removed_paths if path])))
+            )
+
+        filtered_build_actions: list[PlannedWorkItem] = []
+        for item in review.build_actions or []:
+            related_files = [
+                self._normalize_path(path)
+                for path in (getattr(item, "related_files", []) or [])
+                if self._normalize_path(path) in target_set
+            ]
+            if related_files:
+                filtered_build_actions.append(
+                    PlannedWorkItem(
+                        work_id=str(getattr(item, "work_id", "") or "build-thread-auto-targeted"),
+                        title=(getattr(item, "title", "") or "Carry bounded maintenance forward").strip()[:120],
+                        description=(getattr(item, "description", "") or "Apply the bounded self-evolution patch set.").strip()[:500],
+                        mode=getattr(item, "mode", "build") or "build",
+                        state=getattr(item, "state", "proposed") or "proposed",
+                        priority=int(getattr(item, "priority", 1) or 1),
+                        route=getattr(item, "route", "safe") or "safe",
+                        related_files=related_files[:8],
+                        notes=list(getattr(item, "notes", []) or []),
+                    )
+                )
+        review.build_actions = filtered_build_actions
+        return review
 
     def _rules_thresholds(self) -> dict[str, Any]:
         rules = self._load_rules()
@@ -1624,11 +1711,13 @@ def summarize_pressure_escalation_decision(
         memory_json = json.dumps(memory_snapshot, indent=2)[:18000]
         repo_json = json.dumps(repo_snapshot, indent=2)[:26000]
         failure_json = json.dumps(failure_signal or {}, indent=2)[:4000]
+        upgrade_targets = self._load_upgrade_target_files()
 
         allowlisted_new_files = "\n".join(f"  * {path}" for path in sorted(SAFE_NEW_FILE_ALLOWLIST))
         banned_paths = "\n".join(f"  * {path}" for path in sorted(BANNED_SELF_EVOLUTION_PATHS))
         banned_filenames = "\n".join(f"  * {name}" for name in sorted(BANNED_INVENTED_MODULE_FILENAMES))
         append_only_paths = "\n".join(f"  * {path}" for path in sorted(CRITICAL_APPEND_ONLY_PATHS))
+        upgrade_target_text = "\n".join(f"  * {path}" for path in upgrade_targets) if upgrade_targets else "  * none"
 
         return f"""You are the wake-review agent for a bounded self-maintenance repository.
 
@@ -1665,6 +1754,9 @@ Rules:
 - If recent failure_signal has a tracked source path or traceback path, prefer a targeted patch against that failing tracked file before any helper-lane keep-alive patch.
 - Use failure_signal only when it is grounded in recent verification output; do not invent file targets.
 - If no safe code action exists, prefer a clean no-op over documentation-only churn.
+- CRITICAL: if OpenAI target_files are present, ONLY emit self_evolution patch paths from this list:
+{upgrade_target_text}
+- If OpenAI target_files include engine.py or cli.py, do not emit helper-lane patches as substitutes.
 
 Required JSON shape:
 {{
@@ -1696,17 +1788,18 @@ Repository snapshot:
 
     def _fallback_review(self, repo_root: Path, reason: str) -> ArchitectureReview:
         actions: list[SelfEvolutionAction] = []
-        for candidate in [
-            self._proactive_runtime_action(repo_root),
-            self._run_health_action(repo_root),
-            self._error_digest_action(repo_root),
-            self._fallback_patch_action(repo_root),
-        ]:
-            if candidate is not None:
-                actions = [candidate]
-                break
+        if not self._has_execution_target_requirement():
+            for candidate in [
+                self._proactive_runtime_action(repo_root),
+                self._run_health_action(repo_root),
+                self._error_digest_action(repo_root),
+                self._fallback_patch_action(repo_root),
+            ]:
+                if candidate is not None:
+                    actions = [candidate]
+                    break
 
-        plans = [plan] if (plan := self._default_architecture_plan(repo_root)) is not None else []
+        plans = [plan] if (plan := self._default_architecture_plan(repo_root)) is not None and not self._has_execution_target_requirement() else []
 
         return ArchitectureReview(
             diagnosis="Fallback review generated",
@@ -1748,7 +1841,8 @@ Repository snapshot:
                     "Prefer allowlisted runtime helper paths for observability improvements. "
                     "For an existing runtime helper file, do not use replace_file. "
                     "For critical planner/core files, only use append-style regex_replace with pattern \\Z and never shrink or rewrite existing logic. "
-                    "If no safe code action exists, prefer a clean no-op over documentation-only churn."
+                    "If no safe code action exists, prefer a clean no-op over documentation-only churn. "
+                    "If OpenAI target_files are present, only emit self-evolution patches for those target_files."
                 ),
                 prompt=prompt,
                 schema=ArchitectureReview.model_json_schema(),
@@ -1768,6 +1862,8 @@ Repository snapshot:
         review.self_evolution_actions = filtered_actions
         if action_notes:
             review.execution_notes.extend(action_notes)
+
+        review = self._restrict_actions_to_upgrade_targets(review)
 
         if failure_signal.get("has_signal", False):
             review.execution_notes.append(
@@ -1794,7 +1890,7 @@ Repository snapshot:
                 if not only_allowlisted_or_tracked:
                     break
 
-            if not only_allowlisted_or_tracked:
+            if not only_allowlisted_or_tracked and not self._has_execution_target_requirement():
                 review = self._force_allowlisted_action_only(review, repo_root)
 
         thresholds = self._rules_thresholds()
@@ -1805,7 +1901,9 @@ Repository snapshot:
             if failure_signal.get("has_signal", False):
                 review.execution_notes.append("No targeted failure repair was emitted from the current grounded failure signal; helper fallback remains allowed only to keep the workflow alive.")
             metrics = self._pressure_escalation_metrics(memory_snapshot)
-            if (
+            if self._has_execution_target_requirement():
+                review.execution_notes.append("Execution-path targets are required; helper fallback and filler patches are suppressed.")
+            elif (
                 metrics.get("pressure_score", 0) >= force_pressure
                 or metrics.get("runs_without_patches", 0) >= no_patch_limit
             ):
@@ -1829,91 +1927,92 @@ Repository snapshot:
                 review.build_actions = [self._default_build_action()]
                 review.execution_notes.append("Default build action injected because reviewer returned none.")
 
-        if not review.self_evolution_actions and self._should_force_level2_escalation(memory_snapshot):
-            escalation_action = self._pressure_escalation_action(repo_root)
-            if escalation_action is not None and bool(getattr(escalation_action, "patches", [])):
-                review.self_evolution_actions = [escalation_action]
-                metrics = self._pressure_escalation_metrics(memory_snapshot)
-                review.execution_notes.append("Level 2 safe escalation engaged: append-only pressure-to-action trigger selected a grounded planner patch.")
-                review.execution_notes.append(
-                    f"Escalation metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
-                )
+        if not self._has_execution_target_requirement():
+            if not review.self_evolution_actions and self._should_force_level2_escalation(memory_snapshot):
+                escalation_action = self._pressure_escalation_action(repo_root)
+                if escalation_action is not None and bool(getattr(escalation_action, "patches", [])):
+                    review.self_evolution_actions = [escalation_action]
+                    metrics = self._pressure_escalation_metrics(memory_snapshot)
+                    review.execution_notes.append("Level 2 safe escalation engaged: append-only pressure-to-action trigger selected a grounded planner patch.")
+                    review.execution_notes.append(
+                        f"Escalation metrics: pressure_score={metrics['pressure_score']} runs_without_patches={metrics['runs_without_patches']} average_patch_count={metrics['average_patch_count']} success_rate={metrics['success_rate']}."
+                    )
 
-        forced_pressure = self._has_forced_helper_pressure(memory_snapshot)
+            forced_pressure = self._has_forced_helper_pressure(memory_snapshot)
 
-        if forced_pressure and not review.self_evolution_actions:
-            forced_action, forced_path, forced_note = self._forced_helper_pressure_action(
-                repo_root=repo_root,
-                memory_snapshot=memory_snapshot,
-            )
-            if forced_action is None or not bool(getattr(forced_action, "patches", [])):
-                forced_action, forced_path, forced_note = self._bridge_build_pressure_action(
+            if forced_pressure and not review.self_evolution_actions:
+                forced_action, forced_path, forced_note = self._forced_helper_pressure_action(
                     repo_root=repo_root,
                     memory_snapshot=memory_snapshot,
                 )
-            if forced_action is not None and bool(getattr(forced_action, "patches", [])):
-                review.self_evolution_actions = [forced_action]
-                review.execution_notes.append("Forced helper override engaged due to flat patch velocity + active build pressure.")
-                if forced_note:
-                    review.execution_notes.append(forced_note)
-                if forced_path:
-                    review.execution_notes.append(f"Forced helper target: {forced_path}")
+                if forced_action is None or not bool(getattr(forced_action, "patches", [])):
+                    forced_action, forced_path, forced_note = self._bridge_build_pressure_action(
+                        repo_root=repo_root,
+                        memory_snapshot=memory_snapshot,
+                    )
+                if forced_action is not None and bool(getattr(forced_action, "patches", [])):
+                    review.self_evolution_actions = [forced_action]
+                    review.execution_notes.append("Forced helper override engaged due to flat patch velocity + active build pressure.")
+                    if forced_note:
+                        review.execution_notes.append(forced_note)
+                    if forced_path:
+                        review.execution_notes.append(f"Forced helper target: {forced_path}")
 
-        if not review.self_evolution_actions and self._has_forced_helper_pressure(memory_snapshot):
-            pressure_action, pressure_path, pressure_note = self._synthesize_action_from_build_pressure(
-                repo_root=repo_root,
-                memory_snapshot=memory_snapshot,
-            )
-            if pressure_action is not None and bool(getattr(pressure_action, "patches", [])):
-                review.self_evolution_actions = [pressure_action]
-                review.execution_notes.append("Planner-held build pressure synthesized a bounded self-evolution action before fallback no-op resolution.")
-                if pressure_note:
-                    review.execution_notes.append(pressure_note)
-                if pressure_path:
-                    review.execution_notes.append(f"Pressure-synthesized helper target: {pressure_path}")
+            if not review.self_evolution_actions and self._has_forced_helper_pressure(memory_snapshot):
+                pressure_action, pressure_path, pressure_note = self._synthesize_action_from_build_pressure(
+                    repo_root=repo_root,
+                    memory_snapshot=memory_snapshot,
+                )
+                if pressure_action is not None and bool(getattr(pressure_action, "patches", [])):
+                    review.self_evolution_actions = [pressure_action]
+                    review.execution_notes.append("Planner-held build pressure synthesized a bounded self-evolution action before fallback no-op resolution.")
+                    if pressure_note:
+                        review.execution_notes.append(pressure_note)
+                    if pressure_path:
+                        review.execution_notes.append(f"Pressure-synthesized helper target: {pressure_path}")
 
-        if not review.self_evolution_actions:
-            helper_candidates = {
-                RUN_HEALTH_RUNTIME_PATH: (self._run_health_action(repo_root), "Run-health runtime improvement injected while repo is green."),
-                FALLBACK_RUNTIME_PATH: (self._fallback_patch_action(repo_root), "Fallback self-evolution patch injected because reviewer returned no executable patch."),
-                ARCHITECTURE_RUNTIME_PATH: (self._default_architecture_plan(repo_root), "Architecture-probe helper candidate selected for bounded branch-safe observability."),
-                PROACTIVE_RUNTIME_PATH: (self._proactive_runtime_action(repo_root), "Proactive runtime improvement injected while repo is green."),
-                ERROR_DIGEST_RUNTIME_PATH: (self._error_digest_action(repo_root), "Error-digest runtime improvement injected while repo is green."),
-            }
-            preferred_order = [
-                RUN_HEALTH_RUNTIME_PATH,
-                FALLBACK_RUNTIME_PATH,
-                ARCHITECTURE_RUNTIME_PATH,
-                PROACTIVE_RUNTIME_PATH,
-                ERROR_DIGEST_RUNTIME_PATH,
-            ]
-            cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
+            if not review.self_evolution_actions:
+                helper_candidates = {
+                    RUN_HEALTH_RUNTIME_PATH: (self._run_health_action(repo_root), "Run-health runtime improvement injected while repo is green."),
+                    FALLBACK_RUNTIME_PATH: (self._fallback_patch_action(repo_root), "Fallback self-evolution patch injected because reviewer returned no executable patch."),
+                    ARCHITECTURE_RUNTIME_PATH: (self._default_architecture_plan(repo_root), "Architecture-probe helper candidate selected for bounded branch-safe observability."),
+                    PROACTIVE_RUNTIME_PATH: (self._proactive_runtime_action(repo_root), "Proactive runtime improvement injected while repo is green."),
+                    ERROR_DIGEST_RUNTIME_PATH: (self._error_digest_action(repo_root), "Error-digest runtime improvement injected while repo is green."),
+                }
+                preferred_order = [
+                    RUN_HEALTH_RUNTIME_PATH,
+                    FALLBACK_RUNTIME_PATH,
+                    ARCHITECTURE_RUNTIME_PATH,
+                    PROACTIVE_RUNTIME_PATH,
+                    ERROR_DIGEST_RUNTIME_PATH,
+                ]
+                cooldown_paths = self._helper_cooldown_paths(memory_snapshot, window=2)
 
-            for helper_path in preferred_order:
-                candidate, note = helper_candidates.get(helper_path, (None, ""))
-                if candidate is None or helper_path in cooldown_paths:
-                    continue
+                for helper_path in preferred_order:
+                    candidate, note = helper_candidates.get(helper_path, (None, ""))
+                    if candidate is None or helper_path in cooldown_paths:
+                        continue
 
-                if helper_path == ARCHITECTURE_RUNTIME_PATH and isinstance(candidate, ArchitecturePlan):
-                    if candidate.patch_bundle:
-                        review.self_evolution_actions = [
-                            SelfEvolutionAction(
-                                title=candidate.title,
-                                description=candidate.summary,
-                                risk="safe",
-                                patches=list(candidate.patch_bundle),
-                            )
-                        ]
+                    if helper_path == ARCHITECTURE_RUNTIME_PATH and isinstance(candidate, ArchitecturePlan):
+                        if candidate.patch_bundle:
+                            review.self_evolution_actions = [
+                                SelfEvolutionAction(
+                                    title=candidate.title,
+                                    description=candidate.summary,
+                                    risk="safe",
+                                    patches=list(candidate.patch_bundle),
+                                )
+                            ]
+                            review.execution_notes.append(note)
+                            review.execution_notes.append(f"Cooldown-aware helper injection selected: {helper_path}")
+                            break
+                        continue
+
+                    if isinstance(candidate, SelfEvolutionAction) and bool(getattr(candidate, "patches", [])):
+                        review.self_evolution_actions = [candidate]
                         review.execution_notes.append(note)
                         review.execution_notes.append(f"Cooldown-aware helper injection selected: {helper_path}")
                         break
-                    continue
-
-                if isinstance(candidate, SelfEvolutionAction) and bool(getattr(candidate, "patches", [])):
-                    review.self_evolution_actions = [candidate]
-                    review.execution_notes.append(note)
-                    review.execution_notes.append(f"Cooldown-aware helper injection selected: {helper_path}")
-                    break
 
         if review.architecture_plans:
             justified_plans: list[ArchitecturePlan] = []
@@ -1935,6 +2034,7 @@ Repository snapshot:
             review.architecture_plans = justified_plans
 
         review = self._normalize_build_actions(review)
+        review = self._restrict_actions_to_upgrade_targets(review)
 
         metrics = self._pressure_escalation_metrics(memory_snapshot)
         self_check = summarize_self_check(
