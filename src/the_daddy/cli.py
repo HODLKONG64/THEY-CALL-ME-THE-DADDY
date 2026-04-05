@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .config import get_settings
+from .core.upgrade_gate import UpgradeGateError, validate_upgrade_gate_for_settings
 from .engine import DaddyEngine
 
 
@@ -100,8 +101,20 @@ def main() -> int:
         print(f"Unknown command: {command}", file=sys.stderr)
         return 2
 
+    try:
+        advice = validate_upgrade_gate_for_settings(settings)
+    except UpgradeGateError as exc:
+        print(f"Upgrade gate blocked execution: {exc}", file=sys.stderr)
+        return 1
+
     engine = DaddyEngine(settings)
-    record = engine.run()
+    engine.upgrade_advice = advice
+
+    try:
+        record = engine.run()
+    except UpgradeGateError as exc:
+        print(f"Upgrade gate blocked engine execution: {exc}", file=sys.stderr)
+        return 1
 
     _print_run_summary(record)
 

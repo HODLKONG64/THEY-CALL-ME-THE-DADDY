@@ -14,6 +14,7 @@ from .core.failure_recovery import (
     summarize_failure_recovery_state,
 )
 from .core.self_check import load_rules
+from .core.upgrade_gate import UpgradeGateError, validate_upgrade_gate_for_settings
 from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
@@ -48,6 +49,7 @@ class DaddyEngine:
         self.depth_learner = IterativeDepthLearner(
             max_depth=getattr(self.settings, "max_depth", 3)
         )
+        self.upgrade_advice: dict[str, Any] | None = None
 
         self.git_tools = GitBranchExecutor(
             repo_root=self.settings.target_root,
@@ -68,6 +70,20 @@ class DaddyEngine:
 
     def choose_mode(self, review):
         return self.planner.decide_mode(self.memory, review)
+
+    def _enforce_upgrade_gate(self, record: RunRecord) -> None:
+        advice = validate_upgrade_gate_for_settings(self.settings)
+        self.upgrade_advice = advice
+        record.trace.append(
+            {
+                "event": "upgrade_gate_approved",
+                "allow_proceed": bool(advice.get("allow_proceed", False)),
+                "problem_type": str(advice.get("problem_type", "")),
+                "recommended_next_step": str(advice.get("recommended_next_step", "")),
+                "target_files": list(advice.get("target_files", []) or []),
+                "generated_at": str(advice.get("generated_at", "")),
+            }
+        )
 
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
@@ -243,6 +259,14 @@ class DaddyEngine:
             f"- Patch count: `{len(getattr(record, 'patches_applied', []) or [])}`",
             f"- Byte delta: `{total_delta}`",
         ]
+
+        if self.upgrade_advice is not None:
+            body_lines.extend(
+                [
+                    f"- Upgrade gate approved: `{bool(self.upgrade_advice.get('allow_proceed', False))}`",
+                    f"- Upgrade gate problem type: `{self.upgrade_advice.get('problem_type', '')}`",
+                ]
+            )
 
         if self_evolution is not None:
             body_lines.extend(
@@ -710,6 +734,7 @@ class DaddyEngine:
         run_id = make_run_id()
 
         record = RunRecord(run_id=run_id, command=self.settings.command)
+        self._enforce_upgrade_gate(record)
         self._recover_from_previous_failures(record)
         record.repo_fingerprint = self.repo_fingerprint()
         record.attempt_count = 1
