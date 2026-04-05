@@ -23,12 +23,19 @@ def _load_advice():
         return None
 
 
+def _safe(obj):
+    try:
+        json.dumps(obj)
+        return obj
+    except Exception:
+        return str(obj)
+
+
 def main() -> int:
     settings = get_settings()
 
     advice = _load_advice()
 
-    # BLOCK BEFORE ENGINE RUN (matches tests)
     if advice is None:
         print("Upgrade gate blocked execution: missing approved advice.", file=sys.stderr)
         return 1
@@ -53,7 +60,7 @@ def main() -> int:
         "trace": getattr(record, "trace", []),
         "backlog_updates": getattr(record, "backlog_updates", []),
         "repo_fingerprint": getattr(record, "repo_fingerprint", {}),
-        "verification": getattr(record, "verification", None),
+        "verification": _safe(getattr(record, "verification", None)),
     }, indent=2))
 
     return 0
