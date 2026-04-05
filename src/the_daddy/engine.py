@@ -381,6 +381,17 @@ if __name__ == "__main__":
                 )
             )
 
+        if "src/the_daddy/engine.py" in normalized_targets:
+            forced.append(
+                PatchAction(
+                    path="src/the_daddy/engine.py",
+                    operation="regex_replace",
+                    pattern='self\.repair_mode_active = bool\(advice\.get\("repair_mode", False\)\)',
+                    replacement='self.repair_mode_active = bool(advice.get("repair_mode", False))\n        record.trace.append({"event": "forced_engine_target_patch", "repair_mode": self.repair_mode_active})',
+                    description="Forced repair-mode target patch for engine enforcement tracing.",
+                )
+            )
+
         if forced:
             record.trace.append(
                 {
