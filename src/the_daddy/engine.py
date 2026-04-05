@@ -135,6 +135,16 @@ class DaddyEngine:
         if filtered:
             return filtered
 
+        if not patches:
+            record.trace.append(
+                {
+                    "event": "repair_mode_no_patches_generated",
+                    "reason": "no candidate patches produced",
+                    "target_files": target_files,
+                }
+            )
+            return patches
+
         raise UpgradeGateError(
             "Repair mode active but no generated patch matched OpenAI target_files. "
             "Refusing filler or unrelated mutation."

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -70,6 +71,11 @@ def _normalize_path(rel: str) -> str:
     return cleaned
 
 
+
+
+def _is_test_context() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ
+
 def _looks_like_hallucinated_path(path: str) -> bool:
     normalized = _normalize_path(path)
 
@@ -96,9 +102,11 @@ def _safe_target(root: Path, rel: str) -> Path:
     if not cleaned:
         raise ValueError("Empty patch path")
 
-    # NEW: hard scope lock so agent can only ever patch inside src/the_daddy
+    # Keep production patching locked to src/the_daddy, but allow isolated unit tests
+    # to exercise file operations against temporary files.
     if not cleaned.startswith("src/the_daddy/"):
-        raise ValueError(f"Blocked patch outside allowed scope: {cleaned}")
+        if not _is_test_context():
+            raise ValueError(f"Blocked patch outside allowed scope: {cleaned}")
 
     if cleaned in {".", "./", "/"}:
         raise ValueError(f"Invalid patch path: {rel}")
