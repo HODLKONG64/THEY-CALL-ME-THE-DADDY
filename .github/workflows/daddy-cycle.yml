@@ -2,68 +2,12 @@ name: daddy-cycle
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */12 * * *"
-
-permissions:
-  contents: write
-  pull-requests: write
 
 jobs:
-  run-daddy:
+  deprecated:
     runs-on: ubuntu-latest
-
-    concurrency:
-      group: daddy-cycle
-      cancel-in-progress: false
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Clean workspace
+      - name: Notice
         run: |
-          find . -type d -name "__pycache__" -exec rm -rf {} +
-          find . -type f -name "*.pyc" -delete
-          rm -rf .pytest_cache build dist *.egg-info
-
-      - name: Remove tracked junk files
-        run: |
-          git rm -r --cached --ignore-unmatch __pycache__ .pytest_cache build dist *.egg-info
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install . --no-cache-dir
-
-      - name: Configure git identity
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-      - name: Run Daddy
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPO: HODLKONG64/THEY-CALL-ME-THE-DADDY
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          DADDY_COMMAND: pytest -q
-          DADDY_TARGET_ROOT: .
-          DADDY_ENABLE_SELF_EVOLUTION: "true"
-          DADDY_ENABLE_ARCHITECTURE_LANE: "true"
-          PYTHONUNBUFFERED: "1"
-        run: |
-          python -m src.the_daddy.cli run
-
-      - name: Done
-        run: echo "Daddy cycle complete"
+          echo "daddy-cycle is deprecated."
+          echo "Use .github/workflows/cycle.yml as the single canonical workflow."

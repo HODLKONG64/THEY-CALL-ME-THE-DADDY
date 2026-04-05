@@ -1,10 +1,13 @@
-# pre_update_guard.yml
+name: pre-update-guard
 
-name: guard
-on: [push]
+on:
+  workflow_dispatch:
 
 jobs:
-  guard:
+  deprecated-guard:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "guard active"
+      - name: Notice
+        run: |
+          echo "pre_update_guard.yml is disabled to avoid duplicate push-trigger workflows."
+          echo "Use .github/workflows/cycle.yml as the single canonical workflow."
