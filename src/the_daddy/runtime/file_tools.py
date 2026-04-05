@@ -96,6 +96,10 @@ def _safe_target(root: Path, rel: str) -> Path:
     if not cleaned:
         raise ValueError("Empty patch path")
 
+    # NEW: hard scope lock so agent can only ever patch inside src/the_daddy
+    if not cleaned.startswith("src/the_daddy/"):
+        raise ValueError(f"Blocked patch outside allowed scope: {cleaned}")
+
     if cleaned in {".", "./", "/"}:
         raise ValueError(f"Invalid patch path: {rel}")
 
