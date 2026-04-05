@@ -1,11 +1,78 @@
-.venv/
+# -------------------------
+# Python
+# -------------------------
 __pycache__/
-.pytest_cache/
-doctor_local/
-.env
 *.pyc
 *.pyo
 *.pyd
-.DS_Store
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# -------------------------
+# Build / Packaging
+# -------------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# -------------------------
+# Testing / Coverage
+# -------------------------
+.pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.tox/
+.nox/
+
+# -------------------------
+# Logs
+# -------------------------
+*.log
+
+# -------------------------
+# IDE / Editor
+# -------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# -------------------------
+# OS Files
+# -------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------
+# Runtime / Temp
+# -------------------------
+tmp/
+temp/
+*.tmp
+
+# -------------------------
+# GitHub Actions / Local artifacts
+# -------------------------
+doctor_local/
+*.zip
+
+# -------------------------
+# Node (if ever used)
+# -------------------------
+node_modules/
+
+# -------------------------
+# Optional: Data / Memory (if needed)
+# -------------------------
+sam-memory.json
