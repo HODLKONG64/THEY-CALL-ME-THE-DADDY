@@ -1,4 +1,4 @@
-🧠 THEY CALL ME THE DADDY
+🧠 THEY CALL ME THE DADDY :)
 Autonomous Self-Evolving Code Agent (Safe-Bounded Runtime System)
 🚀 OVERVIEW
 
