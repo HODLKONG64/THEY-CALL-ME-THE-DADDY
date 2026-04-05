@@ -145,10 +145,15 @@ class DaddyEngine:
             )
             return patches
 
-        raise UpgradeGateError(
-            "Repair mode active but no generated patch matched OpenAI target_files. "
-            "Refusing filler or unrelated mutation."
+        record.trace.append(
+            {
+                "event": "repair_mode_no_target_match",
+                "reason": "no patches matched OpenAI target_files",
+                "target_files": target_files,
+                "input_patch_paths": [getattr(p, "path", "") for p in patches],
+            }
         )
+        return []
 
     def _score_patch_set(self, patches: list):
         scored = rank_patch_set(patches)
