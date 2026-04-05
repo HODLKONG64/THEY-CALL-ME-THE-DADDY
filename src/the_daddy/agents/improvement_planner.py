@@ -37,23 +37,8 @@ class ImprovementPlanner:
     PRESSURE_ESCALATION_MIN_SCORE = 3
     PATCHLESS_ESCALATION_MIN_RUNS = 5
     PATCH_VELOCITY_FLOOR = 0.3
-    HIGH_HEALTH_SUCCESS_RATE = 0.85
+    HIGH_HEALTH_SUCCESS_RATE = 0.95
     MAX_LEVEL2_ACTIONS = 2
-    AGGRESSIVE_PRESSURE_SCORE = 5
-    AGGRESSIVE_PATCHLESS_RUNS = 4
-    AGGRESSIVE_PATCH_VELOCITY_FLOOR = 0.2
-    AUTONOMOUS_EXPANSION_PRESSURE_SCORE = 6
-    AUTONOMOUS_EXPANSION_PATCHLESS_RUNS = 6
-    AUTONOMOUS_EXPANSION_SUCCESS_RATE = 0.85
-    SELF_DIRECTED_ARCHITECTURE_PRESSURE_SCORE = 7
-    SELF_DIRECTED_ARCHITECTURE_PATCHLESS_RUNS = 7
-    SELF_DIRECTED_ARCHITECTURE_SUCCESS_RATE = 0.85
-    LEVEL6_AGENT_SPAWNING_PRESSURE_SCORE = 7
-    LEVEL6_AGENT_SPAWNING_PATCHLESS_RUNS = 8
-    LEVEL6_AGENT_SPAWNING_SUCCESS_RATE = 0.85
-    LEVEL7_SELF_REWRITE_PRESSURE_SCORE = 7
-    LEVEL7_SELF_REWRITE_PATCHLESS_RUNS = 7
-    LEVEL7_SELF_REWRITE_SUCCESS_RATE = 0.85
 
     def merge_review_into_backlog(self, memory: MemoryState, review: ArchitectureReview) -> list[str]:
         additions: list[str] = []
@@ -175,19 +160,12 @@ class ImprovementPlanner:
         build_pressure_source = self._build_pressure_source(state)
         build_pressure_active = self._build_pressure_active(state)
 
-        aggressive_mode = (
-            build_pressure_score >= self.AGGRESSIVE_PRESSURE_SCORE
-            and no_patch_streak >= self.AGGRESSIVE_PATCHLESS_RUNS
-            and average_patch_count <= self.AGGRESSIVE_PATCH_VELOCITY_FLOOR
-            and success_rate >= self.HIGH_HEALTH_SUCCESS_RATE
-        )
-
         force_deeper_action = (
             build_pressure_score >= self.PRESSURE_ESCALATION_MIN_SCORE
             and no_patch_streak >= self.PATCHLESS_ESCALATION_MIN_RUNS
             and average_patch_count < self.PATCH_VELOCITY_FLOOR
             and success_rate >= self.HIGH_HEALTH_SUCCESS_RATE
-        ) or aggressive_mode
+        )
 
         return {
             "build_pressure_score": build_pressure_score,
@@ -196,168 +174,7 @@ class ImprovementPlanner:
             "no_patch_streak": no_patch_streak,
             "average_patch_count": average_patch_count,
             "success_rate": success_rate,
-            "aggressive_mode": aggressive_mode,
             "force_deeper_action": force_deeper_action,
-        }
-
-
-
-
-
-
-
-    def summarize_synthetic_creation_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        synthetic_creation_required = (
-            pressure_score >= 7
-            and no_patch_streak >= 7
-            and average_patch_count <= 0.2
-            and success_rate >= 0.85
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "synthetic_creation_required": synthetic_creation_required,
-        }
-
-    def summarize_level9_multi_path_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        level9_multi_path = (
-            pressure_score >= 7
-            and no_patch_streak >= 7
-            and average_patch_count <= 0.2
-            and success_rate >= 0.85
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "level9_multi_path": level9_multi_path,
-        }
-
-    def summarize_level8_goal_system_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        level8_goal_system = (
-            pressure_score >= 7
-            and no_patch_streak >= 7
-            and average_patch_count <= 0.2
-            and success_rate >= 0.85
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "level8_goal_system": level8_goal_system,
-        }
-
-    def summarize_level7_self_rewrite_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        level7_self_rewrite = (
-            pressure_score >= self.LEVEL7_SELF_REWRITE_PRESSURE_SCORE
-            and no_patch_streak >= self.LEVEL7_SELF_REWRITE_PATCHLESS_RUNS
-            and average_patch_count <= 0.2
-            and success_rate >= self.LEVEL7_SELF_REWRITE_SUCCESS_RATE
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "level7_self_rewrite": level7_self_rewrite,
-        }
-
-    def summarize_level6_agent_spawning_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        level6_agent_spawning = (
-            pressure_score >= self.LEVEL6_AGENT_SPAWNING_PRESSURE_SCORE
-            and no_patch_streak >= self.LEVEL6_AGENT_SPAWNING_PATCHLESS_RUNS
-            and average_patch_count <= 0.1
-            and success_rate >= self.LEVEL6_AGENT_SPAWNING_SUCCESS_RATE
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "level6_agent_spawning": level6_agent_spawning,
-        }
-
-    def summarize_self_directed_architecture_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        self_directed_architecture = (
-            pressure_score >= self.SELF_DIRECTED_ARCHITECTURE_PRESSURE_SCORE
-            and no_patch_streak >= self.SELF_DIRECTED_ARCHITECTURE_PATCHLESS_RUNS
-            and average_patch_count <= self.AGGRESSIVE_PATCH_VELOCITY_FLOOR
-            and success_rate >= self.SELF_DIRECTED_ARCHITECTURE_SUCCESS_RATE
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "self_directed_architecture": self_directed_architecture,
-        }
-
-    def summarize_autonomous_expansion_decision(self, state: Any) -> dict[str, Any]:
-        pressure = self.summarize_pressure_escalation_decision(state)
-        pressure_score = int(pressure.get("build_pressure_score", 0) or 0)
-        no_patch_streak = int(pressure.get("no_patch_streak", 0) or 0)
-        average_patch_count = float(pressure.get("average_patch_count", 0) or 0)
-        success_rate = float(pressure.get("success_rate", 0) or 0)
-
-        autonomous_expansion = (
-            pressure_score >= self.AUTONOMOUS_EXPANSION_PRESSURE_SCORE
-            and no_patch_streak >= self.AUTONOMOUS_EXPANSION_PATCHLESS_RUNS
-            and average_patch_count <= self.AGGRESSIVE_PATCH_VELOCITY_FLOOR
-            and success_rate >= self.AUTONOMOUS_EXPANSION_SUCCESS_RATE
-        )
-
-        return {
-            "pressure_score": pressure_score,
-            "no_patch_streak": no_patch_streak,
-            "average_patch_count": average_patch_count,
-            "success_rate": success_rate,
-            "autonomous_expansion": autonomous_expansion,
         }
 
     def _should_force_build_from_pressure(self, state: Any) -> bool:
@@ -447,30 +264,14 @@ class ImprovementPlanner:
                 effective_max = max(1, min(self.MAX_LEVEL2_ACTIONS, len(safe_actions), max_actions))
                 decision = self.summarize_pressure_escalation_decision(state)
                 reasons.append(
-                    "Level 3 escalation engaged: strong pressure with healthy but under-producing patch velocity justifies deeper bounded action."
+                    "Level 2 escalation engaged: strong pressure with healthy but under-producing patch velocity justifies deeper bounded action."
                 )
-                autonomous = self.summarize_autonomous_expansion_decision(state)
-                if autonomous.get('autonomous_expansion', False):
-                    reasons.append(
-                        "Level 4 autonomous expansion is armed: sustained pressure and prolonged patch drought now justify forced bounded expansion work."
-                    )
-                    architecture_decision = self.summarize_self_directed_architecture_decision(state)
-                    if architecture_decision.get("self_directed_architecture", False):
-                        reasons.append(
-                            "Level 5 self-directed architecture is armed: sustained pressure now justifies planner-led architecture work instead of helper fallback."
-                        )
-                        level7 = self.summarize_level7_self_rewrite_decision(state)
-                        if level7.get("level7_self_rewrite", False):
-                            reasons.append(
-                                "Level 7 self-rewriting architecture is armed: extreme sustained pressure now justifies spawning a bounded self-rewrite capability."
-                            )
                 reasons.append(
                     f"Escalation metrics: pressure_score={decision['build_pressure_score']}, "
                     f"pressure_source={decision['build_pressure_source']}, "
                     f"no_patch_streak={decision['no_patch_streak']}, "
                     f"average_patch_count={decision['average_patch_count']}, "
-                    f"success_rate={decision['success_rate']}, "
-                    f"aggressive_mode={decision['aggressive_mode']}."
+                    f"success_rate={decision['success_rate']}."
                 )
 
         if effective_max <= 0:
