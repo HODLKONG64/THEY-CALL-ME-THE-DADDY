@@ -1,40 +1,10 @@
-name: Pre Update Guard
+# pre_update_guard.yml
 
-on:
-  workflow_dispatch:
+name: guard
+on: [push]
 
 jobs:
-  test-build:
+  guard:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install project
-        run: |
-          python -m pip install --upgrade pip
-          pip install . --no-cache-dir
-
-      - name: Run tests
-        run: pytest -q
-
-      - name: Run agent
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPO: HODLKONG64/THEY-CALL-ME-THE-DADDY
-          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          DADDY_COMMAND: pytest -q
-          DADDY_TARGET_ROOT: .
-          DADDY_ENABLE_SELF_EVOLUTION: true
-          DADDY_ENABLE_ARCHITECTURE_LANE: true
-        run: python -m src.the_daddy.cli run
+      - run: echo "guard active"

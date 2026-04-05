@@ -1,0 +1,10 @@
+# cycle.yml
+
+name: daddy-cycle
+on: [push]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python -m src.the_daddy.cli run
