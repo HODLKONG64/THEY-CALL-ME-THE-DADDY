@@ -22,19 +22,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Clean local caches
-        run: |
-          find . -type d -name "__pycache__" -exec rm -rf {} +
-          find . -type f -name "*.pyc" -delete
-          rm -rf .pytest_cache build dist *.egg-info
-
-      - name: Remove cached junk from git index
-        run: git rm -r --cached --ignore-unmatch __pycache__ .pytest_cache build dist *.egg-info
-
-      - name: Install project
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install . --no-cache-dir
+          pip install .
 
       - name: Generate OpenAI upgrade advice
         env:
@@ -43,17 +34,12 @@ jobs:
         run: |
           python -m src.the_daddy.core.request_upgrade_advice             --repo-root .             --output doctor_local/upgrade_advice.json
 
-      - name: Validate OpenAI upgrade advice
+      - name: Validate OpenAI upgrade advice (with repair mode)
         run: |
           python -m src.the_daddy.core.require_upgrade_advice             doctor_local/upgrade_advice.json
 
-      - name: Run tests before agent
+      - name: Run tests
         run: pytest -q
-
-      - name: Configure git actor
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
 
       - name: Run agent
         env:
@@ -64,13 +50,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          DADDY_COMMAND: pytest -q
-          DADDY_TARGET_ROOT: .
-          DADDY_ENABLE_SELF_EVOLUTION: true
-          DADDY_ENABLE_ARCHITECTURE_LANE: true
-          PYTHONUNBUFFERED: "1"
           DADDY_UPGRADE_ADVICE_PATH: doctor_local/upgrade_advice.json
         run: python -m src.the_daddy.cli run
 
-      - name: Print completion marker
-        run: echo "Daddy cycle complete"
+      - name: Done
+        run: echo "Workflow complete"
