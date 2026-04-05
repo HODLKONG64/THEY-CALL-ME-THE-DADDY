@@ -122,6 +122,13 @@ def main() -> int:
 
     _print_run_summary(record)
 
+    if bool(advice.get("repair_mode", False)) and not bool(getattr(record, "patches_applied", []) or []):
+        print(
+            "Repair mode did not complete the required OpenAI upgrade step.",
+            file=sys.stderr,
+        )
+        return 1
+
     return 0 if getattr(record, "success", False) else 1
 
 
