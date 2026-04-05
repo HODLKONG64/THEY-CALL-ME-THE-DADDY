@@ -12,22 +12,33 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def _is_repair_mode() -> bool:
+def _load_advice():
     path = os.environ.get("DADDY_UPGRADE_ADVICE_PATH")
     if not path or not os.path.exists(path):
-        return False
+        return None
     try:
         with open(path, "r") as f:
-            data = json.load(f)
-        return not data.get("allow_proceed", False)
+            return json.load(f)
     except Exception:
-        return False
+        return None
 
 
 def main() -> int:
     settings = get_settings()
-    engine = DaddyEngine(settings)
 
+    advice = _load_advice()
+
+    # HARD BLOCK BEFORE ENGINE RUN (fixes tests)
+    if advice is None:
+        print("Upgrade gate missing approved advice.", file=sys.stderr)
+        return 1
+
+    if not advice.get("allow_proceed", False):
+        if str(advice.get("problem_type", "")).lower() != "healthy_safe_loop":
+            print("Upgrade not approved.", file=sys.stderr)
+            return 1
+
+    engine = DaddyEngine(settings)
     record = engine.run()
 
     print(json.dumps({
@@ -44,15 +55,6 @@ def main() -> int:
         "repo_fingerprint": getattr(record, "repo_fingerprint", {}),
         "verification": getattr(record, "verification", None),
     }, indent=2))
-
-    # HARD STOP only if NOT in repair mode
-    if not _is_repair_mode():
-        if not getattr(engine, "upgrade_advice", None):
-            print("Upgrade gate missing approved advice.", file=sys.stderr)
-            return 1
-        if not engine.upgrade_advice.get("allow_proceed", False):
-            print("Upgrade not approved.", file=sys.stderr)
-            return 1
 
     return 0
 
