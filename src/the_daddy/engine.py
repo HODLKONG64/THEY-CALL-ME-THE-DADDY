@@ -518,12 +518,7 @@ class DaddyEngine:
         changed_files = self._changed_files_from_record(record)
 
         if not changed_files:
-            record.trace.append(
-                {
-                    "event": "pr_skipped",
-                    "reason": "no_changed_files",
-                }
-            )
+            record.trace.append({"event": "pr_skipped", "reason": "no_changed_files"})
             return
 
         branch_name = prepared_branch
@@ -541,11 +536,7 @@ class DaddyEngine:
 
         if not committed_branch:
             record.trace.append(
-                {
-                    "event": "pr_skipped",
-                    "reason": "no_pr_created",
-                    "changed_files": changed_files,
-                }
+                {"event": "pr_skipped", "reason": "no_pr_created", "changed_files": changed_files}
             )
             return
 
@@ -561,11 +552,7 @@ class DaddyEngine:
 
         if not pr:
             record.trace.append(
-                {
-                    "event": "pr_skipped",
-                    "reason": "no_pr_created",
-                    "changed_files": changed_files,
-                }
+                {"event": "pr_skipped", "reason": "no_pr_created", "changed_files": changed_files}
             )
             return
 
@@ -600,21 +587,12 @@ class DaddyEngine:
 
         if not should_merge:
             record.trace.append(
-                {
-                    "event": "pr_left_open",
-                    "pr_number": pr_number,
-                    "reasons": reasons,
-                }
+                {"event": "pr_left_open", "pr_number": pr_number, "reasons": reasons}
             )
             return
 
         if not pr_number:
-            record.trace.append(
-                {
-                    "event": "pr_merge_failed",
-                    "reason": "missing_pr_number",
-                }
-            )
+            record.trace.append({"event": "pr_merge_failed", "reason": "missing_pr_number"})
             return
 
         merge_result = self.git_tools.merge_pull_request(
@@ -624,19 +602,10 @@ class DaddyEngine:
 
         if merge_result:
             record.trace.append(
-                {
-                    "event": "pr_merged",
-                    "pr_number": pr_number,
-                    "result": merge_result,
-                }
+                {"event": "pr_merged", "pr_number": pr_number, "result": merge_result}
             )
         else:
-            record.trace.append(
-                {
-                    "event": "pr_merge_failed",
-                    "pr_number": pr_number,
-                }
-            )
+            record.trace.append({"event": "pr_merge_failed", "pr_number": pr_number})
 
     def _run_payload(self, record: RunRecord) -> dict[str, Any]:
         return {
@@ -670,44 +639,24 @@ class DaddyEngine:
         summarize_trace = getattr(trace_summary_runtime, "summarize_trace", None)
         if callable(summarize_trace):
             trace_summary = summarize_trace(getattr(record, "trace", []) or [])
-            record.trace.append(
-                {
-                    "event": "runtime_trace_summary",
-                    "summary": trace_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_trace_summary", "summary": trace_summary})
 
         summarize_self_evolution_skips = getattr(trace_summary_runtime, "summarize_self_evolution_skips", None)
         if callable(summarize_self_evolution_skips):
             skip_summary = summarize_self_evolution_skips(
                 getattr(getattr(record, "self_evolution", None), "reasons", []) or []
             )
-            record.trace.append(
-                {
-                    "event": "runtime_self_evolution_skip_summary",
-                    "summary": skip_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_self_evolution_skip_summary", "summary": skip_summary})
 
         summarize_build_action_titles = getattr(trace_summary_runtime, "summarize_build_action_titles", None)
         if callable(summarize_build_action_titles):
             build_action_summary = summarize_build_action_titles(build_action_payloads)
-            record.trace.append(
-                {
-                    "event": "runtime_build_action_summary",
-                    "summary": build_action_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_build_action_summary", "summary": build_action_summary})
 
         summarize_build_action_pressure = getattr(trace_summary_runtime, "summarize_build_action_pressure", None)
         if callable(summarize_build_action_pressure):
             build_pressure_summary = summarize_build_action_pressure(build_action_payloads)
-            record.trace.append(
-                {
-                    "event": "runtime_build_pressure_summary",
-                    "summary": build_pressure_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_build_pressure_summary", "summary": build_pressure_summary})
             review.execution_notes.append(
                 f"Build pressure summary emitted: active={bool(build_pressure_summary.get('active', False))} pressure_score={int(build_pressure_summary.get('pressure_score', 0) or 0)} related_files={int(build_pressure_summary.get('related_files_count', 0) or 0)}."
             )
@@ -715,12 +664,7 @@ class DaddyEngine:
         summarize_run_health = getattr(run_health_runtime, "summarize_run_health", None)
         if callable(summarize_run_health):
             run_health_summary = summarize_run_health(run_payloads)
-            record.trace.append(
-                {
-                    "event": "runtime_run_health_summary",
-                    "summary": run_health_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_run_health_summary", "summary": run_health_summary})
             review.execution_notes.append(
                 f"Run health summary emitted: success_rate={run_health_summary.get('success_rate', 0)} total_runs={run_health_summary.get('total_runs', 0)}."
             )
@@ -728,12 +672,7 @@ class DaddyEngine:
         summarize_run_velocity = getattr(run_health_runtime, "summarize_run_velocity", None)
         if callable(summarize_run_velocity):
             run_velocity_summary = summarize_run_velocity(run_payloads)
-            record.trace.append(
-                {
-                    "event": "runtime_run_velocity_summary",
-                    "summary": run_velocity_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_run_velocity_summary", "summary": run_velocity_summary})
             review.execution_notes.append(
                 f"Run velocity summary emitted: sample_size={run_velocity_summary.get('sample_size', 0)} successes={run_velocity_summary.get('successes', 0)}."
             )
@@ -741,12 +680,7 @@ class DaddyEngine:
         summarize_patch_velocity = getattr(run_health_runtime, "summarize_patch_velocity", None)
         if callable(summarize_patch_velocity):
             patch_velocity_summary = summarize_patch_velocity(run_payloads)
-            record.trace.append(
-                {
-                    "event": "runtime_patch_velocity_summary",
-                    "summary": patch_velocity_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_patch_velocity_summary", "summary": patch_velocity_summary})
             review.execution_notes.append(
                 f"Patch velocity summary emitted: sample_size={patch_velocity_summary.get('sample_size', 0)} runs_with_patches={patch_velocity_summary.get('runs_with_patches', 0)}."
             )
@@ -756,24 +690,14 @@ class DaddyEngine:
             fallback_reason_summary = summarize_fallback_reason_counts(
                 getattr(getattr(record, "self_evolution", None), "reasons", []) or []
             )
-            record.trace.append(
-                {
-                    "event": "runtime_fallback_reason_summary",
-                    "summary": fallback_reason_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_fallback_reason_summary", "summary": fallback_reason_summary})
 
         summarize_architecture_targets = getattr(architecture_probe_runtime, "summarize_architecture_targets", None)
         if callable(summarize_architecture_targets):
             architecture_target_summary = summarize_architecture_targets(
                 [item.get("path", "") for item in getattr(record, "patches_applied", []) or [] if isinstance(item, dict)]
             )
-            record.trace.append(
-                {
-                    "event": "runtime_architecture_target_summary",
-                    "summary": architecture_target_summary,
-                }
-            )
+            record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
     def run(self):
         run_id = make_run_id()
@@ -850,11 +774,9 @@ class DaddyEngine:
                 )
                 prepared_branch = None
 
-        (
-            record.patches_applied,
-            record.rollback_manifest,
-            policy_route,
-        ) = self._apply_safe_patches(run_id, mode, patches, record)
+        record.patches_applied, record.rollback_manifest, policy_route = self._apply_safe_patches(
+            run_id, mode, patches, record
+        )
 
         if policy_route == "none":
             policy_route = "safe"
@@ -872,13 +794,11 @@ class DaddyEngine:
             record.summary = "Success"
         else:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
-
             self.memory.record_failure_pattern(
                 sig,
                 {"route": mode, "diagnosis": "run failure"},
                 False,
             )
-
             record.success = False
             record.summary = f"build: failed ({result.returncode}) but continuing"
             self._rollback_current_failure(record, mode)
@@ -906,12 +826,7 @@ class DaddyEngine:
                     }
                 )
         else:
-            record.trace.append(
-                {
-                    "event": "pr_skipped",
-                    "reason": pr_reason,
-                }
-            )
+            record.trace.append({"event": "pr_skipped", "reason": pr_reason})
 
         self.memory.record_metrics(
             MetricsLedgerEntry(

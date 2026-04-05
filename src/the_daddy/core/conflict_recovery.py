@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 def summarize_conflict_state(
     *,
     pr_has_conflicts: bool,
@@ -13,10 +12,9 @@ def summarize_conflict_state(
     return {
         "pr_has_conflicts": bool(pr_has_conflicts),
         "changed_files": files,
-        "base_branch": base_branch,
+        "base_branch": base_branch or "main",
         "requires_recovery": bool(pr_has_conflicts),
     }
-
 
 def build_conflict_recovery_plan(
     *,
@@ -37,21 +35,4 @@ def build_conflict_recovery_plan(
             "push_recovery_branch",
             "open_replacement_pr",
         ],
-    }
-
-
-def summarize_conflict_recovery_result(
-    *,
-    attempted: bool,
-    success: bool,
-    branch_name: str,
-    replacement_branch: str = "",
-    notes: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "attempted": bool(attempted),
-        "success": bool(success),
-        "branch_name": str(branch_name).strip(),
-        "replacement_branch": str(replacement_branch).strip(),
-        "notes": [str(item).strip() for item in (notes or []) if str(item).strip()],
     }
