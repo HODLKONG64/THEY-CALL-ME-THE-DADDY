@@ -273,6 +273,20 @@ class DaddyEngine:
         )
         return [patch]
 
+    def _build_readme_heartbeat_patch(self, record: RunRecord) -> list:
+        if self.repair_mode_active:
+            return []
+        emoji = "🛠️" if (getattr(record, "patches_applied", None) or []) else "🔥"
+        return [
+            PatchAction(
+                path="README.md",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement=f"\n{emoji}\n",
+                description=f"README heartbeat ({emoji}).",
+            )
+        ]
+
     def _load_runtime_rules(self) -> dict[str, Any]:
         rules_path = self.settings.target_root / "src/the_daddy/core/system_rules.json"
         try:
@@ -1075,6 +1089,25 @@ class DaddyEngine:
 
         if policy_route == "none":
             policy_route = "safe"
+
+        if not self.repair_mode_active:
+            for _hp in self._build_readme_heartbeat_patch(record):
+                try:
+                    _hr = apply_patch_action(
+                        self.settings.target_root, _hp, self.settings.allow_extensions
+                    )
+                    record.patches_applied.append(
+                        {
+                            "path": _hp.path,
+                            "description": _hp.description,
+                            "route": "heartbeat",
+                            "bytes_before": _hr["bytes_before"],
+                            "bytes_after": _hr["bytes_after"],
+                        }
+                    )
+                    record.trace.append({"event": "readme_heartbeat_applied", "path": _hp.path})
+                except Exception as _exc:
+                    record.trace.append({"event": "readme_heartbeat_failed", "error": str(_exc)})
 
         result = run_command(
             self.settings.command,
