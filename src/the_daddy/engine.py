@@ -969,6 +969,21 @@ class DaddyEngine:
             )
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
+    def _build_readme_heartbeat_patch(self, signal: str, run_id: str) -> list:
+        readme_path = self.settings.target_root / "README.md"
+        if not readme_path.exists():
+            return []
+        marker = f"\n<!-- heartbeat: {signal} {run_id} -->\n"
+        return [
+            PatchAction(
+                path="README.md",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement=marker,
+                description="README heartbeat",
+            )
+        ]
+
     def run(self):
         run_id = make_run_id()
 
@@ -1048,6 +1063,17 @@ class DaddyEngine:
                 takeover_patches = self._doctor_takeover_patches(record)
                 if takeover_patches:
                     patches = takeover_patches
+
+        if not self.repair_mode_active:
+            has_forced = any(
+                e.get("event") == "forced_target_patch_generated" for e in record.trace
+            )
+            has_real = any(
+                "forced repair-mode fallback marker" not in str(getattr(p, "description", "")).lower()
+                for p in patches
+            )
+            signal = "🛠️" if has_real else "🔥"
+            patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
