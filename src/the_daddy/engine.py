@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from typing import Any
@@ -21,7 +22,7 @@ from .git_tools import GitBranchExecutor
 from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
-from .models import MetricsLedgerEntry, RunRecord, SelfEvolutionExecution
+from .models import MetricsLedgerEntry, PatchAction, RunRecord, SelfEvolutionExecution
 from .policy import classify_patch_risk
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
@@ -198,14 +199,79 @@ class DaddyEngine:
         return []
 
     def _build_forced_target_patches(self, record: RunRecord) -> list:
+        required_targets = self._required_execution_targets()
+        if not required_targets:
+            record.trace.append(
+                {
+                    "event": "forced_target_patch_generation_skipped",
+                    "reason": "no required execution targets",
+                    "required_execution_targets": [],
+                }
+            )
+            return []
+
+        run_id = make_run_id()
+        marker_value = f'"{run_id}"'
+
+        allowed_fallback_targets = [
+            "src/the_daddy/engine.py",
+            "src/the_daddy/cli.py",
+        ]
+
+        chosen_path: str | None = None
+        for candidate in allowed_fallback_targets:
+            norm = self._normalize_path(candidate)
+            if any(norm == t or t.endswith(norm) or norm.endswith(t) for t in required_targets):
+                full_path = self.settings.target_root / candidate
+                if full_path.exists():
+                    chosen_path = candidate
+                    break
+
+        if chosen_path is None:
+            for candidate in allowed_fallback_targets:
+                full_path = self.settings.target_root / candidate
+                if full_path.exists():
+                    chosen_path = candidate
+                    break
+
+        if chosen_path is None:
+            record.trace.append(
+                {
+                    "event": "forced_target_patch_generation_skipped",
+                    "reason": "no allowed fallback target file exists",
+                    "required_execution_targets": required_targets,
+                }
+            )
+            return []
+
+        existing_text = (self.settings.target_root / chosen_path).read_text(encoding="utf-8")
+
+        marker_pattern = r'^DADDY_REPAIR_FALLBACK_MARKER\s*=.*$'
+        if re.search(marker_pattern, existing_text, flags=re.MULTILINE):
+            pattern = marker_pattern
+            replacement = f'DADDY_REPAIR_FALLBACK_MARKER = {marker_value}'
+        else:
+            pattern = r'\Z'
+            replacement = f'\nDADDY_REPAIR_FALLBACK_MARKER = {marker_value}\n'
+
+        patch = PatchAction(
+            path=chosen_path,
+            operation="regex_replace",
+            pattern=pattern,
+            replacement=replacement,
+            description=f"Forced repair-mode fallback marker patch (run {run_id}).",
+        )
+
         record.trace.append(
             {
-                "event": "forced_target_patch_generation_skipped",
-                "reason": "engine/cli-only mode active; helper fallback disabled",
-                "required_execution_targets": self._required_execution_targets(),
+                "event": "forced_target_patch_generated",
+                "required_execution_targets": required_targets,
+                "chosen_path": chosen_path,
+                "run_id": run_id,
+                "count": 1,
             }
         )
-        return []
+        return [patch]
 
     def _load_runtime_rules(self) -> dict[str, Any]:
         rules_path = self.settings.target_root / "src/the_daddy/core/system_rules.json"
@@ -975,9 +1041,13 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            takeover_patches = self._doctor_takeover_patches(record)
-            if takeover_patches:
-                patches = takeover_patches
+            forced_patches = self._build_forced_target_patches(record)
+            if forced_patches:
+                patches = forced_patches
+            else:
+                takeover_patches = self._doctor_takeover_patches(record)
+                if takeover_patches:
+                    patches = takeover_patches
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
