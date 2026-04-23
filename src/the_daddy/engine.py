@@ -1156,3 +1156,5 @@ class DaddyEngine:
         self.memory.save()
 
         return record
+
+DADDY_REPAIR_FALLBACK_MARKER = "20260423T195459Z"
