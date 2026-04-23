@@ -969,21 +969,20 @@ class DaddyEngine:
             )
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
-    def _write_readme_heartbeat(self, signal: str, run_id: str) -> None:
+    def _build_readme_heartbeat_patch(self, signal: str, run_id: str) -> list:
         readme_path = self.settings.target_root / "README.md"
         if not readme_path.exists():
-            return
-        try:
-            content = readme_path.read_text(encoding="utf-8")
-            marker = f"<!-- heartbeat: {signal} {run_id} -->"
-            updated = re.sub(r"<!-- heartbeat:.*?-->", marker, content)
-            if updated == content:
-                content = content.rstrip("\n") + f"\n\n{marker}\n"
-            else:
-                content = updated
-            readme_path.write_text(content, encoding="utf-8")
-        except Exception:
-            pass
+            return []
+        marker = f"\n<!-- heartbeat: {signal} {run_id} -->\n"
+        return [
+            PatchAction(
+                path="README.md",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement=marker,
+                description="README heartbeat",
+            )
+        ]
 
     def run(self):
         run_id = make_run_id()
@@ -1065,6 +1064,17 @@ class DaddyEngine:
                 if takeover_patches:
                     patches = takeover_patches
 
+        if not self.repair_mode_active:
+            has_forced = any(
+                e.get("event") == "forced_target_patch_generated" for e in record.trace
+            )
+            has_real = any(
+                "forced repair-mode fallback marker" not in str(getattr(p, "description", "")).lower()
+                for p in patches
+            )
+            signal = "🛠️" if has_real else "🔥"
+            patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
+
         if patches and self.settings.has_github and self._is_git_repo():
             try:
                 prepared_branch = self.git_tools.prepare_branch(run_id)
@@ -1134,13 +1144,6 @@ class DaddyEngine:
         )
 
         self._emit_runtime_summaries(record=record, review=review)
-
-        if not self.repair_mode_active:
-            _forced = any(
-                e.get("event") == "forced_target_patch_generated" for e in record.trace
-            )
-            _signal = "🔥" if _forced or not record.patches_applied else "🛠️"
-            self._write_readme_heartbeat(_signal, run_id)
 
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:
