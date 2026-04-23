@@ -1,17 +1,8 @@
 name: daddy-cycle
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "src/the_daddy/engine.py"
-      - "src/the_daddy/cli.py"
-      - "src/the_daddy/agents/**"
-      - "src/the_daddy/core/**"
-      - ".github/workflows/cycle.yml"
-      - ".github/workflows/main_with_openai_upgrade_gate.yml"
-      - ".github/workflows/pre_update_guard.yml"
+  schedule:
+    - cron: "0 0 */14 * *"
   workflow_dispatch:
 
 permissions:
