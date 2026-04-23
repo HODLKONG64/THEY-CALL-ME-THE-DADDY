@@ -1064,16 +1064,16 @@ class DaddyEngine:
                 if takeover_patches:
                     patches = takeover_patches
 
-        if not self.repair_mode_active:
-            has_forced = any(
-                e.get("event") == "forced_target_patch_generated" for e in record.trace
-            )
-            has_real = any(
-                "forced repair-mode fallback marker" not in str(getattr(p, "description", "")).lower()
-                for p in patches
-            )
-            signal = "🛠️" if has_real else "🔥"
-            patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
+        has_forced = any(
+            e.get("event") == "forced_target_patch_generated" for e in record.trace
+        )
+        has_real = any(
+            "forced repair-mode fallback marker" not in str(getattr(p, "description", "")).lower()
+            and "readme heartbeat" not in str(getattr(p, "description", "")).lower()
+            for p in patches
+        )
+        signal = "🔥" if has_forced else "🛠️"
+        patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:

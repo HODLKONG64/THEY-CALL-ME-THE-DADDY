@@ -66,3 +66,27 @@ def test_engine_runs_in_repair_mode_for_safe_loop(tmp_path, monkeypatch):
     result = engine.run()
     assert result is not None
     assert engine.repair_mode_active is True
+
+
+def test_readme_heartbeat_written_in_repair_mode(tmp_path, monkeypatch):
+    readme = tmp_path / "README.md"
+    readme.write_text("# Project\n", encoding="utf-8")
+
+    advice_path = _write_advice(
+        tmp_path / "repair_mode.json",
+        allow_proceed=False,
+        problem_type="healthy_safe_loop",
+    )
+    monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+    settings = Settings(
+        target_root=tmp_path,
+        command="python -c \"print('ok')\"",
+    )
+    engine = DaddyEngine(settings)
+    result = engine.run()
+    assert result is not None
+    assert engine.repair_mode_active is True
+
+    readme_content = readme.read_text(encoding="utf-8")
+    assert "<!-- heartbeat:" in readme_content
