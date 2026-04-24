@@ -965,6 +965,7 @@ class DaddyEngine:
         targets = {
             _resolve_upgrade_path(self._normalize_path(path))
             for path in self._required_execution_targets()
+            if path
         }
         if CLI_PROBE_TARGET in targets and os.path.exists(CLI_PROBE_TARGET):
             replacement = f"\n# DADDY_REAL_REPAIR_PROBE: {run_id}\n"
