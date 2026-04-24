@@ -251,3 +251,5 @@ Before changing anything, ask:
 **Does this make the agent better at surviving and fixing itself?**
 
 If the answer is no, do not implement it.
+
+<!-- forced-repair-heartbeat: 20260424T004248Z -->
