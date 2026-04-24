@@ -961,6 +961,31 @@ class DaddyEngine:
             )
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
+    def _build_real_cli_improvement_patch(self, record: RunRecord) -> list:
+        target = CLI_PROBE_TARGET
+
+        if not os.path.exists(self.settings.target_root / target):
+            return []
+
+        replacement = (
+            "\n# DADDY_SAFE_GUARD\n"
+            "if __name__ == '__main__':\n"
+            "    try:\n"
+            "        main()\n"
+            "    except Exception as e:\n"
+            "        print(f'CLI error: {e}')\n"
+        )
+
+        return [
+            PatchAction(
+                path=target,
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement=replacement,
+                description="Add safe CLI execution guard",
+            )
+        ]
+
     def _build_minimal_execution_probe_patch(self, run_id: str) -> list:
         targets = {
             _resolve_upgrade_path(self._normalize_path(path))
@@ -1067,17 +1092,21 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
-            if probe_patches:
-                patches = probe_patches
+            real_patch = self._build_real_cli_improvement_patch(record)
+            if real_patch:
+                patches = real_patch
             else:
-                forced_patches = self._build_forced_target_patches(record)
-                if forced_patches:
-                    patches = forced_patches
+                probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
+                if probe_patches:
+                    patches = probe_patches
                 else:
-                    takeover_patches = self._doctor_takeover_patches(record)
-                    if takeover_patches:
-                        patches = takeover_patches
+                    forced_patches = self._build_forced_target_patches(record)
+                    if forced_patches:
+                        patches = forced_patches
+                    else:
+                        takeover_patches = self._doctor_takeover_patches(record)
+                        if takeover_patches:
+                            patches = takeover_patches
 
         if not self.repair_mode_active:
             has_forced = any(
