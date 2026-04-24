@@ -220,7 +220,7 @@ class DaddyEngine:
             record.trace.append(
                 {
                     "event": "forced_target_patch_generation_skipped",
-                    "reason": "no allowed fallback target file exists",
+                    "reason": "README.md missing",
                     "required_execution_targets": required_targets,
                 }
             )

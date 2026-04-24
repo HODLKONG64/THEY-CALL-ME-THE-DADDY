@@ -43,6 +43,7 @@ def test_fallback_patch_does_not_target_engine(tmp_path):
     record = _make_record()
     patches = engine._build_forced_target_patches(record)
     assert all(p.path != "src/the_daddy/engine.py" for p in patches)
+    assert all(p.path != "src/the_daddy/cli.py" for p in patches)
 
 
 def test_fallback_patch_is_considered_merge_safe(tmp_path):
