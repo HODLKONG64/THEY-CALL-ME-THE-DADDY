@@ -93,6 +93,10 @@ def _normalize_path(path: str) -> str:
     return normalized
 
 
+def _normalize_masked_path(path: str) -> str:
+    return path.replace("the_***", "the_daddy")
+
+
 def _is_workflow_file(path: str) -> bool:
     normalized = _normalize_path(path)
     return any(normalized.startswith(prefix) for prefix in FORCE_BRANCH_PATHS)
@@ -138,7 +142,7 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
     route = "safe"
 
     for patch in patches:
-        path = _normalize_path(patch.path)
+        path = _normalize_masked_path(_normalize_path(patch.path))
 
         if not path:
             reasons.append("Empty patch path")
