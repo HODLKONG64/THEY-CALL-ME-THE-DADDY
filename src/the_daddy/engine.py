@@ -962,7 +962,10 @@ class DaddyEngine:
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
     def _build_minimal_execution_probe_patch(self, run_id: str) -> list:
-        targets = self._required_execution_targets()
+        targets = {
+            _resolve_upgrade_path(self._normalize_path(path))
+            for path in self._required_execution_targets()
+        }
         if CLI_PROBE_TARGET in targets and os.path.exists(CLI_PROBE_TARGET):
             replacement = f"\n# DADDY_REAL_REPAIR_PROBE: {run_id}\n"
             return [
