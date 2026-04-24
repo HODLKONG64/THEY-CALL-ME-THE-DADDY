@@ -961,6 +961,56 @@ class DaddyEngine:
             )
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
+    def _build_real_cli_improvement_patch(self, record: RunRecord) -> list:
+        import re as _re
+
+        target = CLI_PROBE_TARGET
+        cli_path = self.settings.target_root / target
+
+        if not os.path.exists(cli_path):
+            return []
+
+        try:
+            content = cli_path.read_text(encoding="utf-8")
+        except Exception:
+            return []
+
+        pattern = (
+            r"def _safe\(value\):\n"
+            r"    try:\n"
+            r"        json\.dumps\(value\)\n"
+            r"        return value\n"
+            r"    except Exception:\n"
+            r"        return str\(value\)"
+        )
+
+        if not _re.search(pattern, content):
+            return []
+
+        replacement = (
+            "def _safe(value):\n"
+            "    try:\n"
+            "        json.dumps(value)\n"
+            "        return value\n"
+            "    except Exception:\n"
+            '        if hasattr(value, "model_dump"):\n'
+            "            try:\n"
+            '                return value.model_dump(mode="json")\n'
+            "            except Exception:\n"
+            "                pass\n"
+            "        return str(value)"
+        )
+
+        return [
+            PatchAction(
+                path=target,
+                operation="regex_replace",
+                pattern=pattern,
+                replacement=replacement,
+                description="Improve CLI JSON-safe serialization",
+            )
+        ]
+
     def _build_minimal_execution_probe_patch(self, run_id: str) -> list:
         targets = {
             _resolve_upgrade_path(self._normalize_path(path))
@@ -1067,17 +1117,21 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
-            if probe_patches:
-                patches = probe_patches
+            real_patch = self._build_real_cli_improvement_patch(record)
+            if real_patch:
+                patches = real_patch
             else:
-                forced_patches = self._build_forced_target_patches(record)
-                if forced_patches:
-                    patches = forced_patches
+                probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
+                if probe_patches:
+                    patches = probe_patches
                 else:
-                    takeover_patches = self._doctor_takeover_patches(record)
-                    if takeover_patches:
-                        patches = takeover_patches
+                    forced_patches = self._build_forced_target_patches(record)
+                    if forced_patches:
+                        patches = forced_patches
+                    else:
+                        takeover_patches = self._doctor_takeover_patches(record)
+                        if takeover_patches:
+                            patches = takeover_patches
 
         if not self.repair_mode_active:
             has_forced = any(
