@@ -211,30 +211,12 @@ class DaddyEngine:
             return []
 
         run_id = make_run_id()
-        marker_value = f'"{run_id}"'
+        heartbeat_marker = f"<!-- forced-repair-heartbeat: {run_id} -->"
 
-        allowed_fallback_targets = [
-            "src/the_daddy/engine.py",
-            "src/the_daddy/cli.py",
-        ]
-
-        chosen_path: str | None = None
-        for candidate in allowed_fallback_targets:
-            norm = self._normalize_path(candidate)
-            if any(norm == t or t.endswith(norm) or norm.endswith(t) for t in required_targets):
-                full_path = self.settings.target_root / candidate
-                if full_path.exists():
-                    chosen_path = candidate
-                    break
-
-        if chosen_path is None:
-            for candidate in allowed_fallback_targets:
-                full_path = self.settings.target_root / candidate
-                if full_path.exists():
-                    chosen_path = candidate
-                    break
-
-        if chosen_path is None:
+        # Only allow README.md as the forced fallback target. Do NOT target protected core files.
+        candidate = "README.md"
+        full_path = self.settings.target_root / candidate
+        if not full_path.exists():
             record.trace.append(
                 {
                     "event": "forced_target_patch_generation_skipped",
@@ -244,29 +226,22 @@ class DaddyEngine:
             )
             return []
 
-        existing_text = (self.settings.target_root / chosen_path).read_text(encoding="utf-8")
-
-        marker_pattern = r'^DADDY_REPAIR_FALLBACK_MARKER\s*=.*$'
-        if re.search(marker_pattern, existing_text, flags=re.MULTILINE):
-            pattern = marker_pattern
-            replacement = f'DADDY_REPAIR_FALLBACK_MARKER = {marker_value}'
-        else:
-            pattern = r'\Z'
-            replacement = f'\nDADDY_REPAIR_FALLBACK_MARKER = {marker_value}\n'
+        pattern = r"\Z"
+        replacement = f"\n{heartbeat_marker}\n"
 
         patch = PatchAction(
-            path=chosen_path,
+            path=candidate,
             operation="regex_replace",
             pattern=pattern,
             replacement=replacement,
-            description=f"Forced repair-mode fallback marker patch (run {run_id}).",
+            description="Forced repair heartbeat fallback",
         )
 
         record.trace.append(
             {
                 "event": "forced_target_patch_generated",
                 "required_execution_targets": required_targets,
-                "chosen_path": chosen_path,
+                "chosen_path": candidate,
                 "run_id": run_id,
                 "count": 1,
             }
@@ -1069,7 +1044,7 @@ class DaddyEngine:
                 e.get("event") == "forced_target_patch_generated" for e in record.trace
             )
             has_real = any(
-                "forced repair-mode fallback marker" not in str(getattr(p, "description", "")).lower()
+                "forced repair heartbeat fallback" not in str(getattr(p, "description", "")).lower()
                 for p in patches
             )
             signal = "🛠️" if has_real else "🔥"
