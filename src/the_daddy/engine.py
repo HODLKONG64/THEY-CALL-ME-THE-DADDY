@@ -152,7 +152,21 @@ class DaddyEngine:
             _resolve_upgrade_path(self._normalize_path(path))
             for path in self._changed_files_from_record(record)
         }
-        return any(path in changed_files for path in required_targets)
+        # Preserve existing behaviour: a real execution-target patch satisfies repair mode.
+        if any(path in changed_files for path in required_targets):
+            return True
+        # Forced README heartbeat fallback: count as satisfied only when the trace
+        # records that the system itself chose README.md as the fallback target AND
+        # README.md was actually changed.  Arbitrary README edits are not accepted.
+        readme_norm = _resolve_upgrade_path(self._normalize_path("README.md"))
+        if readme_norm in changed_files:
+            for entry in record.trace:
+                if (
+                    entry.get("event") == "forced_target_patch_generated"
+                    and entry.get("chosen_path") == "README.md"
+                ):
+                    return True
+        return False
 
     def _enforce_repair_mode_targets(self, patches: list, record: RunRecord) -> list:
         if not self.repair_mode_active or not self.upgrade_advice:
