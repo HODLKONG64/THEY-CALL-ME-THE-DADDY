@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -958,50 +959,21 @@ class DaddyEngine:
             )
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
-    def _build_minimal_execution_probe_patch(self, record: RunRecord) -> list:
-        required_targets = self._required_execution_targets()
-        if not required_targets:
-            record.trace.append(
-                {
-                    "event": "minimal_execution_probe_skipped",
-                    "reason": "no required execution targets",
-                    "required_execution_targets": [],
-                }
-            )
-            return []
-
-        candidate = required_targets[0]
-        full_path = self.settings.target_root / candidate
-        if not full_path.exists():
-            record.trace.append(
-                {
-                    "event": "minimal_execution_probe_skipped",
-                    "reason": f"target file missing: {candidate}",
-                    "required_execution_targets": required_targets,
-                }
-            )
-            return []
-
-        run_id = record.run_id
-        marker = f"# probe:{run_id}"
-        patch = PatchAction(
-            path=candidate,
-            operation="regex_replace",
-            pattern=r"\Z",
-            replacement=f"\n{marker}\n",
-            description="Minimal execution probe patch",
-        )
-
-        record.trace.append(
-            {
-                "event": "minimal_execution_probe_generated",
-                "required_execution_targets": required_targets,
-                "chosen_path": candidate,
-                "run_id": run_id,
-                "count": 1,
-            }
-        )
-        return [patch]
+    def _build_minimal_execution_probe_patch(self, run_id: str) -> list:
+        targets = self._required_execution_targets()
+        cli_path = "src/the_daddy/cli.py"
+        if cli_path in targets and os.path.exists(cli_path):
+            replacement = f"\n# DADDY_REAL_REPAIR_PROBE: {run_id}\n"
+            return [
+                PatchAction(
+                    path=cli_path,
+                    operation="regex_replace",
+                    pattern=r"\Z",
+                    replacement=replacement,
+                    description="Minimal real execution repair probe",
+                )
+            ]
+        return []
 
     def _build_readme_heartbeat_patch(self, signal: str, run_id: str) -> list:
         readme_path = self.settings.target_root / "README.md"
@@ -1090,7 +1062,7 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            probe_patches = self._build_minimal_execution_probe_patch(record)
+            probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
             if probe_patches:
                 patches = probe_patches
             else:
