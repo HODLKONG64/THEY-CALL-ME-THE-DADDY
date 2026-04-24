@@ -962,27 +962,52 @@ class DaddyEngine:
             record.trace.append({"event": "runtime_architecture_target_summary", "summary": architecture_target_summary})
 
     def _build_real_cli_improvement_patch(self, record: RunRecord) -> list:
-        target = CLI_PROBE_TARGET
+        import re as _re
 
-        if not os.path.exists(self.settings.target_root / target):
+        target = CLI_PROBE_TARGET
+        cli_path = self.settings.target_root / target
+
+        if not os.path.exists(cli_path):
+            return []
+
+        try:
+            content = cli_path.read_text(encoding="utf-8")
+        except Exception:
+            return []
+
+        pattern = (
+            r"def _safe\(value\):\n"
+            r"    try:\n"
+            r"        json\.dumps\(value\)\n"
+            r"        return value\n"
+            r"    except Exception:\n"
+            r"        return str\(value\)"
+        )
+
+        if not _re.search(pattern, content):
             return []
 
         replacement = (
-            "\n# DADDY_SAFE_GUARD\n"
-            "if __name__ == '__main__':\n"
+            "def _safe(value):\n"
             "    try:\n"
-            "        main()\n"
-            "    except Exception as e:\n"
-            "        print(f'CLI error: {e}')\n"
+            "        json.dumps(value)\n"
+            "        return value\n"
+            "    except Exception:\n"
+            '        if hasattr(value, "model_dump"):\n'
+            "            try:\n"
+            '                return value.model_dump(mode="json")\n'
+            "            except Exception:\n"
+            "                pass\n"
+            "        return str(value)"
         )
 
         return [
             PatchAction(
                 path=target,
                 operation="regex_replace",
-                pattern=r"\Z",
+                pattern=pattern,
                 replacement=replacement,
-                description="Add safe CLI execution guard",
+                description="Improve CLI JSON-safe serialization",
             )
         ]
 
