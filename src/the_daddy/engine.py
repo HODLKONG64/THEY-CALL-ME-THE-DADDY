@@ -47,6 +47,8 @@ EXECUTION_PATH_TARGETS = {
     "src/the_daddy/cli.py",
 }
 
+CLI_PROBE_TARGET = "src/the_daddy/cli.py"
+
 
 def make_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -961,12 +963,11 @@ class DaddyEngine:
 
     def _build_minimal_execution_probe_patch(self, run_id: str) -> list:
         targets = self._required_execution_targets()
-        cli_path = "src/the_daddy/cli.py"
-        if cli_path in targets and os.path.exists(cli_path):
+        if CLI_PROBE_TARGET in targets and os.path.exists(CLI_PROBE_TARGET):
             replacement = f"\n# DADDY_REAL_REPAIR_PROBE: {run_id}\n"
             return [
                 PatchAction(
-                    path=cli_path,
+                    path=CLI_PROBE_TARGET,
                     operation="regex_replace",
                     pattern=r"\Z",
                     replacement=replacement,
