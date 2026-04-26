@@ -63,3 +63,17 @@ def summarize_fallback_pressure_targets(build_actions: list[dict[str, Any]] | No
         "targets": targets[:10],
         "first_target": targets[0] if targets else "",
     }
+
+
+def summarize_repair_lane_trigger_reasons(trace: list[dict] | None = None) -> dict:
+    items = trace or []
+    reasons = [
+        str(e.get('reason', ''))
+        for e in items
+        if e.get('event') in {'repair_mode_no_patches_remaining', 'safe_helper_lane_patch_unavailable'}
+        and e.get('reason')
+    ]
+    return {
+        "trigger_count": len(reasons),
+        "reasons": reasons[:10],
+    }
