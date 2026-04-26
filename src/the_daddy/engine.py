@@ -52,11 +52,16 @@ CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 # Ordered list of safe helper-lane targets for bounded fallback patches.
 # These must never include README.md, engine.py, or cli.py.
 SAFE_HELPER_LANE_TARGETS = [
+    # Tier A: regression tests (highest priority)
+    "tests/test_repair_fallback.py",
+    # Tier B: runtime diagnostic helpers
     "src/the_daddy/runtime/trace_summary.py",
-    "src/the_daddy/runtime/error_digest.py",
     "src/the_daddy/runtime/run_health.py",
+    "src/the_daddy/runtime/error_digest.py",
     "src/the_daddy/runtime/reviewer_fallback.py",
     "src/the_daddy/runtime/architecture_probe.py",
+    # Tier C: docs (lowest priority)
+    "docs/ARCHITECTURE.md",
 ]
 
 
@@ -234,11 +239,19 @@ class DaddyEngine:
         return []
 
     def _build_safe_helper_lane_patch(self, record: RunRecord) -> list:
-        """Build one tiny, reversible helper-lane patch for safe targets only.
+        """Build one tiny, reversible, meaningful helper-lane patch for safe targets only.
 
         This is invoked when repair_mode_active is True (or problem_type is
         healthy_safe_loop) and no candidate patches survived normal filtering.
         It must never target README.md, engine.py, or cli.py.
+
+        Candidates are priority-ordered:
+          Tier A – regression tests  (tests/*)
+          Tier B – runtime diagnostic helpers  (src/the_daddy/runtime/*)
+          Tier C – docs  (docs/*)  – only if no A/B target is available
+
+        Each patch emits both ``meaningful_helper_lane_patch_generated`` and the
+        legacy ``safe_helper_lane_patch_generated`` event for backward compatibility.
         """
         problem_type = str((self.upgrade_advice or {}).get("problem_type", "")).strip().lower()
         # Proceed only when repair_mode_active is True OR problem_type is healthy_safe_loop.
@@ -248,11 +261,39 @@ class DaddyEngine:
 
         run_id = record.run_id
 
-        # Ordered list of (file_path, guard_symbol, function_body_to_append).
+        # Ordered list of (file_path, guard_symbol, content_to_append, tier).
         # The engine picks the first file that exists and doesn't already contain
-        # the guard symbol.  Each body is < 10 lines and purely additive (reversible).
-        # Must cover every entry in SAFE_HELPER_LANE_TARGETS.
-        target_additions: list[tuple[str, str, str]] = [
+        # the guard symbol.  Each body is < 40 changed lines and purely additive
+        # (reversible).  Must cover every entry in SAFE_HELPER_LANE_TARGETS.
+        target_additions: list[tuple[str, str, str, str]] = [
+            # ── Tier A: regression tests ─────────────────────────────────────
+            (
+                "tests/test_repair_fallback.py",
+                "test_repair_mode_helper_lane_regression",
+                (
+                    "\n\n"
+                    "def test_repair_mode_helper_lane_regression(tmp_path):\n"
+                    '    """Regression: repair mode with no patches must not raise and must return a list."""\n'
+                    "    settings = _make_settings_with_root(tmp_path)\n"
+                    "    engine = DaddyEngine(settings)\n"
+                    "    engine.upgrade_advice = {\n"
+                    '        "target_files": ["src/the_daddy/engine.py"],\n'
+                    '        "repair_mode": True,\n'
+                    '        "problem_type": "healthy_safe_loop",\n'
+                    "    }\n"
+                    "    engine.repair_mode_active = True\n"
+                    "    record = _make_record()\n"
+                    "    patches = engine._build_safe_helper_lane_patch(record)\n"
+                    "    assert isinstance(patches, list)\n"
+                    '    events = [e.get("event") for e in record.trace]\n'
+                    "    assert (\n"
+                    '        "safe_helper_lane_patch_generated" in events\n'
+                    '        or "safe_helper_lane_patch_unavailable" in events\n'
+                    "    )\n"
+                ),
+                "A",
+            ),
+            # ── Tier B: runtime diagnostic helpers ───────────────────────────
             (
                 "src/the_daddy/runtime/trace_summary.py",
                 "summarize_noop_repair_state",
@@ -265,6 +306,7 @@ class DaddyEngine:
                     '        "success": bool(run_payload.get("success", False)),\n'
                     "    }\n"
                 ),
+                "B",
             ),
             (
                 "src/the_daddy/runtime/run_health.py",
@@ -282,6 +324,7 @@ class DaddyEngine:
                     '        "total_runs": len(items),\n'
                     "    }\n"
                 ),
+                "B",
             ),
             (
                 "src/the_daddy/runtime/error_digest.py",
@@ -300,6 +343,7 @@ class DaddyEngine:
                     '        "repair_events": repair_events[:10],\n'
                     "    }\n"
                 ),
+                "B",
             ),
             (
                 "src/the_daddy/runtime/reviewer_fallback.py",
@@ -319,6 +363,7 @@ class DaddyEngine:
                     '        "reasons": reasons[:10],\n'
                     "    }\n"
                 ),
+                "B",
             ),
             (
                 "src/the_daddy/runtime/architecture_probe.py",
@@ -338,10 +383,28 @@ class DaddyEngine:
                     '        "chosen_paths": generated[:10],\n'
                     "    }\n"
                 ),
+                "B",
+            ),
+            # ── Tier C: docs ─────────────────────────────────────────────────
+            (
+                "docs/ARCHITECTURE.md",
+                "Helper lane (bounded improvements)",
+                (
+                    "\n\n"
+                    "## Helper lane (bounded improvements)\n\n"
+                    "When repair mode has no valid execution-target patch, the helper lane\n"
+                    "applies small, reversible, testable improvements to `tests/` or\n"
+                    "`src/the_daddy/runtime/`.\n\n"
+                    "Priority order:\n"
+                    "- A. regression tests that prevent future breakage\n"
+                    "- B. runtime diagnostic helpers used by engine summaries\n"
+                    "- C. docs only when no test or runtime target is available\n"
+                ),
+                "C",
             ),
         ]
 
-        for candidate, guard_symbol, addition in target_additions:
+        for candidate, guard_symbol, addition, tier in target_additions:
             full_path = self.settings.target_root / candidate
             if not full_path.exists() or not full_path.is_file():
                 continue
@@ -360,6 +423,15 @@ class DaddyEngine:
                 description=f"Add {guard_symbol} helper to {candidate.split('/')[-1]}",
             )
 
+            record.trace.append(
+                {
+                    "event": "meaningful_helper_lane_patch_generated",
+                    "chosen_path": candidate,
+                    "tier": tier,
+                    "guard_symbol": guard_symbol,
+                    "run_id": run_id,
+                }
+            )
             record.trace.append(
                 {
                     "event": "safe_helper_lane_patch_generated",
