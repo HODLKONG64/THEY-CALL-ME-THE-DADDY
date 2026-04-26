@@ -55,7 +55,6 @@ CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 _README_FORBIDDEN_KEYWORDS: tuple[str, ...] = (
     "readme",
     "doc-only",
-    "doc only",
     "helper-lane filler",
     "heartbeat",
     "filler",

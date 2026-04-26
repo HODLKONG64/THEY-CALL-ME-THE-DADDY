@@ -124,7 +124,7 @@ class TestAdviceForbidsReadme:
 
     def test_readme_forbidden_keywords_constant_covers_known_patterns(self):
         """Ensure the constant covers all documented forbidden keywords."""
-        for kw in ("readme", "doc-only", "filler", "heartbeat"):
+        for kw in ("readme", "doc-only", "filler", "heartbeat", "helper-lane filler"):
             assert kw in _README_FORBIDDEN_KEYWORDS, f"Missing keyword: {kw}"
 
 
@@ -196,8 +196,10 @@ class TestForcedTargetPatchesSuppressed:
             if e.get("event") == "openai_advice_forbidden_patch_blocked"
         ]
         assert len(blocked_events) >= 1
-        assert any("README" in str(e.get("reason", "")) or "readme" in str(e.get("reason", "")).lower()
-                   for e in blocked_events)
+        assert any(
+            "readme" in str(e.get("reason", "")).lower()
+            for e in blocked_events
+        )
 
     def test_forced_readme_allowed_when_advice_permits(self, tmp_path):
         """_build_forced_target_patches proceeds normally when README is not forbidden."""
@@ -355,12 +357,7 @@ class TestDeliverPatchViaPrReadmeBlocked:
             readme_patch_forbidden=True,
         )
         assert allowed is False
-        assert any("README" in r or "readme" in r.lower() for r in reasons)
-
-
-# ---------------------------------------------------------------------------
-# AutoMergeJudge.should_auto_merge with readme_patch_forbidden
-# ---------------------------------------------------------------------------
+        assert any("readme" in r.lower() for r in reasons)
 
 class TestAutoMergeJudgeReadmeForbidden:
     def test_blocks_readme_only_when_forbidden(self):
@@ -375,7 +372,7 @@ class TestAutoMergeJudgeReadmeForbidden:
             readme_patch_forbidden=True,
         )
         assert allowed is False
-        assert any("README" in r or "readme" in r.lower() for r in reasons)
+        assert any("readme" in r.lower() for r in reasons)
 
     def test_does_not_block_non_readme_when_forbidden_flag_set(self):
         """readme_patch_forbidden=True should not affect non-README patches."""
