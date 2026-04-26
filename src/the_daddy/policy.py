@@ -196,6 +196,7 @@ def classify_patch_risk(
     readme_forbidden = _advice_readme_forbidden(upgrade_advice)
     enforced_targets = _advice_enforced_target_files(upgrade_advice)
     allowlisted_lower = {item.lower() for item in ALLOWLISTED_RUNTIME_HELPERS}
+    enforced_targets_lower = {t.lower() for t in enforced_targets}
 
     for patch in patches:
         path = _normalize_masked_path(_normalize_path(patch.path))
@@ -233,7 +234,7 @@ def classify_patch_risk(
             )
 
         if enforced_targets and path.lower() not in allowlisted_lower:
-            if path not in enforced_targets and path.lower() not in {t.lower() for t in enforced_targets}:
+            if path not in enforced_targets and path.lower() not in enforced_targets_lower:
                 reasons.append(
                     f"OpenAI advice restricts patches to target_files; {path} is out of scope"
                 )

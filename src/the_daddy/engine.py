@@ -24,7 +24,7 @@ from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
 from .models import MetricsLedgerEntry, PatchAction, RunRecord, SelfEvolutionExecution
-from .policy import classify_patch_risk
+from .policy import classify_patch_risk, _POLICY_README_FORBIDDEN_KEYWORDS
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
 from .runtime import run_health as run_health_runtime
@@ -49,16 +49,10 @@ EXECUTION_PATH_TARGETS = {
 
 CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 
-# Keywords that, when found inside a forbidden_repeat_patterns entry from
-# OpenAI upgrade advice, indicate that README / doc-only / filler patches
-# must be hard-blocked for the current run.
-_README_FORBIDDEN_KEYWORDS: tuple[str, ...] = (
-    "readme",
-    "doc-only",
-    "helper-lane filler",
-    "heartbeat",
-    "filler",
-)
+# Single source of truth for README/doc/filler forbidden keywords lives in policy.py.
+# This alias preserves the name used by tests that import _README_FORBIDDEN_KEYWORDS
+# from this module.
+_README_FORBIDDEN_KEYWORDS: tuple[str, ...] = _POLICY_README_FORBIDDEN_KEYWORDS
 
 # Ordered list of safe helper-lane targets for bounded fallback patches.
 # These must never include README.md, engine.py, or cli.py.
