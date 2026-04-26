@@ -79,6 +79,7 @@ class AutoMergeJudge:
         patch_count: int,
         total_byte_delta: int,
         review_risk: str,
+        readme_patch_forbidden: bool = False,
     ) -> tuple[bool, list[str]]:
         reasons: list[str] = []
         files = [_normalize_path(path) for path in changed_files]
@@ -110,5 +111,12 @@ class AutoMergeJudge:
 
         if self._is_low_value_loop(files):
             reasons.append("Low-value repeated patch category.")
+
+        if readme_patch_forbidden:
+            readme_norm = _normalize_path("README.md").lower()
+            if files and all(f.lower() == readme_norm for f in files):
+                reasons.append(
+                    "README-only patch blocked: OpenAI advice forbids README/doc-only filler."
+                )
 
         return (len(reasons) == 0, reasons)
