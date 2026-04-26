@@ -161,6 +161,14 @@ class DaddyEngine:
         required_targets = self._required_execution_targets()
         if not required_targets:
             return True
+        # Helper-lane patch is a valid completion path: if the system generated a
+        # safe helper-lane patch, treat repair mode as satisfied regardless of
+        # whether an execution target was directly modified.
+        if any(
+            e.get("event") == "safe_helper_lane_patch_generated"
+            for e in record.trace
+        ):
+            return True
         changed_files = {
             _resolve_upgrade_path(self._normalize_path(path))
             for path in self._changed_files_from_record(record)

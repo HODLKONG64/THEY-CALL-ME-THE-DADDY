@@ -69,3 +69,17 @@ def test_engine_or_cli_patch_still_satisfies(tmp_path):
         trace=[],
     )
     assert engine._repair_mode_completion_satisfied(record) is True
+
+
+def test_helper_lane_counts_as_repair_complete(tmp_path):
+    """Helper-lane patch satisfies repair mode even with no execution target modified."""
+    engine = _make_engine(tmp_path)
+    record = _make_record(
+        patches_applied=[],
+        trace=[
+            {
+                "event": "safe_helper_lane_patch_generated",
+            }
+        ],
+    )
+    assert engine._repair_mode_completion_satisfied(record) is True
