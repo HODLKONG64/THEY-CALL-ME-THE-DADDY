@@ -1245,8 +1245,6 @@ class DaddyEngine:
                 if action.patches:
                     patches.extend(action.patches)
 
-        had_candidate_patches = len(patches) > 0
-
         patches = self._run_depth_gate(mode=mode, patches=patches, record=record)
         patches = self._enforce_repair_mode_targets(patches, record)
 
@@ -1275,11 +1273,16 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            if not had_candidate_patches:
-                helper_patches = self._build_safe_helper_lane_patch(record)
-                if helper_patches:
-                    patches = helper_patches
-            if not patches:
+            helper_patches = self._build_safe_helper_lane_patch(record)
+            record.trace.append(
+                {
+                    "event": "helper_lane_attempted",
+                    "result": "success" if helper_patches else "empty",
+                }
+            )
+            if helper_patches:
+                patches = helper_patches
+            else:
                 real_patch = self._build_real_cli_improvement_patch(record)
                 if real_patch:
                     patches = real_patch
