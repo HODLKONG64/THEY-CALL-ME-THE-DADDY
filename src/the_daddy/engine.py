@@ -24,7 +24,7 @@ from .memory.r2_store import R2Store
 from .memory.repository import MemoryRepository
 from .merge_rules import AutoMergeJudge
 from .models import MetricsLedgerEntry, PatchAction, RunRecord, SelfEvolutionExecution
-from .policy import classify_patch_risk
+from .policy import classify_patch_risk, _POLICY_README_FORBIDDEN_KEYWORDS
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
 from .runtime import run_health as run_health_runtime
@@ -48,6 +48,11 @@ EXECUTION_PATH_TARGETS = {
 }
 
 CLI_PROBE_TARGET = "src/the_daddy/cli.py"
+
+# Single source of truth for README/doc/filler forbidden keywords lives in policy.py.
+# This alias preserves the name used by tests that import _README_FORBIDDEN_KEYWORDS
+# from this module.
+_README_FORBIDDEN_KEYWORDS: tuple[str, ...] = _POLICY_README_FORBIDDEN_KEYWORDS
 
 # Ordered list of safe helper-lane targets for bounded fallback patches.
 # These must never include README.md, engine.py, or cli.py.
@@ -156,6 +161,22 @@ class DaddyEngine:
         targets = self._normalized_target_files(list(self.upgrade_advice.get("target_files", []) or []))
         allowed = {self._normalize_path(item) for item in EXECUTION_PATH_TARGETS}
         return [target for target in targets if target in allowed]
+
+    def _advice_forbids_readme(self) -> bool:
+        """Return True if the OpenAI upgrade advice explicitly forbids README patches.
+
+        Checks every entry in ``forbidden_repeat_patterns``; if any entry
+        contains a keyword associated with README/doc-only/filler churn the
+        README.md target is treated as hard-blocked for this run.
+        """
+        if not self.upgrade_advice:
+            return False
+        patterns = list(self.upgrade_advice.get("forbidden_repeat_patterns") or [])
+        for pattern in patterns:
+            pl = str(pattern).lower()
+            if any(kw in pl for kw in _README_FORBIDDEN_KEYWORDS):
+                return True
+        return False
 
     def _repair_mode_completion_satisfied(self, record: RunRecord) -> bool:
         required_targets = self._required_execution_targets()
@@ -391,6 +412,19 @@ class DaddyEngine:
             )
             return []
 
+        # Hard-block README.md as a fallback target when OpenAI advice forbids
+        # README/doc-only/filler patches.
+        if self._advice_forbids_readme():
+            record.trace.append(
+                {
+                    "event": "openai_advice_forbidden_patch_blocked",
+                    "reason": "forbidden_repeat_patterns forbids README/doc-only patches",
+                    "blocked_path": "README.md",
+                    "required_execution_targets": required_targets,
+                }
+            )
+            return []
+
         run_id = make_run_id()
         heartbeat_marker = f"<!-- forced-repair-heartbeat: {run_id} -->"
 
@@ -567,7 +601,7 @@ class DaddyEngine:
         if scoring["recommended_route"] == "reject":
             return applied, rollback_manifest, "reject"
 
-        policy = classify_patch_risk(patches)
+        policy = classify_patch_risk(patches, upgrade_advice=self.upgrade_advice)
         record.trace.append(
             {
                 "event": "patch_policy",
@@ -578,6 +612,15 @@ class DaddyEngine:
         )
 
         if not policy.passed:
+            # Emit per-patch trace events for patches blocked by OpenAI advice.
+            if any("OpenAI advice" in r for r in policy.reasons):
+                for patch in patches:
+                    record.trace.append(
+                        {
+                            "event": "openai_advice_forbidden_patch_blocked",
+                            "path": getattr(patch, "path", ""),
+                        }
+                    )
             return applied, rollback_manifest, policy.route
 
         if scoring["recommended_route"] in {"branch", "recommend"}:
@@ -964,6 +1007,21 @@ class DaddyEngine:
             record.trace.append({"event": "pr_skipped", "reason": "no_changed_files"})
             return
 
+        # Hard-block PR creation when every changed file is README.md and the
+        # OpenAI upgrade advice explicitly forbids README/doc-only/filler patches.
+        readme_norm = _resolve_upgrade_path(self._normalize_path("README.md"))
+        normalized_changed = {_resolve_upgrade_path(self._normalize_path(f)) for f in changed_files}
+        if self._advice_forbids_readme() and normalized_changed == {readme_norm}:
+            record.trace.append(
+                {
+                    "event": "openai_advice_forbidden_patch_blocked",
+                    "reason": "forbidden_repeat_patterns forbids README-only PR",
+                    "blocked_files": changed_files,
+                }
+            )
+            record.trace.append({"event": "pr_skipped", "reason": "readme_only_forbidden_by_advice"})
+            return
+
         branch_name = prepared_branch
         if not branch_name:
             branch_name = self.git_tools.prepare_branch(record.run_id)
@@ -1010,6 +1068,7 @@ class DaddyEngine:
             }
         )
 
+        readme_only_forbidden = self._advice_forbids_readme() and normalized_changed == {readme_norm}
         should_merge, reasons = self.merge_judge.should_auto_merge(
             success=record.success,
             policy_route=policy_route,
@@ -1017,6 +1076,7 @@ class DaddyEngine:
             patch_count=len(record.patches_applied),
             total_byte_delta=self._total_byte_delta_from_record(record),
             review_risk=getattr(getattr(record, "architecture_review", None), "risk_level", ""),
+            readme_patch_forbidden=readme_only_forbidden,
         )
 
         record.trace.append(
@@ -1308,15 +1368,24 @@ class DaddyEngine:
                                 patches = takeover_patches
 
         if not self.repair_mode_active:
-            has_forced = any(
-                e.get("event") == "forced_target_patch_generated" for e in record.trace
-            )
-            has_real = any(
-                "forced repair heartbeat fallback" not in str(getattr(p, "description", "")).lower()
-                for p in patches
-            )
-            signal = "🛠️" if has_real else "🔥"
-            patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
+            if self._advice_forbids_readme():
+                record.trace.append(
+                    {
+                        "event": "openai_advice_forbidden_patch_blocked",
+                        "reason": "forbidden_repeat_patterns forbids README/doc-only/heartbeat patches",
+                        "blocked_path": "README.md",
+                    }
+                )
+            else:
+                has_forced = any(
+                    e.get("event") == "forced_target_patch_generated" for e in record.trace
+                )
+                has_real = any(
+                    "forced repair heartbeat fallback" not in str(getattr(p, "description", "")).lower()
+                    for p in patches
+                )
+                signal = "🛠️" if has_real else "🔥"
+                patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
