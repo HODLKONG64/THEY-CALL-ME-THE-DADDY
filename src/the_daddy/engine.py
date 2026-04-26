@@ -49,20 +49,153 @@ EXECUTION_PATH_TARGETS = {
 
 CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 
-# Ordered list of safe helper-lane targets for bounded fallback patches.
-# These must never include README.md, engine.py, or cli.py.
-SAFE_HELPER_LANE_TARGETS = [
-    # Tier A: regression tests (highest priority)
-    "tests/test_repair_fallback.py",
-    # Tier B: runtime diagnostic helpers
-    "src/the_daddy/runtime/trace_summary.py",
-    "src/the_daddy/runtime/run_health.py",
-    "src/the_daddy/runtime/error_digest.py",
-    "src/the_daddy/runtime/reviewer_fallback.py",
-    "src/the_daddy/runtime/architecture_probe.py",
-    # Tier C: docs (lowest priority)
-    "docs/ARCHITECTURE.md",
+# Single source of truth for all helper-lane candidates.
+# Each entry: (file_path, guard_symbol, content_to_append, tier).
+# Tier A (tests) is always preferred over tier B (runtime) over tier C (docs).
+# The public SAFE_HELPER_LANE_TARGETS list is derived from this table — never
+# edit the two separately.
+_HELPER_LANE_CANDIDATES: list[tuple[str, str, str, str]] = [
+    # ── Tier A: regression tests (highest priority) ──────────────────────
+    (
+        "tests/test_repair_fallback.py",
+        "test_repair_mode_helper_lane_regression",
+        (
+            "\n\n"
+            "def test_repair_mode_helper_lane_regression(tmp_path):\n"
+            '    """Regression: repair mode with no patches must not raise and must return a list."""\n'
+            "    settings = _make_settings_with_root(tmp_path)\n"
+            "    engine = DaddyEngine(settings)\n"
+            "    engine.upgrade_advice = {\n"
+            '        "target_files": ["src/the_daddy/engine.py"],\n'
+            '        "repair_mode": True,\n'
+            '        "problem_type": "healthy_safe_loop",\n'
+            "    }\n"
+            "    engine.repair_mode_active = True\n"
+            "    record = _make_record()\n"
+            "    patches = engine._build_safe_helper_lane_patch(record)\n"
+            "    assert isinstance(patches, list)\n"
+            '    events = [e.get("event") for e in record.trace]\n'
+            "    assert (\n"
+            '        "safe_helper_lane_patch_generated" in events\n'
+            '        or "safe_helper_lane_patch_unavailable" in events\n'
+            "    )\n"
+        ),
+        "A",
+    ),
+    # ── Tier B: runtime diagnostic helpers ───────────────────────────────
+    (
+        "src/the_daddy/runtime/trace_summary.py",
+        "summarize_noop_repair_state",
+        (
+            "\n\n"
+            "def summarize_noop_repair_state(run_payload: dict) -> dict:\n"
+            "    return {\n"
+            '        "repair_noop": bool(run_payload.get("summary") == "No safe repair patch available"),\n'
+            '        "patch_count": int(run_payload.get("patch_count", 0) or 0),\n'
+            '        "success": bool(run_payload.get("success", False)),\n'
+            "    }\n"
+        ),
+        "B",
+    ),
+    (
+        "src/the_daddy/runtime/run_health.py",
+        "summarize_repair_noop_ticks",
+        (
+            "\n\n"
+            "def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:\n"
+            "    items = runs or []\n"
+            "    noop_count = sum(\n"
+            "        1 for r in items\n"
+            '        if str(r.get("summary", "")).startswith("No safe repair")\n'
+            "    )\n"
+            "    return {\n"
+            '        "noop_repair_count": noop_count,\n'
+            '        "total_runs": len(items),\n'
+            "    }\n"
+        ),
+        "B",
+    ),
+    (
+        "src/the_daddy/runtime/error_digest.py",
+        "summarize_repair_mode_event_counts",
+        (
+            "\n\n"
+            "def summarize_repair_mode_event_counts(trace: list[dict] | None = None) -> dict:\n"
+            "    items = trace or []\n"
+            "    repair_events = [\n"
+            "        str(e.get('event', ''))\n"
+            "        for e in items\n"
+            "        if str(e.get('event', '')).startswith('repair_mode')\n"
+            "    ]\n"
+            "    return {\n"
+            '        "repair_event_count": len(repair_events),\n'
+            '        "repair_events": repair_events[:10],\n'
+            "    }\n"
+        ),
+        "B",
+    ),
+    (
+        "src/the_daddy/runtime/reviewer_fallback.py",
+        "summarize_repair_lane_trigger_reasons",
+        (
+            "\n\n"
+            "def summarize_repair_lane_trigger_reasons(trace: list[dict] | None = None) -> dict:\n"
+            "    items = trace or []\n"
+            "    reasons = [\n"
+            "        str(e.get('reason', ''))\n"
+            "        for e in items\n"
+            "        if e.get('event') in {'repair_mode_no_patches_remaining', 'safe_helper_lane_patch_unavailable'}\n"
+            "        and e.get('reason')\n"
+            "    ]\n"
+            "    return {\n"
+            '        "trigger_count": len(reasons),\n'
+            '        "reasons": reasons[:10],\n'
+            "    }\n"
+        ),
+        "B",
+    ),
+    (
+        "src/the_daddy/runtime/architecture_probe.py",
+        "summarize_helper_lane_target_probe",
+        (
+            "\n\n"
+            "def summarize_helper_lane_target_probe(trace: list[dict] | None = None) -> dict:\n"
+            "    items = trace or []\n"
+            "    generated = [\n"
+            "        str(e.get('chosen_path', ''))\n"
+            "        for e in items\n"
+            "        if e.get('event') == 'safe_helper_lane_patch_generated'\n"
+            "        and e.get('chosen_path')\n"
+            "    ]\n"
+            "    return {\n"
+            '        "helper_lane_generated_count": len(generated),\n'
+            '        "chosen_paths": generated[:10],\n'
+            "    }\n"
+        ),
+        "B",
+    ),
+    # ── Tier C: docs (lowest priority, only when no A/B target is available) ──
+    (
+        "docs/ARCHITECTURE.md",
+        "Helper lane (bounded improvements)",
+        (
+            "\n\n"
+            "## Helper lane (bounded improvements)\n\n"
+            "When repair mode has no valid execution-target patch, the helper lane\n"
+            "applies small, reversible, testable improvements to `tests/` or\n"
+            "`src/the_daddy/runtime/`.\n\n"
+            "Priority order:\n"
+            "- A. regression tests that prevent future breakage\n"
+            "- B. runtime diagnostic helpers used by engine summaries\n"
+            "- C. docs only when no test or runtime target is available\n"
+        ),
+        "C",
+    ),
 ]
+
+# Public path-only list — derived from _HELPER_LANE_CANDIDATES so the two
+# never drift out of sync.
+SAFE_HELPER_LANE_TARGETS: list[str] = [entry[0] for entry in _HELPER_LANE_CANDIDATES]
 
 
 def make_run_id() -> str:
@@ -245,202 +378,63 @@ class DaddyEngine:
         healthy_safe_loop) and no candidate patches survived normal filtering.
         It must never target README.md, engine.py, or cli.py.
 
-        Candidates are priority-ordered:
-          Tier A – regression tests  (tests/*)
-          Tier B – runtime diagnostic helpers  (src/the_daddy/runtime/*)
-          Tier C – docs  (docs/*)  – only if no A/B target is available
+        Candidates come from the module-level ``_HELPER_LANE_CANDIDATES`` table
+        (single source of truth).  Priority is enforced explicitly:
+          Tier A (tests) is exhausted before any Tier B (runtime) candidate is
+          considered, and Tier B before Tier C (docs).
 
-        Each patch emits both ``meaningful_helper_lane_patch_generated`` and the
-        legacy ``safe_helper_lane_patch_generated`` event for backward compatibility.
+        Both ``meaningful_helper_lane_patch_generated`` and the legacy
+        ``safe_helper_lane_patch_generated`` events are emitted on success.
         """
         problem_type = str((self.upgrade_advice or {}).get("problem_type", "")).strip().lower()
-        # Proceed only when repair_mode_active is True OR problem_type is healthy_safe_loop.
-        # The guard below is the De Morgan equivalent: exit if neither condition holds.
         if not self.repair_mode_active and problem_type != "healthy_safe_loop":
             return []
 
         run_id = record.run_id
 
-        # Ordered list of (file_path, guard_symbol, content_to_append, tier).
-        # The engine picks the first file that exists and doesn't already contain
-        # the guard symbol.  Each body is < 40 changed lines and purely additive
-        # (reversible).  Must cover every entry in SAFE_HELPER_LANE_TARGETS.
-        target_additions: list[tuple[str, str, str, str]] = [
-            # ── Tier A: regression tests ─────────────────────────────────────
-            (
-                "tests/test_repair_fallback.py",
-                "test_repair_mode_helper_lane_regression",
-                (
-                    "\n\n"
-                    "def test_repair_mode_helper_lane_regression(tmp_path):\n"
-                    '    """Regression: repair mode with no patches must not raise and must return a list."""\n'
-                    "    settings = _make_settings_with_root(tmp_path)\n"
-                    "    engine = DaddyEngine(settings)\n"
-                    "    engine.upgrade_advice = {\n"
-                    '        "target_files": ["src/the_daddy/engine.py"],\n'
-                    '        "repair_mode": True,\n'
-                    '        "problem_type": "healthy_safe_loop",\n'
-                    "    }\n"
-                    "    engine.repair_mode_active = True\n"
-                    "    record = _make_record()\n"
-                    "    patches = engine._build_safe_helper_lane_patch(record)\n"
-                    "    assert isinstance(patches, list)\n"
-                    '    events = [e.get("event") for e in record.trace]\n'
-                    "    assert (\n"
-                    '        "safe_helper_lane_patch_generated" in events\n'
-                    '        or "safe_helper_lane_patch_unavailable" in events\n'
-                    "    )\n"
-                ),
-                "A",
-            ),
-            # ── Tier B: runtime diagnostic helpers ───────────────────────────
-            (
-                "src/the_daddy/runtime/trace_summary.py",
-                "summarize_noop_repair_state",
-                (
-                    "\n\n"
-                    "def summarize_noop_repair_state(run_payload: dict) -> dict:\n"
-                    "    return {\n"
-                    '        "repair_noop": bool(run_payload.get("summary") == "No safe repair patch available"),\n'
-                    '        "patch_count": int(run_payload.get("patch_count", 0) or 0),\n'
-                    '        "success": bool(run_payload.get("success", False)),\n'
-                    "    }\n"
-                ),
-                "B",
-            ),
-            (
-                "src/the_daddy/runtime/run_health.py",
-                "summarize_repair_noop_ticks",
-                (
-                    "\n\n"
-                    "def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:\n"
-                    "    items = runs or []\n"
-                    "    noop_count = sum(\n"
-                    "        1 for r in items\n"
-                    '        if str(r.get("summary", "")).startswith("No safe repair")\n'
-                    "    )\n"
-                    "    return {\n"
-                    '        "noop_repair_count": noop_count,\n'
-                    '        "total_runs": len(items),\n'
-                    "    }\n"
-                ),
-                "B",
-            ),
-            (
-                "src/the_daddy/runtime/error_digest.py",
-                "summarize_repair_mode_event_counts",
-                (
-                    "\n\n"
-                    "def summarize_repair_mode_event_counts(trace: list[dict] | None = None) -> dict:\n"
-                    "    items = trace or []\n"
-                    "    repair_events = [\n"
-                    "        str(e.get('event', ''))\n"
-                    "        for e in items\n"
-                    "        if str(e.get('event', '')).startswith('repair_mode')\n"
-                    "    ]\n"
-                    "    return {\n"
-                    '        "repair_event_count": len(repair_events),\n'
-                    '        "repair_events": repair_events[:10],\n'
-                    "    }\n"
-                ),
-                "B",
-            ),
-            (
-                "src/the_daddy/runtime/reviewer_fallback.py",
-                "summarize_repair_lane_trigger_reasons",
-                (
-                    "\n\n"
-                    "def summarize_repair_lane_trigger_reasons(trace: list[dict] | None = None) -> dict:\n"
-                    "    items = trace or []\n"
-                    "    reasons = [\n"
-                    "        str(e.get('reason', ''))\n"
-                    "        for e in items\n"
-                    "        if e.get('event') in {'repair_mode_no_patches_remaining', 'safe_helper_lane_patch_unavailable'}\n"
-                    "        and e.get('reason')\n"
-                    "    ]\n"
-                    "    return {\n"
-                    '        "trigger_count": len(reasons),\n'
-                    '        "reasons": reasons[:10],\n'
-                    "    }\n"
-                ),
-                "B",
-            ),
-            (
-                "src/the_daddy/runtime/architecture_probe.py",
-                "summarize_helper_lane_target_probe",
-                (
-                    "\n\n"
-                    "def summarize_helper_lane_target_probe(trace: list[dict] | None = None) -> dict:\n"
-                    "    items = trace or []\n"
-                    "    generated = [\n"
-                    "        str(e.get('chosen_path', ''))\n"
-                    "        for e in items\n"
-                    "        if e.get('event') == 'safe_helper_lane_patch_generated'\n"
-                    "        and e.get('chosen_path')\n"
-                    "    ]\n"
-                    "    return {\n"
-                    '        "helper_lane_generated_count": len(generated),\n'
-                    '        "chosen_paths": generated[:10],\n'
-                    "    }\n"
-                ),
-                "B",
-            ),
-            # ── Tier C: docs ─────────────────────────────────────────────────
-            (
-                "docs/ARCHITECTURE.md",
-                "Helper lane (bounded improvements)",
-                (
-                    "\n\n"
-                    "## Helper lane (bounded improvements)\n\n"
-                    "When repair mode has no valid execution-target patch, the helper lane\n"
-                    "applies small, reversible, testable improvements to `tests/` or\n"
-                    "`src/the_daddy/runtime/`.\n\n"
-                    "Priority order:\n"
-                    "- A. regression tests that prevent future breakage\n"
-                    "- B. runtime diagnostic helpers used by engine summaries\n"
-                    "- C. docs only when no test or runtime target is available\n"
-                ),
-                "C",
-            ),
-        ]
+        # Explicit tier priority: exhaust all tier-A candidates before trying
+        # tier-B, and all tier-B before tier-C.  This guarantees tests always
+        # beat runtime helpers which always beat docs, regardless of list order.
+        for tier_name in ("A", "B", "C"):
+            for candidate, guard_symbol, addition, tier in _HELPER_LANE_CANDIDATES:
+                if tier != tier_name:
+                    continue
+                full_path = self.settings.target_root / candidate
+                if not full_path.exists() or not full_path.is_file():
+                    continue
+                try:
+                    content = full_path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                if guard_symbol in content:
+                    continue
 
-        for candidate, guard_symbol, addition, tier in target_additions:
-            full_path = self.settings.target_root / candidate
-            if not full_path.exists() or not full_path.is_file():
-                continue
-            try:
-                content = full_path.read_text(encoding="utf-8")
-            except Exception:
-                continue
-            if guard_symbol in content:
-                continue
+                patch = PatchAction(
+                    path=candidate,
+                    operation="regex_replace",
+                    pattern=r"\Z",
+                    replacement=addition,
+                    description=f"Add {guard_symbol} helper to {candidate.split('/')[-1]}",
+                )
 
-            patch = PatchAction(
-                path=candidate,
-                operation="regex_replace",
-                pattern=r"\Z",
-                replacement=addition,
-                description=f"Add {guard_symbol} helper to {candidate.split('/')[-1]}",
-            )
-
-            record.trace.append(
-                {
-                    "event": "meaningful_helper_lane_patch_generated",
-                    "chosen_path": candidate,
-                    "tier": tier,
-                    "guard_symbol": guard_symbol,
-                    "run_id": run_id,
-                }
-            )
-            record.trace.append(
-                {
-                    "event": "safe_helper_lane_patch_generated",
-                    "chosen_path": candidate,
-                    "reason": "helper-lane fallback: repair/healthy_safe_loop with no candidate patches",
-                    "run_id": run_id,
-                }
-            )
-            return [patch]
+                record.trace.append(
+                    {
+                        "event": "meaningful_helper_lane_patch_generated",
+                        "chosen_path": candidate,
+                        "tier": tier,
+                        "guard_symbol": guard_symbol,
+                        "run_id": run_id,
+                    }
+                )
+                record.trace.append(
+                    {
+                        "event": "safe_helper_lane_patch_generated",
+                        "chosen_path": candidate,
+                        "reason": "helper-lane fallback: repair/healthy_safe_loop with no candidate patches",
+                        "run_id": run_id,
+                    }
+                )
+                return [patch]
 
         record.trace.append(
             {

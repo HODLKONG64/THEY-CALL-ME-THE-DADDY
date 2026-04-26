@@ -57,7 +57,7 @@ def _set_healthy_safe_loop(engine: DaddyEngine) -> None:
 
 
 def _write_test_file(tmp_path: Path) -> Path:
-    """Write a minimal test_repair_fallback.py to tmp_path."""
+    """Write a basic test_repair_fallback.py file to tmp_path."""
     dest = tmp_path / "tests"
     dest.mkdir(parents=True, exist_ok=True)
     target = dest / "test_repair_fallback.py"
@@ -114,6 +114,61 @@ class TestHelperLaneTierPreference:
             f"Expected tier-A test file, got: {patches[0].path}"
         )
 
+    def test_prefers_test_over_runtime(self, tmp_path):
+        """When both a test file (tier A) and a runtime file (tier B) are
+        present, helper-lane must pick the test file — tier-A is ALWAYS first."""
+        _write_test_file(tmp_path)
+        # Write a runtime file that also has an eligible (missing) guard
+        runtime_dest = tmp_path / "src" / "the_daddy" / "runtime"
+        runtime_dest.mkdir(parents=True, exist_ok=True)
+        (runtime_dest / "trace_summary.py").write_text(
+            "def summarize_trace(trace): return {}\n",
+            encoding="utf-8",
+        )
+
+        engine = _make_engine(tmp_path)
+        _set_healthy_safe_loop(engine)
+        record = _make_record()
+
+        patches = engine._build_safe_helper_lane_patch(record)
+
+        assert len(patches) == 1
+        assert patches[0].path.startswith("tests/"), (
+            f"Expected tier-A test file, got: {patches[0].path}"
+        )
+        evt = next(
+            (e for e in record.trace if e.get("event") == "meaningful_helper_lane_patch_generated"),
+            None,
+        )
+        assert evt is not None
+        assert evt["tier"] == "A"
+
+    def test_falls_back_to_runtime_when_no_test_target(self, tmp_path):
+        """When only a runtime file exists, helper-lane picks it (tier B)."""
+        runtime_dest = tmp_path / "src" / "the_daddy" / "runtime"
+        runtime_dest.mkdir(parents=True, exist_ok=True)
+        (runtime_dest / "trace_summary.py").write_text(
+            "def summarize_trace(trace): return {}\n",
+            encoding="utf-8",
+        )
+
+        engine = _make_engine(tmp_path)
+        _set_healthy_safe_loop(engine)
+        record = _make_record()
+
+        patches = engine._build_safe_helper_lane_patch(record)
+
+        assert len(patches) == 1
+        assert patches[0].path.startswith("src/the_daddy/runtime/"), (
+            f"Expected tier-B runtime file, got: {patches[0].path}"
+        )
+        evt = next(
+            (e for e in record.trace if e.get("event") == "meaningful_helper_lane_patch_generated"),
+            None,
+        )
+        assert evt is not None
+        assert evt["tier"] == "B"
+
     def test_falls_back_to_docs_when_no_test_or_runtime_target(self, tmp_path):
         """When only a docs file exists, helper-lane picks the docs file."""
         _write_docs_file(tmp_path)
@@ -146,6 +201,33 @@ class TestHelperLaneTierPreference:
         assert evt is not None
         assert evt["chosen_path"].startswith("tests/")
         assert evt["tier"] == "A"
+
+    def test_safe_helper_lane_targets_derived_from_candidates(self):
+        """SAFE_HELPER_LANE_TARGETS must be derived from _HELPER_LANE_CANDIDATES
+        (single source of truth — no separate manual list)."""
+        from the_daddy.engine import _HELPER_LANE_CANDIDATES
+
+        derived = [entry[0] for entry in _HELPER_LANE_CANDIDATES]
+        assert SAFE_HELPER_LANE_TARGETS == derived, (
+            "SAFE_HELPER_LANE_TARGETS diverged from _HELPER_LANE_CANDIDATES paths"
+        )
+
+    def test_candidates_tier_order_is_a_then_b_then_c(self):
+        """All tier-A entries must appear before all tier-B entries, which must
+        appear before all tier-C entries in _HELPER_LANE_CANDIDATES."""
+        from the_daddy.engine import _HELPER_LANE_CANDIDATES
+
+        tier_order = {"A": 0, "B": 1, "C": 2}
+        tiers = [entry[3] for entry in _HELPER_LANE_CANDIDATES]
+        last_rank = -1
+        for t in tiers:
+            rank = tier_order.get(t, -1)
+            assert rank >= 0, f"Unknown tier {t!r} in _HELPER_LANE_CANDIDATES"
+            assert rank >= last_rank, (
+                f"Tier order violation: tier {t!r} (rank {rank}) follows a "
+                f"higher-rank tier (rank {last_rank})"
+            )
+            last_rank = rank
 
 
 # ---------------------------------------------------------------------------
