@@ -415,3 +415,198 @@ class TestAutoMergeJudgeReadmeForbidden:
             review_risk="low",
         )
         assert allowed is True
+
+
+# ---------------------------------------------------------------------------
+# Mandatory named tests required by the problem statement
+# ---------------------------------------------------------------------------
+
+class TestMandatoryPolicyEnforcement:
+    """Mandatory tests: test_readme_patch_blocked_by_advice, test_non_target_patch_blocked,
+    test_merge_rejected_for_readme_only_patch."""
+
+    def test_readme_patch_blocked_by_advice(self):
+        """classify_patch_risk rejects README.md when advice forbids README/doc patches.
+
+        Asserts:
+        - patch not applied (policy result failed)
+        - PR not opened (policy route is reject)
+        """
+        from the_daddy.models import PatchAction
+        from the_daddy.policy import classify_patch_risk
+
+        advice = {
+            "target_files": ["src/the_daddy/cli.py", "src/the_daddy/engine.py"],
+            "forbidden_repeat_patterns": ["README heartbeat/doc-only/helper-lane filler"],
+        }
+        patches = [
+            PatchAction(
+                path="README.md",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n<!-- heartbeat: 🔥 test -->\n",
+                description="README heartbeat",
+            )
+        ]
+
+        result = classify_patch_risk(patches, upgrade_advice=advice)
+
+        assert not result.passed, "Policy should reject README patch when advice forbids it"
+        assert result.route == "reject"
+        assert any("OpenAI advice" in r and "README" in r for r in result.reasons)
+
+    def test_non_target_patch_blocked(self):
+        """classify_patch_risk rejects patches outside target_files when advice provides them.
+
+        Asserts:
+        - patch not applied (policy result failed)
+        - PR not opened (policy route is reject)
+        """
+        from the_daddy.models import PatchAction
+        from the_daddy.policy import classify_patch_risk
+
+        advice = {
+            "target_files": ["src/the_daddy/cli.py", "src/the_daddy/engine.py"],
+            "forbidden_repeat_patterns": [],
+        }
+        # Patch to a file that is not in target_files and not in ALLOWLISTED_RUNTIME_HELPERS
+        patches = [
+            PatchAction(
+                path="src/the_daddy/config.py",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n# noop\n",
+                description="config noop",
+            )
+        ]
+
+        result = classify_patch_risk(patches, upgrade_advice=advice)
+
+        assert not result.passed, "Policy should reject patch outside target_files"
+        assert result.route == "reject"
+        assert any("out of scope" in r or "target_files" in r for r in result.reasons)
+
+    def test_allowlisted_helper_passes_target_file_enforcement(self):
+        """ALLOWLISTED_RUNTIME_HELPERS paths are always accepted even when target_files is set."""
+        from the_daddy.models import PatchAction
+        from the_daddy.policy import classify_patch_risk
+
+        advice = {
+            "target_files": ["src/the_daddy/cli.py"],
+            "forbidden_repeat_patterns": [],
+        }
+        patches = [
+            PatchAction(
+                path="src/the_daddy/runtime/trace_summary.py",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n# helper noop\n",
+                description="helper noop",
+            )
+        ]
+
+        result = classify_patch_risk(patches, upgrade_advice=advice)
+
+        # trace_summary.py is in ALLOWLISTED_RUNTIME_HELPERS → must not be blocked by target enforcement
+        assert result.passed, f"ALLOWLISTED path should not be blocked; reasons: {result.reasons}"
+
+    def test_merge_rejected_for_readme_only_patch(self):
+        """AutoMergeJudge must reject merge when changed_files is only README.md
+        and OpenAI advice forbids README/filler patches.
+
+        Asserts:
+        - merge not executed (should_auto_merge returns False)
+        """
+        judge = AutoMergeJudge()
+        allowed, reasons = judge.should_auto_merge(
+            success=True,
+            policy_route="safe",
+            changed_files=["README.md"],
+            patch_count=1,
+            total_byte_delta=43,
+            review_risk="low",
+            readme_patch_forbidden=True,
+        )
+
+        assert allowed is False, "Merge must be rejected for README-only patch when forbidden"
+        assert any("readme" in r.lower() or "README" in r for r in reasons)
+
+    def test_target_files_bypass_sentinel_does_not_enforce(self):
+        """When target_files contains only 'gate_bypassed', no target enforcement occurs."""
+        from the_daddy.models import PatchAction
+        from the_daddy.policy import classify_patch_risk
+
+        advice = {
+            "target_files": ["gate_bypassed"],
+            "forbidden_repeat_patterns": [],
+        }
+        # Use a path in a subdirectory so it doesn't trip the hallucination check
+        # and is not in PROTECTED_CORE_FILES.
+        patches = [
+            PatchAction(
+                path="src/the_daddy/agents/diagnoser.py",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n# noop\n",
+                description="noop",
+            )
+        ]
+
+        result = classify_patch_risk(patches, upgrade_advice=advice)
+
+        # gate_bypassed sentinel means no target enforcement — any other failures are
+        # NOT due to the target enforcement logic.
+        assert not any("out of scope" in r or "target_files" in r for r in result.reasons), (
+            f"gate_bypassed should not trigger target enforcement; reasons: {result.reasons}"
+        )
+
+    def test_policy_still_works_without_upgrade_advice(self):
+        """Existing call sites that pass no upgrade_advice remain fully unchanged."""
+        from the_daddy.models import PatchAction
+        from the_daddy.policy import classify_patch_risk
+
+        patches = [
+            PatchAction(
+                path="src/the_daddy/runtime/trace_summary.py",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n# noop\n",
+                description="noop",
+            )
+        ]
+        result = classify_patch_risk(patches)
+        assert result.passed
+
+    def test_engine_emits_per_patch_trace_event_on_policy_rejection(self, tmp_path):
+        """When policy rejects due to OpenAI advice, engine emits
+        openai_advice_forbidden_patch_blocked per blocked patch."""
+        from the_daddy.engine import DaddyEngine, make_run_id
+        from the_daddy.models import PatchAction, RunRecord
+
+        engine = _make_engine(tmp_path)
+        engine.upgrade_advice = {
+            "target_files": ["src/the_daddy/cli.py"],
+            "forbidden_repeat_patterns": ["README heartbeat/filler"],
+        }
+
+        # Write a dummy README so apply_patch_action doesn't fail on file-missing
+        (tmp_path / "README.md").write_text("# test\n", encoding="utf-8")
+
+        record = RunRecord(run_id=make_run_id(), command="pytest -q")
+        patches = [
+            PatchAction(
+                path="README.md",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n<!-- heartbeat -->\n",
+                description="README heartbeat",
+            )
+        ]
+
+        engine._apply_safe_patches("test-run", "build", patches, record)
+
+        # The trace must contain the per-patch blocked event
+        blocked = [e for e in record.trace if e.get("event") == "openai_advice_forbidden_patch_blocked"]
+        assert len(blocked) >= 1
+        assert any(e.get("path") == "README.md" for e in blocked)
+

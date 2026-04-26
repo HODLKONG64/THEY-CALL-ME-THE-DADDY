@@ -607,7 +607,7 @@ class DaddyEngine:
         if scoring["recommended_route"] == "reject":
             return applied, rollback_manifest, "reject"
 
-        policy = classify_patch_risk(patches)
+        policy = classify_patch_risk(patches, upgrade_advice=self.upgrade_advice)
         record.trace.append(
             {
                 "event": "patch_policy",
@@ -618,6 +618,15 @@ class DaddyEngine:
         )
 
         if not policy.passed:
+            # Emit per-patch trace events for patches blocked by OpenAI advice.
+            if any("OpenAI advice" in r for r in policy.reasons):
+                for patch in patches:
+                    record.trace.append(
+                        {
+                            "event": "openai_advice_forbidden_patch_blocked",
+                            "path": getattr(patch, "path", ""),
+                        }
+                    )
             return applied, rollback_manifest, policy.route
 
         if scoring["recommended_route"] in {"branch", "recommend"}:

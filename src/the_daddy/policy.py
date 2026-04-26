@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import Any, List
 
 from .models import PatchAction
 
@@ -137,9 +137,65 @@ def _looks_like_hallucinated_path(path: str) -> bool:
     return False
 
 
-def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
+# Keywords that, when found inside a forbidden_repeat_patterns entry, indicate
+# that README / doc-only / filler patches must be blocked at the policy layer.
+_POLICY_README_FORBIDDEN_KEYWORDS: tuple[str, ...] = (
+    "readme",
+    "doc-only",
+    "doc only",
+    "helper-lane filler",
+    "heartbeat",
+    "filler",
+)
+
+# Sentinel value placed in target_files when the upgrade gate is bypassed.
+# Enforcement must be skipped in this case.
+_TARGET_FILES_BYPASS_SENTINEL = "gate_bypassed"
+
+
+def _advice_readme_forbidden(upgrade_advice: dict[str, Any] | None) -> bool:
+    """Return True if upgrade advice explicitly forbids README/doc-only/filler patches."""
+    if not upgrade_advice:
+        return False
+    patterns = list(upgrade_advice.get("forbidden_repeat_patterns") or [])
+    for pattern in patterns:
+        pl = str(pattern).lower()
+        if any(kw in pl for kw in _POLICY_README_FORBIDDEN_KEYWORDS):
+            return True
+    return False
+
+
+def _advice_enforced_target_files(upgrade_advice: dict[str, Any] | None) -> set[str]:
+    """Return the set of normalized target file paths that patches must be restricted to.
+
+    Returns an empty set when:
+    - upgrade_advice is None or missing target_files
+    - target_files contains only the gate-bypass sentinel
+    """
+    if not upgrade_advice:
+        return set()
+    raw = list(upgrade_advice.get("target_files") or [])
+    if not raw:
+        return set()
+    targets: set[str] = set()
+    for item in raw:
+        normalized = _normalize_masked_path(_normalize_path(str(item)))
+        if normalized and normalized != _TARGET_FILES_BYPASS_SENTINEL:
+            targets.add(normalized)
+    # If all entries were the bypass sentinel, return empty (no enforcement).
+    return targets
+
+
+def classify_patch_risk(
+    patches: list[PatchAction],
+    upgrade_advice: dict[str, Any] | None = None,
+) -> PolicyResult:
     reasons: list[str] = []
     route = "safe"
+
+    readme_forbidden = _advice_readme_forbidden(upgrade_advice)
+    enforced_targets = _advice_enforced_target_files(upgrade_advice)
+    allowlisted_lower = {item.lower() for item in ALLOWLISTED_RUNTIME_HELPERS}
 
     for patch in patches:
         path = _normalize_masked_path(_normalize_path(patch.path))
@@ -169,6 +225,18 @@ def classify_patch_risk(patches: list[PatchAction]) -> PolicyResult:
 
         if _looks_like_hallucinated_path(path):
             reasons.append(f"Blocked hallucinated or near-miss path: {path}")
+
+        # --- OpenAI advice enforcement ---
+        if readme_forbidden and path.lower() == "readme.md":
+            reasons.append(
+                f"OpenAI advice forbids README/doc patches: {path}"
+            )
+
+        if enforced_targets and path.lower() not in allowlisted_lower:
+            if path not in enforced_targets and path.lower() not in {t.lower() for t in enforced_targets}:
+                reasons.append(
+                    f"OpenAI advice restricts patches to target_files; {path} is out of scope"
+                )
 
     if reasons:
         return PolicyResult(False, "reject", reasons)
