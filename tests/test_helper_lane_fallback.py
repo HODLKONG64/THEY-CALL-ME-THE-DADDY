@@ -189,7 +189,8 @@ class TestBuildSafeHelperLanePatch:
         assert result.passed, f"classify_patch_risk failed: {result.reasons}"
 
     def test_patch_is_idempotent_when_function_already_exists(self, tmp_path):
-        """If summarize_noop_repair_state already exists, no patch is generated."""
+        """If summarize_noop_repair_state already exists AND no other targets present,
+        no patch is generated."""
         dest = tmp_path / "src" / "the_daddy" / "runtime"
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "trace_summary.py").write_text(
@@ -202,8 +203,59 @@ class TestBuildSafeHelperLanePatch:
 
         patches = engine._build_safe_helper_lane_patch(record)
 
-        # No patch for trace_summary; no other helpers exist → empty
+        # trace_summary has the guard, other helpers don't exist in tmp_path → empty
         assert patches == []
+
+    def test_falls_back_to_run_health_when_trace_summary_already_patched(self, tmp_path):
+        """When trace_summary already has its function, fallback targets run_health.py."""
+        dest = tmp_path / "src" / "the_daddy" / "runtime"
+        dest.mkdir(parents=True, exist_ok=True)
+        # trace_summary already patched
+        (dest / "trace_summary.py").write_text(
+            "def summarize_noop_repair_state(run_payload): return {}\n",
+            encoding="utf-8",
+        )
+        # run_health exists but doesn't have the guard symbol
+        (dest / "run_health.py").write_text(
+            "def summarize_run_health(runs=None): return {}\n",
+            encoding="utf-8",
+        )
+
+        engine = _make_engine(tmp_path)
+        _set_healthy_safe_loop(engine)
+        record = _make_record()
+
+        patches = engine._build_safe_helper_lane_patch(record)
+
+        assert len(patches) == 1
+        assert "run_health" in patches[0].path
+        assert "summarize_repair_noop_ticks" in patches[0].description
+
+    def test_falls_back_to_error_digest_when_first_two_already_patched(self, tmp_path):
+        """When trace_summary and run_health are both patched, error_digest is targeted."""
+        dest = tmp_path / "src" / "the_daddy" / "runtime"
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "trace_summary.py").write_text(
+            "def summarize_noop_repair_state(run_payload): return {}\n",
+            encoding="utf-8",
+        )
+        (dest / "run_health.py").write_text(
+            "def summarize_repair_noop_ticks(runs=None): return {}\n",
+            encoding="utf-8",
+        )
+        (dest / "error_digest.py").write_text(
+            "def summarize_errors(events=None): return {}\n",
+            encoding="utf-8",
+        )
+
+        engine = _make_engine(tmp_path)
+        _set_healthy_safe_loop(engine)
+        record = _make_record()
+
+        patches = engine._build_safe_helper_lane_patch(record)
+
+        assert len(patches) == 1
+        assert "error_digest" in patches[0].path
 
     def test_patch_unavailable_emits_safe_helper_lane_patch_unavailable(self, tmp_path):
         """When no helper targets exist, emits unavailable event instead."""
@@ -446,3 +498,134 @@ class TestSummarizeNoopRepairState:
         assert result["repair_noop"] is False
         assert result["patch_count"] == 0
         assert result["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# run_health.py deduplication tests
+# ---------------------------------------------------------------------------
+
+class TestRunHealthNoDuplicates:
+    def test_run_health_has_exactly_one_recovery_tick_marker(self):
+        import inspect
+        import the_daddy.runtime.run_health as rh
+
+        src = inspect.getsource(rh)
+        assert src.count("def recovery_tick_marker(") == 1, (
+            "Expected exactly one def recovery_tick_marker(), got multiple"
+        )
+
+    def test_run_health_has_exactly_one_recovery_tick_marker_v2(self):
+        import inspect
+        import the_daddy.runtime.run_health as rh
+
+        src = inspect.getsource(rh)
+        assert src.count("def recovery_tick_marker_v2(") == 1, (
+            "Expected exactly one def recovery_tick_marker_v2(), got multiple"
+        )
+
+    def test_run_health_functions_are_callable(self):
+        from the_daddy.runtime.run_health import (
+            recovery_tick_marker,
+            recovery_tick_marker_v2,
+            summarize_run_health,
+        )
+
+        assert callable(summarize_run_health)
+        assert callable(recovery_tick_marker)
+        assert callable(recovery_tick_marker_v2)
+        assert recovery_tick_marker()["status"] == "recovery_tick"
+        assert recovery_tick_marker_v2()["status"] == "recovery_tick"
+
+
+# ---------------------------------------------------------------------------
+# summarize_repair_noop_ticks unit tests
+# ---------------------------------------------------------------------------
+
+class TestSummarizeRepairNoopTicks:
+    def test_counts_noop_repairs(self):
+        from the_daddy.runtime.run_health import summarize_repair_noop_ticks
+
+        runs = [
+            {"summary": "No safe repair patch available", "success": False},
+            {"summary": "Success", "success": True},
+            {"summary": "No safe repair patch available", "success": False},
+        ]
+        result = summarize_repair_noop_ticks(runs)
+        assert result["noop_repair_count"] == 2
+        assert result["total_runs"] == 3
+
+    def test_empty_runs(self):
+        from the_daddy.runtime.run_health import summarize_repair_noop_ticks
+
+        result = summarize_repair_noop_ticks([])
+        assert result["noop_repair_count"] == 0
+        assert result["total_runs"] == 0
+
+    def test_none_runs(self):
+        from the_daddy.runtime.run_health import summarize_repair_noop_ticks
+
+        result = summarize_repair_noop_ticks(None)
+        assert result["noop_repair_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Real-repo scenario: trace_summary already patched, run_health is available
+# ---------------------------------------------------------------------------
+
+class TestHelperLaneFallbackRealRepoScenario:
+    def test_run_health_targeted_when_trace_summary_already_has_function(self, tmp_path, monkeypatch):
+        """Simulates the real repo: trace_summary already has summarize_noop_repair_state,
+        so the engine should fall back to run_health.py."""
+        dest = tmp_path / "src" / "the_daddy" / "runtime"
+        dest.mkdir(parents=True, exist_ok=True)
+        # trace_summary already has the guard
+        (dest / "trace_summary.py").write_text(
+            "def summarize_noop_repair_state(run_payload): return {}\n",
+            encoding="utf-8",
+        )
+        # run_health exists without the guard
+        (dest / "run_health.py").write_text(
+            "def summarize_run_health(runs=None): return {}\n"
+            "def recovery_tick_marker(): return {}\n"
+            "def recovery_tick_marker_v2(): return {}\n",
+            encoding="utf-8",
+        )
+
+        advice_path = _write_advice(tmp_path / "advice.json")
+        monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+        from the_daddy.config import Settings
+        from unittest.mock import MagicMock
+
+        settings = Settings(
+            target_root=tmp_path,
+            command="python -c \"print('ok')\"",
+        )
+        engine = DaddyEngine(settings)
+
+        mock_review = MagicMock()
+        mock_review.self_evolution_actions = []
+        mock_review.build_actions = []
+        mock_review.architecture_plans = []
+        mock_review.execution_notes = []
+        mock_review.risk_level = "low"
+        mock_review.diagnosis = "test"
+
+        monkeypatch.setattr(engine.reviewer, "review", lambda **_kw: mock_review)
+        monkeypatch.setattr(engine.memory, "add_architecture_review", lambda _r: None)
+        monkeypatch.setattr(engine.memory, "save", lambda: None)
+
+        record = engine.run()
+
+        events = [e.get("event") for e in record.trace]
+        assert "safe_helper_lane_patch_generated" in events, (
+            f"Expected safe_helper_lane_patch_generated. Trace events: {events}"
+        )
+        # Must target run_health, not trace_summary
+        gen_event = next(
+            e for e in record.trace if e.get("event") == "safe_helper_lane_patch_generated"
+        )
+        assert "run_health" in gen_event.get("chosen_path", ""), (
+            f"Expected run_health as chosen_path, got: {gen_event}"
+        )
+

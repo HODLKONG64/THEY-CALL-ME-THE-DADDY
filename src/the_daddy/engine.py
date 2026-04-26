@@ -240,21 +240,14 @@ class DaddyEngine:
 
         run_id = record.run_id
 
-        for candidate in SAFE_HELPER_LANE_TARGETS:
-            full_path = self.settings.target_root / candidate
-            if not full_path.exists() or not full_path.is_file():
-                continue
-
-            if "trace_summary" in candidate:
-                try:
-                    content = full_path.read_text(encoding="utf-8")
-                except Exception:
-                    continue
-
-                if "summarize_noop_repair_state" in content:
-                    continue
-
-                addition = (
+        # Ordered list of (file_path, guard_symbol, function_body_to_append).
+        # The engine picks the first file that exists and doesn't already contain
+        # the guard symbol.  Each body is < 10 lines and purely additive (reversible).
+        _additions: list[tuple[str, str, str]] = [
+            (
+                "src/the_daddy/runtime/trace_summary.py",
+                "summarize_noop_repair_state",
+                (
                     "\n\n"
                     "def summarize_noop_repair_state(run_payload: dict) -> dict:\n"
                     "    return {\n"
@@ -262,25 +255,73 @@ class DaddyEngine:
                     '        "patch_count": int(run_payload.get("patch_count", 0) or 0),\n'
                     '        "success": bool(run_payload.get("success", False)),\n'
                     "    }\n"
-                )
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/run_health.py",
+                "summarize_repair_noop_ticks",
+                (
+                    "\n\n"
+                    "def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:\n"
+                    "    items = runs or []\n"
+                    "    noop_count = sum(\n"
+                    "        1 for r in items\n"
+                    '        if str(r.get("summary", "")).startswith("No safe repair")\n'
+                    "    )\n"
+                    "    return {\n"
+                    '        "noop_repair_count": noop_count,\n'
+                    '        "total_runs": len(items),\n'
+                    "    }\n"
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/error_digest.py",
+                "summarize_repair_mode_event_counts",
+                (
+                    "\n\n"
+                    "def summarize_repair_mode_event_counts(trace: list[dict] | None = None) -> dict:\n"
+                    "    items = trace or []\n"
+                    "    repair_events = [\n"
+                    "        str(e.get('event', ''))\n"
+                    "        for e in items\n"
+                    "        if str(e.get('event', '')).startswith('repair_mode')\n"
+                    "    ]\n"
+                    "    return {\n"
+                    '        "repair_event_count": len(repair_events),\n'
+                    '        "repair_events": repair_events[:10],\n'
+                    "    }\n"
+                ),
+            ),
+        ]
 
-                patch = PatchAction(
-                    path=candidate,
-                    operation="regex_replace",
-                    pattern=r"\Z",
-                    replacement=addition,
-                    description="Add summarize_noop_repair_state helper to trace_summary",
-                )
+        for candidate, guard_symbol, addition in _additions:
+            full_path = self.settings.target_root / candidate
+            if not full_path.exists() or not full_path.is_file():
+                continue
+            try:
+                content = full_path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if guard_symbol in content:
+                continue
 
-                record.trace.append(
-                    {
-                        "event": "safe_helper_lane_patch_generated",
-                        "chosen_path": candidate,
-                        "reason": "helper-lane fallback: repair/healthy_safe_loop with no candidate patches",
-                        "run_id": run_id,
-                    }
-                )
-                return [patch]
+            patch = PatchAction(
+                path=candidate,
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement=addition,
+                description=f"Add {guard_symbol} helper to {candidate.split('/')[-1]}",
+            )
+
+            record.trace.append(
+                {
+                    "event": "safe_helper_lane_patch_generated",
+                    "chosen_path": candidate,
+                    "reason": "helper-lane fallback: repair/healthy_safe_loop with no candidate patches",
+                    "run_id": run_id,
+                }
+            )
+            return [patch]
 
         record.trace.append(
             {
