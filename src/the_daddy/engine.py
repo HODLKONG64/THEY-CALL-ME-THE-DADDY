@@ -233,6 +233,8 @@ class DaddyEngine:
         It must never target README.md, engine.py, or cli.py.
         """
         problem_type = str((self.upgrade_advice or {}).get("problem_type", "")).strip().lower()
+        # Proceed only when repair_mode_active is True OR problem_type is healthy_safe_loop.
+        # The guard below is the De Morgan equivalent: exit if neither condition holds.
         if not self.repair_mode_active and problem_type != "healthy_safe_loop":
             return []
 
