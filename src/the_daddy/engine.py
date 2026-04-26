@@ -49,6 +49,16 @@ EXECUTION_PATH_TARGETS = {
 
 CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 
+# Ordered list of safe helper-lane targets for bounded fallback patches.
+# These must never include README.md, engine.py, or cli.py.
+SAFE_HELPER_LANE_TARGETS = [
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/error_digest.py",
+    "src/the_daddy/runtime/run_health.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+]
+
 
 def make_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -211,6 +221,70 @@ class DaddyEngine:
                 "reason": "no patches matched OpenAI target_files",
                 "target_files": target_files,
                 "input_patch_paths": [getattr(p, "path", "") for p in patches],
+            }
+        )
+        return []
+
+    def _build_safe_helper_lane_patch(self, record: RunRecord) -> list:
+        """Build one tiny, reversible helper-lane patch for safe targets only.
+
+        This is invoked when repair_mode_active is True (or problem_type is
+        healthy_safe_loop) and no candidate patches survived normal filtering.
+        It must never target README.md, engine.py, or cli.py.
+        """
+        problem_type = str((self.upgrade_advice or {}).get("problem_type", "")).strip().lower()
+        if not self.repair_mode_active and problem_type != "healthy_safe_loop":
+            return []
+
+        run_id = record.run_id
+
+        for candidate in SAFE_HELPER_LANE_TARGETS:
+            full_path = self.settings.target_root / candidate
+            if not full_path.exists() or not full_path.is_file():
+                continue
+
+            if "trace_summary" in candidate:
+                try:
+                    content = full_path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                if "summarize_noop_repair_state" in content:
+                    continue
+
+                addition = (
+                    "\n\n"
+                    "def summarize_noop_repair_state(run_payload: dict) -> dict:\n"
+                    "    return {\n"
+                    '        "repair_noop": bool(run_payload.get("summary") == "No safe repair patch available"),\n'
+                    '        "patch_count": int(run_payload.get("patch_count", 0) or 0),\n'
+                    '        "success": bool(run_payload.get("success", False)),\n'
+                    "    }\n"
+                )
+
+                patch = PatchAction(
+                    path=candidate,
+                    operation="regex_replace",
+                    pattern=r"\Z",
+                    replacement=addition,
+                    description="Add summarize_noop_repair_state helper to trace_summary",
+                )
+
+                record.trace.append(
+                    {
+                        "event": "safe_helper_lane_patch_generated",
+                        "chosen_path": candidate,
+                        "reason": "helper-lane fallback: repair/healthy_safe_loop with no candidate patches",
+                        "run_id": run_id,
+                    }
+                )
+                return [patch]
+
+        record.trace.append(
+            {
+                "event": "safe_helper_lane_patch_unavailable",
+                "reason": "no suitable helper-lane target found",
+                "candidates_checked": SAFE_HELPER_LANE_TARGETS,
             }
         )
         return []
@@ -1089,6 +1163,8 @@ class DaddyEngine:
                 if action.patches:
                     patches.extend(action.patches)
 
+        had_candidate_patches = len(patches) > 0
+
         patches = self._run_depth_gate(mode=mode, patches=patches, record=record)
         patches = self._enforce_repair_mode_targets(patches, record)
 
@@ -1117,21 +1193,26 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            real_patch = self._build_real_cli_improvement_patch(record)
-            if real_patch:
-                patches = real_patch
-            else:
-                probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
-                if probe_patches:
-                    patches = probe_patches
+            if not had_candidate_patches:
+                helper_patches = self._build_safe_helper_lane_patch(record)
+                if helper_patches:
+                    patches = helper_patches
+            if not patches:
+                real_patch = self._build_real_cli_improvement_patch(record)
+                if real_patch:
+                    patches = real_patch
                 else:
-                    forced_patches = self._build_forced_target_patches(record)
-                    if forced_patches:
-                        patches = forced_patches
+                    probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
+                    if probe_patches:
+                        patches = probe_patches
                     else:
-                        takeover_patches = self._doctor_takeover_patches(record)
-                        if takeover_patches:
-                            patches = takeover_patches
+                        forced_patches = self._build_forced_target_patches(record)
+                        if forced_patches:
+                            patches = forced_patches
+                        else:
+                            takeover_patches = self._doctor_takeover_patches(record)
+                            if takeover_patches:
+                                patches = takeover_patches
 
         if not self.repair_mode_active:
             has_forced = any(
