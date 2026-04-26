@@ -138,6 +138,14 @@ def summarize_build_pressure_source(build_pressure_summary: dict | None, build_a
     }
 
 
+def summarize_noop_repair_state(run_payload: dict) -> dict:
+    return {
+        "repair_noop": bool(run_payload.get("summary") == "No safe repair patch available"),
+        "patch_count": int(run_payload.get("patch_count", 0) or 0),
+        "success": bool(run_payload.get("success", False)),
+    }
+
+
 def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     items = actions or []
     unique_titles: list[str] = []

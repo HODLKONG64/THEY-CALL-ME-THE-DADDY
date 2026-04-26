@@ -30,12 +30,6 @@ def summarize_run_health(
     }
 
 
-def recovery_tick_marker_v2() -> dict[str, Any]:
-    return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
-    }
-
 def recovery_tick_marker() -> dict[str, Any]:
     return {
         "status": "recovery_tick",
@@ -50,29 +44,13 @@ def recovery_tick_marker_v2() -> dict[str, Any]:
     }
 
 
-def recovery_tick_marker_v2() -> dict[str, Any]:
+def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:
+    items = runs or []
+    noop_count = sum(
+        1 for r in items
+        if str(r.get("summary", "")).startswith("No safe repair")
+    )
     return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
-    }
-
-
-def recovery_tick_marker_v2() -> dict[str, Any]:
-    return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
-    }
-
-
-def recovery_tick_marker_v2() -> dict[str, Any]:
-    return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
-    }
-
-
-def recovery_tick_marker_v2() -> dict[str, Any]:
-    return {
-        "status": "recovery_tick",
-        "source": "forced_safe_recovery_patch",
+        "noop_repair_count": noop_count,
+        "total_runs": len(items),
     }

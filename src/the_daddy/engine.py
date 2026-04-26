@@ -49,6 +49,16 @@ EXECUTION_PATH_TARGETS = {
 
 CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 
+# Ordered list of safe helper-lane targets for bounded fallback patches.
+# These must never include README.md, engine.py, or cli.py.
+SAFE_HELPER_LANE_TARGETS = [
+    "src/the_daddy/runtime/trace_summary.py",
+    "src/the_daddy/runtime/error_digest.py",
+    "src/the_daddy/runtime/run_health.py",
+    "src/the_daddy/runtime/reviewer_fallback.py",
+    "src/the_daddy/runtime/architecture_probe.py",
+]
+
 
 def make_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -211,6 +221,152 @@ class DaddyEngine:
                 "reason": "no patches matched OpenAI target_files",
                 "target_files": target_files,
                 "input_patch_paths": [getattr(p, "path", "") for p in patches],
+            }
+        )
+        return []
+
+    def _build_safe_helper_lane_patch(self, record: RunRecord) -> list:
+        """Build one tiny, reversible helper-lane patch for safe targets only.
+
+        This is invoked when repair_mode_active is True (or problem_type is
+        healthy_safe_loop) and no candidate patches survived normal filtering.
+        It must never target README.md, engine.py, or cli.py.
+        """
+        problem_type = str((self.upgrade_advice or {}).get("problem_type", "")).strip().lower()
+        # Proceed only when repair_mode_active is True OR problem_type is healthy_safe_loop.
+        # The guard below is the De Morgan equivalent: exit if neither condition holds.
+        if not self.repair_mode_active and problem_type != "healthy_safe_loop":
+            return []
+
+        run_id = record.run_id
+
+        # Ordered list of (file_path, guard_symbol, function_body_to_append).
+        # The engine picks the first file that exists and doesn't already contain
+        # the guard symbol.  Each body is < 10 lines and purely additive (reversible).
+        # Must cover every entry in SAFE_HELPER_LANE_TARGETS.
+        target_additions: list[tuple[str, str, str]] = [
+            (
+                "src/the_daddy/runtime/trace_summary.py",
+                "summarize_noop_repair_state",
+                (
+                    "\n\n"
+                    "def summarize_noop_repair_state(run_payload: dict) -> dict:\n"
+                    "    return {\n"
+                    '        "repair_noop": bool(run_payload.get("summary") == "No safe repair patch available"),\n'
+                    '        "patch_count": int(run_payload.get("patch_count", 0) or 0),\n'
+                    '        "success": bool(run_payload.get("success", False)),\n'
+                    "    }\n"
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/run_health.py",
+                "summarize_repair_noop_ticks",
+                (
+                    "\n\n"
+                    "def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:\n"
+                    "    items = runs or []\n"
+                    "    noop_count = sum(\n"
+                    "        1 for r in items\n"
+                    '        if str(r.get("summary", "")).startswith("No safe repair")\n'
+                    "    )\n"
+                    "    return {\n"
+                    '        "noop_repair_count": noop_count,\n'
+                    '        "total_runs": len(items),\n'
+                    "    }\n"
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/error_digest.py",
+                "summarize_repair_mode_event_counts",
+                (
+                    "\n\n"
+                    "def summarize_repair_mode_event_counts(trace: list[dict] | None = None) -> dict:\n"
+                    "    items = trace or []\n"
+                    "    repair_events = [\n"
+                    "        str(e.get('event', ''))\n"
+                    "        for e in items\n"
+                    "        if str(e.get('event', '')).startswith('repair_mode')\n"
+                    "    ]\n"
+                    "    return {\n"
+                    '        "repair_event_count": len(repair_events),\n'
+                    '        "repair_events": repair_events[:10],\n'
+                    "    }\n"
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/reviewer_fallback.py",
+                "summarize_repair_lane_trigger_reasons",
+                (
+                    "\n\n"
+                    "def summarize_repair_lane_trigger_reasons(trace: list[dict] | None = None) -> dict:\n"
+                    "    items = trace or []\n"
+                    "    reasons = [\n"
+                    "        str(e.get('reason', ''))\n"
+                    "        for e in items\n"
+                    "        if e.get('event') in {'repair_mode_no_patches_remaining', 'safe_helper_lane_patch_unavailable'}\n"
+                    "        and e.get('reason')\n"
+                    "    ]\n"
+                    "    return {\n"
+                    '        "trigger_count": len(reasons),\n'
+                    '        "reasons": reasons[:10],\n'
+                    "    }\n"
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/architecture_probe.py",
+                "summarize_helper_lane_target_probe",
+                (
+                    "\n\n"
+                    "def summarize_helper_lane_target_probe(trace: list[dict] | None = None) -> dict:\n"
+                    "    items = trace or []\n"
+                    "    generated = [\n"
+                    "        str(e.get('chosen_path', ''))\n"
+                    "        for e in items\n"
+                    "        if e.get('event') == 'safe_helper_lane_patch_generated'\n"
+                    "        and e.get('chosen_path')\n"
+                    "    ]\n"
+                    "    return {\n"
+                    '        "helper_lane_generated_count": len(generated),\n'
+                    '        "chosen_paths": generated[:10],\n'
+                    "    }\n"
+                ),
+            ),
+        ]
+
+        for candidate, guard_symbol, addition in target_additions:
+            full_path = self.settings.target_root / candidate
+            if not full_path.exists() or not full_path.is_file():
+                continue
+            try:
+                content = full_path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if guard_symbol in content:
+                continue
+
+            patch = PatchAction(
+                path=candidate,
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement=addition,
+                description=f"Add {guard_symbol} helper to {candidate.split('/')[-1]}",
+            )
+
+            record.trace.append(
+                {
+                    "event": "safe_helper_lane_patch_generated",
+                    "chosen_path": candidate,
+                    "reason": "helper-lane fallback: repair/healthy_safe_loop with no candidate patches",
+                    "run_id": run_id,
+                }
+            )
+            return [patch]
+
+        record.trace.append(
+            {
+                "event": "safe_helper_lane_patch_unavailable",
+                "reason": "no suitable helper-lane target found",
+                "candidates_checked": SAFE_HELPER_LANE_TARGETS,
             }
         )
         return []
@@ -1089,6 +1245,8 @@ class DaddyEngine:
                 if action.patches:
                     patches.extend(action.patches)
 
+        had_candidate_patches = len(patches) > 0
+
         patches = self._run_depth_gate(mode=mode, patches=patches, record=record)
         patches = self._enforce_repair_mode_targets(patches, record)
 
@@ -1117,21 +1275,26 @@ class DaddyEngine:
                     "required_execution_targets": self._required_execution_targets(),
                 }
             )
-            real_patch = self._build_real_cli_improvement_patch(record)
-            if real_patch:
-                patches = real_patch
-            else:
-                probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
-                if probe_patches:
-                    patches = probe_patches
+            if not had_candidate_patches:
+                helper_patches = self._build_safe_helper_lane_patch(record)
+                if helper_patches:
+                    patches = helper_patches
+            if not patches:
+                real_patch = self._build_real_cli_improvement_patch(record)
+                if real_patch:
+                    patches = real_patch
                 else:
-                    forced_patches = self._build_forced_target_patches(record)
-                    if forced_patches:
-                        patches = forced_patches
+                    probe_patches = self._build_minimal_execution_probe_patch(record.run_id)
+                    if probe_patches:
+                        patches = probe_patches
                     else:
-                        takeover_patches = self._doctor_takeover_patches(record)
-                        if takeover_patches:
-                            patches = takeover_patches
+                        forced_patches = self._build_forced_target_patches(record)
+                        if forced_patches:
+                            patches = forced_patches
+                        else:
+                            takeover_patches = self._doctor_takeover_patches(record)
+                            if takeover_patches:
+                                patches = takeover_patches
 
         if not self.repair_mode_active:
             has_forced = any(
