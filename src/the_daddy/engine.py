@@ -243,7 +243,8 @@ class DaddyEngine:
         # Ordered list of (file_path, guard_symbol, function_body_to_append).
         # The engine picks the first file that exists and doesn't already contain
         # the guard symbol.  Each body is < 10 lines and purely additive (reversible).
-        _additions: list[tuple[str, str, str]] = [
+        # Must cover every entry in SAFE_HELPER_LANE_TARGETS.
+        target_additions: list[tuple[str, str, str]] = [
             (
                 "src/the_daddy/runtime/trace_summary.py",
                 "summarize_noop_repair_state",
@@ -292,9 +293,47 @@ class DaddyEngine:
                     "    }\n"
                 ),
             ),
+            (
+                "src/the_daddy/runtime/reviewer_fallback.py",
+                "summarize_repair_lane_trigger_reasons",
+                (
+                    "\n\n"
+                    "def summarize_repair_lane_trigger_reasons(trace: list[dict] | None = None) -> dict:\n"
+                    "    items = trace or []\n"
+                    "    reasons = [\n"
+                    "        str(e.get('reason', ''))\n"
+                    "        for e in items\n"
+                    "        if e.get('event') in {'repair_mode_no_patches_remaining', 'safe_helper_lane_patch_unavailable'}\n"
+                    "        and e.get('reason')\n"
+                    "    ]\n"
+                    "    return {\n"
+                    '        "trigger_count": len(reasons),\n'
+                    '        "reasons": reasons[:10],\n'
+                    "    }\n"
+                ),
+            ),
+            (
+                "src/the_daddy/runtime/architecture_probe.py",
+                "summarize_helper_lane_target_probe",
+                (
+                    "\n\n"
+                    "def summarize_helper_lane_target_probe(trace: list[dict] | None = None) -> dict:\n"
+                    "    items = trace or []\n"
+                    "    generated = [\n"
+                    "        str(e.get('chosen_path', ''))\n"
+                    "        for e in items\n"
+                    "        if e.get('event') == 'safe_helper_lane_patch_generated'\n"
+                    "        and e.get('chosen_path')\n"
+                    "    ]\n"
+                    "    return {\n"
+                    '        "helper_lane_generated_count": len(generated),\n'
+                    '        "chosen_paths": generated[:10],\n'
+                    "    }\n"
+                ),
+            ),
         ]
 
-        for candidate, guard_symbol, addition in _additions:
+        for candidate, guard_symbol, addition in target_additions:
             full_path = self.settings.target_root / candidate
             if not full_path.exists() or not full_path.is_file():
                 continue

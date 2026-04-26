@@ -514,7 +514,7 @@ class TestRunHealthNoDuplicates:
             "Expected exactly one def recovery_tick_marker(), got multiple"
         )
 
-    def test_run_health_has_exactly_one_recovery_tick_marker_v2(self):
+    def test_run_health_has_no_duplicate_recovery_tick_marker_v2(self):
         import inspect
         import the_daddy.runtime.run_health as rh
 
