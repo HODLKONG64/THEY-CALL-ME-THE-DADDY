@@ -67,3 +67,16 @@ def summarize_error_messages(events: list[dict[str, Any]] | None = None) -> dict
         "top_messages": ranked[:10],
         "first_message": ranked[0][0] if ranked else "",
     }
+
+
+def summarize_repair_mode_event_counts(trace: list[dict] | None = None) -> dict:
+    items = trace or []
+    repair_events = [
+        str(e.get('event', ''))
+        for e in items
+        if str(e.get('event', '')).startswith('repair_mode')
+    ]
+    return {
+        "repair_event_count": len(repair_events),
+        "repair_events": repair_events[:10],
+    }
