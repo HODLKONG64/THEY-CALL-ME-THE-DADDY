@@ -43,3 +43,17 @@ def summarize_architecture_bundle_density(patch_bundle: list[dict[str, Any]] | N
         "patch_count": len(items),
         "paths": [str(item.get("path", "")).strip() for item in items if str(item.get("path", "")).strip()][:10],
     }
+
+
+def summarize_helper_lane_target_probe(trace: list[dict] | None = None) -> dict:
+    items = trace or []
+    generated = [
+        str(e.get('chosen_path', ''))
+        for e in items
+        if e.get('event') == 'safe_helper_lane_patch_generated'
+        and e.get('chosen_path')
+    ]
+    return {
+        "helper_lane_generated_count": len(generated),
+        "chosen_paths": generated[:10],
+    }
