@@ -583,6 +583,89 @@ class TestRunFlowHelperLane:
 
         assert record.success is False
 
+    def test_repair_mode_can_fix_temporary_failing_helper_test(self, tmp_path, monkeypatch):
+        """Create a narrow failing helper test, then verify repair-mode applies a real .py patch."""
+        runtime_dir = tmp_path / "src" / "the_daddy" / "runtime"
+        tests_dir = tmp_path / "tests"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        tests_dir.mkdir(parents=True, exist_ok=True)
+
+        (tmp_path / "src" / "the_daddy" / "__init__.py").write_text("", encoding="utf-8")
+        (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
+
+        # Mark first helper targets as already present so helper-lane must choose error_digest.py.
+        (runtime_dir / "trace_summary.py").write_text(
+            "def summarize_noop_repair_state(run_payload):\n    return {}\n",
+            encoding="utf-8",
+        )
+        (runtime_dir / "run_health.py").write_text(
+            "def summarize_repair_noop_ticks(runs=None):\n    return {}\n",
+            encoding="utf-8",
+        )
+        (runtime_dir / "error_digest.py").write_text(
+            "def summarize_errors(events=None):\n    return {}\n",
+            encoding="utf-8",
+        )
+
+        # This test fails before patch because summarize_repair_mode_event_counts is missing.
+        (tests_dir / "test_temp_helper_probe.py").write_text(
+            "from the_daddy.runtime.error_digest import summarize_repair_mode_event_counts\n\n"
+            "def test_repair_mode_event_counts_probe():\n"
+            "    payload = [\n"
+            "        {'event': 'repair_mode_no_patches_remaining'},\n"
+            "        {'event': 'repair_mode_target_filter'},\n"
+            "        {'event': 'other'},\n"
+            "    ]\n"
+            "    summary = summarize_repair_mode_event_counts(payload)\n"
+            "    assert summary['repair_event_count'] == 2\n"
+            "    assert summary['repair_events'] == [\n"
+            "        'repair_mode_no_patches_remaining',\n"
+            "        'repair_mode_target_filter',\n"
+            "    ]\n",
+            encoding="utf-8",
+        )
+
+        advice_path = _write_advice(tmp_path / "advice.json")
+        monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+        from the_daddy.config import Settings
+        from unittest.mock import MagicMock
+
+        settings = Settings(
+            target_root=tmp_path,
+            command="PYTHONPATH=src python -m pytest -q tests/test_temp_helper_probe.py",
+        )
+        engine = DaddyEngine(settings)
+
+        mock_review = MagicMock()
+        mock_review.self_evolution_actions = []
+        mock_review.build_actions = []
+        mock_review.architecture_plans = []
+        mock_review.execution_notes = []
+        mock_review.risk_level = "low"
+        mock_review.diagnosis = "test"
+
+        monkeypatch.setattr(engine.reviewer, "review", lambda **_kw: mock_review)
+        monkeypatch.setattr(engine.memory, "add_architecture_review", lambda _r: None)
+        monkeypatch.setattr(engine.memory, "save", lambda: None)
+
+        record = engine.run()
+
+        assert record.selected_mode == "repair"
+        assert record.success is True
+        assert record.verification.returncode == 0
+
+        applied_paths = [
+            p.get("path", "") if isinstance(p, dict) else getattr(p, "path", "")
+            for p in (record.patches_applied or [])
+        ]
+        assert len(applied_paths) > 0
+        assert any(path.endswith(".py") for path in applied_paths)
+        assert "src/the_daddy/runtime/error_digest.py" in applied_paths
+
+        events = [e.get("event") for e in record.trace]
+        assert "pr_skipped" in events or "pr_opened" in events
+
 
 # ---------------------------------------------------------------------------
 # summarize_noop_repair_state unit tests
@@ -746,4 +829,3 @@ class TestHelperLaneFallbackRealRepoScenario:
         assert "run_health" in gen_event.get("chosen_path", ""), (
             f"Expected run_health as chosen_path, got: {gen_event}"
         )
-
