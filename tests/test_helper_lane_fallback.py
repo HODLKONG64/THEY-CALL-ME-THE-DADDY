@@ -583,7 +583,7 @@ class TestRunFlowHelperLane:
 
         assert record.success is False
 
-    def test_repair_mode_can_fix_temporary_failing_helper_test(self, tmp_path, monkeypatch):
+    def test_repair_mode_applies_runtime_patch_for_missing_helper_function(self, tmp_path, monkeypatch):
         """Create a narrow failing helper test, then verify repair-mode applies a real .py patch."""
         runtime_dir = tmp_path / "src" / "the_daddy" / "runtime"
         tests_dir = tmp_path / "tests"
@@ -593,7 +593,9 @@ class TestRunFlowHelperLane:
         (tmp_path / "src" / "the_daddy" / "__init__.py").write_text("", encoding="utf-8")
         (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
 
-        # Mark first helper targets as already present so helper-lane must choose error_digest.py.
+        # This probe validates a real runtime patch on error_digest.py, so we force the
+        # helper-lane chooser there: it scans SAFE_HELPER_LANE_TARGETS in order and skips
+        # a file when that target's guard function symbol already exists.
         (runtime_dir / "trace_summary.py").write_text(
             "def summarize_noop_repair_state(run_payload):\n    return {}\n",
             encoding="utf-8",
@@ -607,7 +609,9 @@ class TestRunFlowHelperLane:
             encoding="utf-8",
         )
 
-        # This test fails before patch because summarize_repair_mode_event_counts is missing.
+        # This intentionally fails before repair: it imports the missing
+        # summarize_repair_mode_event_counts function that repair mode should append to
+        # src/the_daddy/runtime/error_digest.py.
         (tests_dir / "test_temp_helper_probe.py").write_text(
             "from the_daddy.runtime.error_digest import summarize_repair_mode_event_counts\n\n"
             "def test_repair_mode_event_counts_probe():\n"
@@ -663,8 +667,9 @@ class TestRunFlowHelperLane:
         assert any(path.endswith(".py") for path in applied_paths)
         assert "src/the_daddy/runtime/error_digest.py" in applied_paths
 
-        events = [e.get("event") for e in record.trace]
-        assert "pr_skipped" in events or "pr_opened" in events
+        pr_skipped = next((e for e in record.trace if e.get("event") == "pr_skipped"), None)
+        assert pr_skipped is not None
+        assert pr_skipped.get("reason") == "github_not_configured"
 
 
 # ---------------------------------------------------------------------------
