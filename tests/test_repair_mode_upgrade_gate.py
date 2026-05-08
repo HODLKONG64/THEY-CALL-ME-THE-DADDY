@@ -3,7 +3,7 @@
 Covered requirements
 --------------------
 1. CLI reads DADDY_UPGRADE_ADVICE_PATH when set.
-2. Advice is loaded and validated before repair mode runs.
+2. Advice is loaded before repair mode runs.
 3. Repair mode refuses to run without approved advice.
 4. Repair mode rejects README-only / keep-alive / filler patches.
 5. Repair mode only allows bounded patches to approved target files.
@@ -14,16 +14,11 @@ Covered requirements
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-import pytest
 
 import the_daddy.cli as cli_module
 from the_daddy.config import Settings
-from the_daddy.core.upgrade_gate import UpgradeGateError, validate_upgrade_advice
 from the_daddy.engine import DaddyEngine, make_run_id
 from the_daddy.models import PatchAction, RunRecord
 
@@ -252,9 +247,8 @@ class TestRepairModeAcceptsExecutionPathPatches:
 
 class TestRepairModeCompletionBlocked:
     def test_completion_blocked_emits_clear_reason(self, tmp_path):
-        """_repair_mode_completion_satisfied returns False for unmatched patches; engine
-        records repair_mode_completion_blocked with a reason when the run would complete
-        without an approved execution-path patch."""
+        """_repair_mode_completion_satisfied returns False when the only applied patch
+        is README.md with no forced_target_patch_generated trace marker."""
         engine = _make_engine(tmp_path, target_files=["src/the_daddy/engine.py"])
         # Simulate a record whose only applied patch is README.md (no trace marker)
         record = _make_record()
