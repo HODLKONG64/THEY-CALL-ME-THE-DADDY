@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from the_daddy.engine import CLI_PROBE_TARGET, DaddyEngine, make_run_id
 from the_daddy.models import PatchAction
 
@@ -16,9 +14,17 @@ def _make_settings_with_root(tmp_path):
     return s
 
 
-def test_masked_advice_target_generates_real_patch_path(tmp_path, monkeypatch):
+def _create_cli_under_root(tmp_path):
+    """Create a real cli.py under the tmp target_root so the probe's existence check passes."""
+    cli_path = tmp_path / "src" / "the_daddy" / "cli.py"
+    cli_path.parent.mkdir(parents=True, exist_ok=True)
+    cli_path.write_text("# cli\n", encoding="utf-8")
+    return cli_path
+
+
+def test_masked_advice_target_generates_real_patch_path(tmp_path):
     """Masked advice target src/the_***/cli.py must generate patch path src/the_daddy/cli.py."""
-    monkeypatch.setattr(os.path, "exists", lambda p: p == CLI_PROBE_TARGET)
+    _create_cli_under_root(tmp_path)
 
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)
@@ -33,9 +39,9 @@ def test_masked_advice_target_generates_real_patch_path(tmp_path, monkeypatch):
     assert p.path == CLI_PROBE_TARGET
 
 
-def test_generated_patch_path_never_contains_masked_segment(tmp_path, monkeypatch):
+def test_generated_patch_path_never_contains_masked_segment(tmp_path):
     """Generated patch path must never contain the string 'the_***'."""
-    monkeypatch.setattr(os.path, "exists", lambda p: p == CLI_PROBE_TARGET)
+    _create_cli_under_root(tmp_path)
 
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)

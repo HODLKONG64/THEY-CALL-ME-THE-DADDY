@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from the_daddy.engine import CLI_PROBE_TARGET, DaddyEngine, make_run_id
 from the_daddy.models import PatchAction, RunRecord
 
@@ -96,11 +94,12 @@ def test_real_patch_returns_empty_when_pattern_missing(tmp_path):
     assert patches == []
 
 
-def test_probe_used_when_real_patch_unavailable(tmp_path, monkeypatch):
-    """When cli.py does not exist, real patch is empty; probe is tried next."""
-    # cli.py does NOT exist under target_root (so real patch returns [])
-    # but os.path.exists returns True for CLI_PROBE_TARGET so probe returns a patch
-    monkeypatch.setattr(os.path, "exists", lambda p: p == CLI_PROBE_TARGET)
+def test_probe_used_when_real_patch_unavailable(tmp_path):
+    """When cli.py exists but the real patch pattern doesn't match, probe fires as fallback."""
+    # cli.py exists but does NOT contain the _safe block, so real patch returns []
+    cli_path = tmp_path / CLI_PROBE_TARGET
+    cli_path.parent.mkdir(parents=True, exist_ok=True)
+    cli_path.write_text("# minimal cli without _safe block\n", encoding="utf-8")
 
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)
@@ -108,12 +107,11 @@ def test_probe_used_when_real_patch_unavailable(tmp_path, monkeypatch):
 
     record = _make_record(tmp_path)
 
-    # Real patch should be empty because target_root / CLI_PROBE_TARGET doesn't exist
-    # (os.path.exists is monkeypatched to only return True for bare CLI_PROBE_TARGET string)
+    # Real patch should be empty because the _safe pattern is not present
     real = engine._build_real_cli_improvement_patch(record)
     assert real == []
 
-    # Probe should return a patch since os.path.exists(CLI_PROBE_TARGET) is True
+    # Probe should return a patch since cli.py exists under target_root
     probe = engine._build_minimal_execution_probe_patch(record.run_id)
     assert len(probe) == 1
     assert probe[0].path == CLI_PROBE_TARGET
