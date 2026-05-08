@@ -128,14 +128,23 @@ class TestCliAdviceGating:
         monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
 
         class _DummyRecord:
-            run_id = "r1"; command = "pytest -q"; selected_mode = "build"
-            success = True; summary = "ok"; patches_applied = []; rollback_manifest = []
-            trace = []; backlog_updates = []; repo_fingerprint = {}; verification = None
+            run_id = "r1"
+            command = "pytest -q"
+            selected_mode = "build"
+            success = True
+            summary = "ok"
+            patches_applied = []
+            rollback_manifest = []
+            trace = []
+            backlog_updates = []
+            repo_fingerprint = {}
+            verification = None
 
         class _DummyEngine:
             def __init__(self, settings):
                 self.upgrade_advice = None
                 self.repair_mode_active = False
+
             def run(self):
                 return _DummyRecord()
 
