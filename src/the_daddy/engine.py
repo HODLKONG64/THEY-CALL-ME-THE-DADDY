@@ -1241,7 +1241,7 @@ class DaddyEngine:
             for path in self._required_execution_targets()
             if path
         }
-        if CLI_PROBE_TARGET in targets and os.path.exists(CLI_PROBE_TARGET):
+        if CLI_PROBE_TARGET in targets and (self.settings.target_root / CLI_PROBE_TARGET).exists():
             replacement = f"\n# DADDY_REAL_REPAIR_PROBE: {run_id}\n"
             return [
                 PatchAction(
