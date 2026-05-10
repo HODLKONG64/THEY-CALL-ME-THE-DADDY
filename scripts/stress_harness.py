@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import the_daddy.engine as engine_module
 from the_daddy.engine import DaddyEngine
 from the_daddy.git_tools import GitBranchExecutor
 from the_daddy.merge_rules import AutoMergeJudge
@@ -58,12 +59,54 @@ def main() -> int:
         out["rollback_manifest_count"] = len(rollback_ok)
         out["passing_route"] = route_ok
 
+        # Separate policy-rejection coverage: this failing patch is rejected before apply.
         failing_record = RunRecord(run_id="stress-fail", command="pytest -q")
         applied_fail, rollback_fail, route_fail = engine._apply_safe_patches("stress-fail", "repair", [failing], failing_record)
-        out["failed_apply_count"] = len(applied_fail)
-        out["failed_rollback_manifest_count"] = len(rollback_fail)
-        out["failing_route"] = route_fail
-        out["failed_patch_seen"] = any(e.get("event") == "patch_apply_failed" for e in failing_record.trace)
+        out["policy_reject_failed_apply_count"] = len(applied_fail)
+        out["policy_reject_failed_rollback_manifest_count"] = len(rollback_fail)
+        out["policy_reject_route"] = route_fail
+        out["policy_reject_patch_apply_failed_seen"] = any(
+            e.get("event") == "patch_apply_failed" for e in failing_record.trace
+        )
+
+        # Real apply-path failure coverage: a policy-safe patch reaches apply and
+        # fails inside apply_patch_action.
+        apply_fail_target = root / "src" / "the_daddy" / "runtime" / "run_health.py"
+        original_apply_fail_content = "base-health\n"
+        apply_fail_target.write_text(original_apply_fail_content, encoding="utf-8")
+        apply_fail_patch = PatchAction(
+            path="src/the_daddy/runtime/run_health.py",
+            operation="regex_replace",
+            pattern=r"\Z",
+            replacement="\n# stress-apply-failure\n",
+            description="apply-failure-path",
+        )
+
+        original_apply_patch_action = engine_module.apply_patch_action
+
+        def _failing_apply_patch_action(repo_root, patch, allow_extensions):
+            if getattr(patch, "description", "") == "apply-failure-path":
+                raise RuntimeError("injected apply failure")
+            return original_apply_patch_action(repo_root, patch, allow_extensions)
+
+        engine_module.apply_patch_action = _failing_apply_patch_action
+        try:
+            apply_fail_record = RunRecord(run_id="stress-apply-fail", command="pytest -q")
+            apply_fail_applied, apply_fail_rollback, apply_fail_route = engine._apply_safe_patches(
+                "stress-apply-fail", "repair", [apply_fail_patch], apply_fail_record
+            )
+        finally:
+            engine_module.apply_patch_action = original_apply_patch_action
+
+        out["apply_failure_route"] = apply_fail_route
+        out["apply_failure_applied_count"] = len(apply_fail_applied)
+        out["apply_failure_rollback_manifest_count"] = len(apply_fail_rollback)
+        out["apply_failure_patch_apply_failed_seen"] = any(
+            e.get("event") == "patch_apply_failed" for e in apply_fail_record.trace
+        )
+        out["apply_failure_file_unchanged"] = (
+            apply_fail_target.read_text(encoding="utf-8") == original_apply_fail_content
+        )
         out["readme_forbidden_rejected"] = not classify_patch_risk(
             [PatchAction(path="README.md", operation="regex_replace", pattern=r"\Z", replacement="\n", description="x")],
             upgrade_advice={"forbidden_repeat_patterns": ["readme heartbeat filler"], "target_files": []},

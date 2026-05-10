@@ -88,7 +88,7 @@ class GitBranchExecutor:
         return result.returncode == 0 and bool(result.stdout.strip())
 
     def refresh_base_branch(self, base_branch: str = "main") -> None:
-        self._run_no_check("fetch", "origin", base_branch)
+        self._run("fetch", "origin", base_branch)
 
         if self.branch_exists_local(base_branch):
             self._run("checkout", base_branch)
