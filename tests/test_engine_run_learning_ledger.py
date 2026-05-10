@@ -28,6 +28,8 @@ def _settings(tmp_path: Path):
 
     s = Settings()
     s.target_root = tmp_path
+    s.local_state_dir = tmp_path / "local_state"
+    s.memory_file_name = "test-memory.json"
     s.command = "python -c \"print('ok')\""
     s.github_token = ""
     s.github_repo = ""
@@ -91,11 +93,12 @@ def test_store_save_failure_during_ledger_write_does_not_mask_run(tmp_path: Path
     monkeypatch.setattr(engine.reviewer, "review", lambda **_: _review())
 
     original_save = engine.memory.store.save
-    calls = {"n": 0}
+    raised = {"done": False}
 
     def _flaky_save(payload):
-        calls["n"] += 1
-        if calls["n"] == 1:
+        ledger = payload.get("run_learning_ledger", []) if isinstance(payload, dict) else []
+        if not raised["done"] and isinstance(ledger, list) and ledger:
+            raised["done"] = True
             raise RuntimeError("OPENAI_API_KEY=sk-very-secret-value")
         return original_save(payload)
 

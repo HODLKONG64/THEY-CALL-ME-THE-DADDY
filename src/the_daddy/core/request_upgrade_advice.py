@@ -48,7 +48,7 @@ def build_repo_snapshot(repo_root: Path) -> dict[str, Any]:
                 preview_files.append(
                     {
                         "path": rel,
-                        "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:8000],
+                        "content_preview": sanitize_text(path.read_text(encoding="utf-8", errors="ignore")[:8000]),
                     }
                 )
             except Exception:

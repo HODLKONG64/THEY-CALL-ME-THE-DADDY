@@ -7,6 +7,7 @@ from typing import Any
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), "[REDACTED_SECRET]"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "[REDACTED_TOKEN]"),
+    (re.compile(r"(?i)Authorization\s*:\s*Bearer\s+\S+"), "Authorization: [REDACTED_AUTH_HEADER]"),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]{16,}\b"), "Bearer [REDACTED_TOKEN]"),
     (re.compile(r"(?im)^\s*Authorization\s*:\s*.+$"), "Authorization: [REDACTED_AUTH_HEADER]"),
     (
