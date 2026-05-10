@@ -4,24 +4,15 @@ import math
 import re
 from typing import Any
 
-_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+_SIMPLE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), "[REDACTED_SECRET]"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "[REDACTED_TOKEN]"),
     (re.compile(r"(?i)Authorization\s*:\s*Bearer\s+\S+"), "Authorization: [REDACTED_AUTH_HEADER]"),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]{16,}\b"), "Bearer [REDACTED_TOKEN]"),
-    (re.compile(r"(?im)^\s*Authorization\s*:\s*.+$"), "Authorization: [REDACTED_AUTH_HEADER]"),
-    (re.compile(r"(?i)\bOPENAI_API_KEY\s*[:=]\s*[^\s,;\"']+"), "[REDACTED_SECRET]"),
-    (re.compile(r"(?i)\bGITHUB_TOKEN\s*[:=]\s*[^\s,;\"']+"), "[REDACTED_TOKEN]"),
-    (re.compile(r"(?i)\bpassword\s*[:=]\s*[^\s,;\"']+"), "[REDACTED_SECRET]"),
-    (
-        re.compile(r"(?i)\b([A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)\s*[:=]\s*([^\s,;\"']{4,})"),
-        "[REDACTED_SECRET]",
-    ),
-    (
-        re.compile(r"(?im)^\s*([A-Za-z_][A-Za-z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD))\s*=\s*(.+)$"),
-        "[REDACTED_SECRET]",
-    ),
 ]
+_KEY_VALUE_PATTERN = re.compile(
+    r"(?i)\b([A-Za-z_][A-Za-z0-9_]*?(?:API_KEY|SECRET|TOKEN|PASSWORD))\s*[:=]\s*([^\s,;\"']{1,})"
+)
 
 
 def _shannon_entropy(text: str) -> float:
@@ -45,8 +36,21 @@ def _looks_high_entropy_secret(token: str) -> bool:
 
 def sanitize_text(value: str) -> str:
     out = str(value or "")
-    for pattern, replacement in _PATTERNS:
+    for pattern, replacement in _SIMPLE_PATTERNS:
         out = pattern.sub(replacement, out)
+
+    out = re.sub(r"(?i)\b(OPENAI_API_KEY)\s*[:=]\s*[^\s,;\"']+", r"\1=[REDACTED_SECRET]", out)
+    out = re.sub(r"(?i)\b(GITHUB_TOKEN)\s*[:=]\s*[^\s,;\"']+", r"\1=[REDACTED_TOKEN]", out)
+    out = re.sub(r"(?i)\b(password)\s*[:=]\s*[^\s,;\"']+", r"\1=[REDACTED_SECRET]", out)
+
+    def _replace_key_value(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "")
+        key_upper = key.upper()
+        if "TOKEN" in key_upper and "PASSWORD" not in key_upper:
+            return f"{key}=[REDACTED_TOKEN]"
+        return f"{key}=[REDACTED_SECRET]"
+
+    out = _KEY_VALUE_PATTERN.sub(_replace_key_value, out)
 
     def _entropy_replacer(match: re.Match[str]) -> str:
         token = match.group(0)

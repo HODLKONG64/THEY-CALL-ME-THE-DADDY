@@ -60,13 +60,16 @@ def test_learning_summary_payload_is_redacted(tmp_path, monkeypatch):
         "sk-test-secret",
         "ghp_testsecret",
         "supersecret",
-        "Authorization: Bearer",
-        "OPENAI_API_KEY=",
-        "GITHUB_TOKEN=",
-        "password=",
+        "Authorization: Bearer sk-test-secret",
+        "OPENAI_API_KEY=sk-test-secret",
+        "GITHUB_TOKEN=ghp_testsecret",
+        "password=supersecret",
     ]:
         assert fragment not in raw
-    assert "[REDACTED" in raw
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in raw
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in raw
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in raw
+    assert "password=[REDACTED_SECRET]" in raw
 
 
 def test_sanitize_text_redacts_exact_secret_examples():
@@ -81,10 +84,13 @@ def test_sanitize_text_redacts_exact_secret_examples():
         "sk-test-secret",
         "ghp_testsecret",
         "supersecret",
-        "Authorization: Bearer",
-        "OPENAI_API_KEY=",
-        "GITHUB_TOKEN=",
-        "password=",
+        "Authorization: Bearer sk-test-secret",
+        "OPENAI_API_KEY=sk-test-secret",
+        "GITHUB_TOKEN=ghp_testsecret",
+        "password=supersecret",
     ]:
         assert fragment not in cleaned
-    assert "[REDACTED" in cleaned
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in cleaned
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in cleaned
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in cleaned
+    assert "password=[REDACTED_SECRET]" in cleaned

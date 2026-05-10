@@ -166,25 +166,31 @@ def test_patch_apply_failed_and_failure_pattern_text_are_sanitized(tmp_path: Pat
     assert failed
     failed_blob = json.dumps(failed[-1])
     for secret in [
-        "Authorization: Bearer sk-test-secret",
-        "OPENAI_API_KEY=sk-test-secret",
-        "GITHUB_TOKEN=ghp_testsecret",
-        "password=supersecret",
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
     ]:
         assert secret not in failed_blob
-    assert "[REDACTED" in failed_blob
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in failed_blob
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in failed_blob
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in failed_blob
+    assert "password=[REDACTED_SECRET]" in failed_blob
 
     patterns = list(engine.memory.state.failure_patterns.values())
     assert patterns
     summary_blob = json.dumps(patterns[-1].model_dump(mode="json"))
     for secret in [
-        "Authorization: Bearer sk-test-secret",
-        "OPENAI_API_KEY=sk-test-secret",
-        "GITHUB_TOKEN=ghp_testsecret",
-        "password=supersecret",
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
     ]:
         assert secret not in summary_blob
-    assert "[REDACTED" in summary_blob
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in summary_blob
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in summary_blob
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in summary_blob
+    assert "password=[REDACTED_SECRET]" in summary_blob
 
 
 def test_pr_delivery_failed_error_is_sanitized(tmp_path: Path, monkeypatch):
@@ -212,13 +218,16 @@ def test_pr_delivery_failed_error_is_sanitized(tmp_path: Path, monkeypatch):
     assert events
     blob = json.dumps(events[-1])
     for secret in [
-        "Authorization: Bearer sk-test-secret",
-        "OPENAI_API_KEY=sk-test-secret",
-        "GITHUB_TOKEN=ghp_testsecret",
-        "password=supersecret",
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
     ]:
         assert secret not in blob
-    assert "[REDACTED" in blob
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in blob
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in blob
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in blob
+    assert "password=[REDACTED_SECRET]" in blob
 
 
 def test_branch_prepare_failed_error_is_sanitized(tmp_path: Path, monkeypatch):
@@ -279,13 +288,16 @@ def test_branch_prepare_failed_error_is_sanitized(tmp_path: Path, monkeypatch):
         "sk-test-secret",
         "ghp_testsecret",
         "supersecret",
-        "Authorization: Bearer",
-        "OPENAI_API_KEY=",
-        "GITHUB_TOKEN=",
-        "password=",
+        "Authorization: Bearer sk-test-secret",
+        "OPENAI_API_KEY=sk-test-secret",
+        "GITHUB_TOKEN=ghp_testsecret",
+        "password=supersecret",
     ]:
         assert fragment not in blob
-    assert "[REDACTED" in blob
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in blob
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in blob
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in blob
+    assert "password=[REDACTED_SECRET]" in blob
 
 
 def test_doctor_takeover_trace_fields_are_sanitized(tmp_path: Path, monkeypatch):
@@ -313,10 +325,13 @@ def test_doctor_takeover_trace_fields_are_sanitized(tmp_path: Path, monkeypatch)
         "sk-test-secret",
         "ghp_testsecret",
         "supersecret",
-        "Authorization: Bearer",
-        "OPENAI_API_KEY=",
-        "GITHUB_TOKEN=",
-        "password=",
+        "Authorization: Bearer sk-test-secret",
+        "OPENAI_API_KEY=sk-test-secret",
+        "GITHUB_TOKEN=ghp_testsecret",
+        "password=supersecret",
     ]:
         assert fragment not in blob
-    assert "[REDACTED" in blob
+    assert "Authorization: [REDACTED_AUTH_HEADER]" in blob
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in blob
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in blob
+    assert "password=[REDACTED_SECRET]" in blob
