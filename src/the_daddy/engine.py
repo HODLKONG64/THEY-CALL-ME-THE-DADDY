@@ -182,32 +182,13 @@ class DaddyEngine:
         required_targets = self._required_execution_targets()
         if not required_targets:
             return True
-        # Helper-lane patch is a valid completion path: if the system generated a
-        # safe helper-lane patch, treat repair mode as satisfied regardless of
-        # whether an execution target was directly modified.
-        if any(
-            e.get("event") == "safe_helper_lane_patch_generated"
-            for e in record.trace
-        ):
-            return True
         changed_files = {
             _resolve_upgrade_path(self._normalize_path(path))
             for path in self._changed_files_from_record(record)
         }
-        # Preserve existing behaviour: a real execution-target patch satisfies repair mode.
+        # Repair mode is satisfied only by directly touching a required execution target.
         if any(path in changed_files for path in required_targets):
             return True
-        # Forced README heartbeat fallback: count as satisfied only when the trace
-        # records that the system itself chose README.md as the fallback target AND
-        # README.md was actually changed.  Arbitrary README edits are not accepted.
-        readme_norm = _resolve_upgrade_path(self._normalize_path("README.md"))
-        if readme_norm in changed_files:
-            for entry in record.trace:
-                if (
-                    entry.get("event") == "forced_target_patch_generated"
-                    and entry.get("chosen_path") == "README.md"
-                ):
-                    return True
         return False
 
     def _enforce_repair_mode_targets(self, patches: list, record: RunRecord) -> list:
@@ -401,67 +382,14 @@ class DaddyEngine:
         return []
 
     def _build_forced_target_patches(self, record: RunRecord) -> list:
-        required_targets = self._required_execution_targets()
-        if not required_targets:
-            record.trace.append(
-                {
-                    "event": "forced_target_patch_generation_skipped",
-                    "reason": "no required execution targets",
-                    "required_execution_targets": [],
-                }
-            )
-            return []
-
-        # Hard-block README.md as a fallback target when OpenAI advice forbids
-        # README/doc-only/filler patches.
-        if self._advice_forbids_readme():
-            record.trace.append(
-                {
-                    "event": "openai_advice_forbidden_patch_blocked",
-                    "reason": "forbidden_repeat_patterns forbids README/doc-only patches",
-                    "blocked_path": "README.md",
-                    "required_execution_targets": required_targets,
-                }
-            )
-            return []
-
-        run_id = make_run_id()
-        heartbeat_marker = f"<!-- forced-repair-heartbeat: {run_id} -->"
-
-        # Only allow README.md as the forced fallback target. Do NOT target protected core files.
-        candidate = "README.md"
-        full_path = self.settings.target_root / candidate
-        if not full_path.exists():
-            record.trace.append(
-                {
-                    "event": "forced_target_patch_generation_skipped",
-                    "reason": "README.md missing",
-                    "required_execution_targets": required_targets,
-                }
-            )
-            return []
-
-        pattern = r"\Z"
-        replacement = f"\n{heartbeat_marker}\n"
-
-        patch = PatchAction(
-            path=candidate,
-            operation="regex_replace",
-            pattern=pattern,
-            replacement=replacement,
-            description="Forced repair heartbeat fallback",
-        )
-
         record.trace.append(
             {
-                "event": "forced_target_patch_generated",
-                "required_execution_targets": required_targets,
-                "chosen_path": candidate,
-                "run_id": run_id,
-                "count": 1,
+                "event": "forced_target_patch_generation_skipped",
+                "reason": "forced README fallback disabled to avoid filler/no-op loops",
+                "required_execution_targets": self._required_execution_targets(),
             }
         )
-        return [patch]
+        return []
 
     def _load_runtime_rules(self) -> dict[str, Any]:
         rules_path = self.settings.target_root / "src/the_daddy/core/system_rules.json"
@@ -1334,20 +1262,31 @@ class DaddyEngine:
                 )
 
         if self.repair_mode_active and not patches:
+            required_execution_targets = self._required_execution_targets()
             record.trace.append(
                 {
                     "event": "repair_mode_no_patches_remaining",
                     "reason": "no valid engine/cli execution-target patch was proposed",
-                    "required_execution_targets": self._required_execution_targets(),
+                    "required_execution_targets": required_execution_targets,
                 }
             )
-            helper_patches = self._build_safe_helper_lane_patch(record)
-            record.trace.append(
-                {
-                    "event": "helper_lane_attempted",
-                    "result": "success" if helper_patches else "empty",
-                }
-            )
+            helper_patches = []
+            if required_execution_targets:
+                record.trace.append(
+                    {
+                        "event": "helper_lane_skipped_for_execution_target_repair",
+                        "reason": "helper-lane targets cannot satisfy required execution-target completion",
+                        "required_execution_targets": required_execution_targets,
+                    }
+                )
+            else:
+                helper_patches = self._build_safe_helper_lane_patch(record)
+                record.trace.append(
+                    {
+                        "event": "helper_lane_attempted",
+                        "result": "success" if helper_patches else "empty",
+                    }
+                )
             if helper_patches:
                 patches = helper_patches
             else:
@@ -1368,24 +1307,12 @@ class DaddyEngine:
                                 patches = takeover_patches
 
         if not self.repair_mode_active:
-            if self._advice_forbids_readme():
-                record.trace.append(
-                    {
-                        "event": "openai_advice_forbidden_patch_blocked",
-                        "reason": "forbidden_repeat_patterns forbids README/doc-only/heartbeat patches",
-                        "blocked_path": "README.md",
-                    }
-                )
-            else:
-                has_forced = any(
-                    e.get("event") == "forced_target_patch_generated" for e in record.trace
-                )
-                has_real = any(
-                    "forced repair heartbeat fallback" not in str(getattr(p, "description", "")).lower()
-                    for p in patches
-                )
-                signal = "🛠️" if has_real else "🔥"
-                patches.extend(self._build_readme_heartbeat_patch(signal, run_id))
+            record.trace.append(
+                {
+                    "event": "heartbeat_patch_skipped",
+                    "reason": "README heartbeat disabled to prevent filler/no-op loops",
+                }
+            )
 
         if patches and self.settings.has_github and self._is_git_repo():
             try:
@@ -1425,6 +1352,19 @@ class DaddyEngine:
         if result.returncode == 0:
             record.success = True
             record.summary = "Success"
+            patch_work_expected = mode in {"build", "repair"} or bool(patches)
+            if len(record.patches_applied) == 0 and patch_work_expected:
+                record.success = False
+                record.summary = "No patch applied; blocked to avoid no-op completion"
+                record.trace.append(
+                    {
+                        "event": "no_patch_blocker_recorded",
+                        "reason": "verification passed but no patch was applied",
+                        "policy_route": policy_route,
+                        "selected_mode": mode,
+                        "patch_work_expected": patch_work_expected,
+                    }
+                )
             if self.repair_mode_active and not self._repair_mode_completion_satisfied(record):
                 record.success = False
                 record.summary = "Repair mode pending required engine/cli upgrade"
@@ -1496,3 +1436,4 @@ class DaddyEngine:
         return record
 
 DADDY_REPAIR_FALLBACK_MARKER = "20260423T195459Z"
+

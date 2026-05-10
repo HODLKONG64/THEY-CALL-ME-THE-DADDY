@@ -88,21 +88,25 @@ class GitBranchExecutor:
         return result.returncode == 0 and bool(result.stdout.strip())
 
     def refresh_base_branch(self, base_branch: str = "main") -> None:
-        self._run_no_check("fetch", "origin", base_branch)
+        if not self.branch_exists_remote(base_branch):
+            raise RuntimeError(
+                f"Remote base branch does not exist: origin/{base_branch}"
+            )
+        self._run("fetch", "origin", base_branch)
 
         if self.branch_exists_local(base_branch):
             self._run("checkout", base_branch)
-            if self.branch_exists_remote(base_branch):
-                self._run("reset", "--hard", f"origin/{base_branch}")
+            self._run("pull", "--ff-only", "origin", base_branch)
         else:
-            if self.branch_exists_remote(base_branch):
-                self._run("checkout", "-B", base_branch, f"origin/{base_branch}")
-            else:
-                self._run("checkout", "-B", base_branch)
+            self._run("checkout", "-B", base_branch, f"origin/{base_branch}")
 
     def create_or_checkout_branch(self, branch_name: str, base_branch: str = "main") -> str:
         self.refresh_base_branch(base_branch)
-        if self.branch_exists_local(branch_name):
+        remote_exists = self.branch_exists_remote(branch_name)
+        if remote_exists:
+            self._run("fetch", "origin", branch_name)
+            self._run("checkout", "-B", branch_name, f"origin/{branch_name}")
+        elif self.branch_exists_local(branch_name):
             self._run("checkout", branch_name)
         else:
             self._run("checkout", "-b", branch_name)
@@ -150,7 +154,7 @@ class GitBranchExecutor:
         return True
 
     def push(self, branch_name: str) -> None:
-        self._run("push", "-u", "origin", branch_name, "--force-with-lease")
+        self._run("push", "-u", "origin", branch_name)
 
     def branch_for_architecture_run(self, run_id: str) -> str:
         return f"daddy-architecture-{run_id.lower()}"

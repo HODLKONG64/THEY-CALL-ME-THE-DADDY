@@ -1,14 +1,4 @@
-"""Tests for the safe helper-lane fallback patch builder.
-
-Covers the required behavior:
-- healthy_safe_loop with no candidate patches generates a helper-lane patch
-- helper-lane fallback never targets README.md
-- helper-lane fallback never targets engine.py or cli.py
-- if helper-lane patch unavailable, clean no-op still works
-- attempted helper-lane patch with failing verification still fails CI
-- generated trace includes safe_helper_lane_patch_generated
-- old no-op behavior still allowed when no helper-lane patch available
-"""
+"""Tests for helper-lane behavior and execution-target repair safeguards."""
 from __future__ import annotations
 
 import json
@@ -203,7 +193,7 @@ class TestBuildSafeHelperLanePatch:
 
         patches = engine._build_safe_helper_lane_patch(record)
 
-        # trace_summary has the guard, other helpers don't exist in tmp_path → empty
+        # trace_summary has the guard, other helpers don't exist in tmp_path -> empty
         assert patches == []
 
     def test_falls_back_to_run_health_when_trace_summary_already_patched(self, tmp_path):
@@ -316,8 +306,8 @@ def _write_advice(path: Path, *, allow_proceed: bool = False, problem_type: str 
 
 
 class TestRunFlowHelperLane:
-    def test_helper_lane_triggered_when_no_candidate_patches(self, tmp_path, monkeypatch):
-        """Full run(): healthy_safe_loop + no reviewer patches → helper-lane patch."""
+    def test_execution_target_repair_skips_helper_lane_when_no_candidate_patches(self, tmp_path, monkeypatch):
+        """Full run(): healthy_safe_loop + no reviewer patches skips helper-lane in execution-target repair."""
         _write_trace_summary(tmp_path)
         advice_path = _write_advice(tmp_path / "advice.json")
         monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
@@ -348,8 +338,8 @@ class TestRunFlowHelperLane:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"Expected safe_helper_lane_patch_generated in trace. Events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"Expected helper_lane_skipped_for_execution_target_repair in trace. Events: {events}"
         )
 
     def test_helper_lane_not_triggered_when_patches_survive_filtering(self, tmp_path, monkeypatch):
@@ -405,12 +395,12 @@ class TestRunFlowHelperLane:
         events = [e.get("event") for e in record.trace]
         assert "safe_helper_lane_patch_generated" not in events
 
-    def test_helper_lane_triggered_as_primary_when_candidate_patches_filtered(
+    def test_execution_target_repair_skips_helper_lane_when_candidate_patches_filtered(
         self, tmp_path, monkeypatch
     ):
         """When reviewer proposes patches that are ALL filtered out (they target a file
-        outside the required execution targets), helper-lane must now be tried as the
-        PRIMARY fallback — not skipped in favour of CLI/probe."""
+        outside the required execution targets), helper-lane is skipped because
+        it cannot satisfy execution-target repair completion."""
         _write_trace_summary(tmp_path)
         advice_path = _write_advice(tmp_path / "advice.json")
         monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
@@ -425,7 +415,7 @@ class TestRunFlowHelperLane:
         )
         engine = DaddyEngine(settings)
 
-        # Patch targets a runtime helper — NOT in required execution targets (engine/cli).
+        # Patch targets a runtime helper, not a required execution target (engine/cli).
         # _enforce_repair_mode_targets will discard it, leaving patches empty.
         candidate_patch = PatchAction(
             path="src/the_daddy/runtime/trace_summary.py",
@@ -456,20 +446,17 @@ class TestRunFlowHelperLane:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        assert "helper_lane_attempted" in events, (
-            f"Expected helper_lane_attempted in trace. Events: {events}"
-        )
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"Expected helper-lane to be used as primary fallback. Events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"Expected helper_lane_skipped_for_execution_target_repair in trace. Events: {events}"
         )
 
-    def test_readme_not_used_when_helper_lane_available(self, tmp_path, monkeypatch):
+    def test_readme_not_used_when_helper_lane_skipped_for_execution_target_repair(self, tmp_path, monkeypatch):
         """Assertion test per requirement:
         - repair_mode_active = True
         - problem_type = healthy_safe_loop
         - no candidate patches
 
-        Helper lane MUST generate a patch and README MUST NOT be used.
+        Helper lane is skipped for required execution-target repair, and README must not be used.
         """
         _write_trace_summary(tmp_path)
         advice_path = _write_advice(tmp_path / "advice.json")
@@ -499,16 +486,8 @@ class TestRunFlowHelperLane:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        # Helper lane must be attempted and must succeed
-        assert "helper_lane_attempted" in events, (
-            f"helper_lane_attempted not in trace. Events: {events}"
-        )
-        attempted_evt = next(e for e in record.trace if e.get("event") == "helper_lane_attempted")
-        assert attempted_evt["result"] == "success", (
-            f"helper_lane_attempted result should be success, got: {attempted_evt}"
-        )
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"safe_helper_lane_patch_generated not in trace. Events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"helper_lane_skipped_for_execution_target_repair not in trace. Events: {events}"
         )
         # README must NOT be used
         applied_paths = [
@@ -516,8 +495,43 @@ class TestRunFlowHelperLane:
             for p in (record.patches_applied or [])
         ]
         assert not any(p == "README.md" for p in applied_paths), (
-            f"README.md must not be used when helper-lane is available. Applied: {applied_paths}"
+            f"README.md must not be used when helper-lane is skipped. Applied: {applied_paths}"
         )
+
+    def test_helper_lane_generation_occurs_when_execution_targets_are_not_required(self, tmp_path, monkeypatch):
+        """When execution targets are not required, helper-lane generation remains available."""
+        _write_trace_summary(tmp_path)
+        advice_path = _write_advice(tmp_path / "advice.json")
+        advice_payload = json.loads(advice_path.read_text(encoding="utf-8"))
+        advice_payload["target_files"] = ["README.md"]
+        advice_path.write_text(json.dumps(advice_payload), encoding="utf-8")
+        monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+        from the_daddy.config import Settings
+        from unittest.mock import MagicMock
+
+        settings = Settings(
+            target_root=tmp_path,
+            command="python -c \"print('ok')\"",
+        )
+        engine = DaddyEngine(settings)
+
+        mock_review = MagicMock()
+        mock_review.self_evolution_actions = []
+        mock_review.build_actions = []
+        mock_review.architecture_plans = []
+        mock_review.execution_notes = []
+        mock_review.risk_level = "low"
+        mock_review.diagnosis = "test"
+
+        monkeypatch.setattr(engine.reviewer, "review", lambda **_kw: mock_review)
+        monkeypatch.setattr(engine.memory, "add_architecture_review", lambda _r: None)
+        monkeypatch.setattr(engine.memory, "save", lambda: None)
+
+        record = engine.run()
+        events = [e.get("event") for e in record.trace]
+        assert "safe_helper_lane_patch_generated" in events
+        assert "helper_lane_skipped_for_execution_target_repair" not in events
 
     def test_no_safe_patch_available_exits_cleanly_without_helper_targets(
         self, tmp_path, monkeypatch
@@ -691,9 +705,8 @@ class TestSummarizeRepairNoopTicks:
 # ---------------------------------------------------------------------------
 
 class TestHelperLaneFallbackRealRepoScenario:
-    def test_run_health_targeted_when_trace_summary_already_has_function(self, tmp_path, monkeypatch):
-        """Simulates the real repo: trace_summary already has summarize_noop_repair_state,
-        so the engine should fall back to run_health.py."""
+    def test_execution_target_repair_skips_helper_lane_even_when_helper_files_exist(self, tmp_path, monkeypatch):
+        """With required execution targets, helper-lane is skipped even if helper files exist."""
         dest = tmp_path / "src" / "the_daddy" / "runtime"
         dest.mkdir(parents=True, exist_ok=True)
         # trace_summary already has the guard
@@ -736,14 +749,8 @@ class TestHelperLaneFallbackRealRepoScenario:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"Expected safe_helper_lane_patch_generated. Trace events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"Expected helper_lane_skipped_for_execution_target_repair. Trace events: {events}"
         )
-        # Must target run_health, not trace_summary
-        gen_event = next(
-            e for e in record.trace if e.get("event") == "safe_helper_lane_patch_generated"
-        )
-        assert "run_health" in gen_event.get("chosen_path", ""), (
-            f"Expected run_health as chosen_path, got: {gen_event}"
-        )
+
 
