@@ -93,7 +93,7 @@ class GitBranchExecutor:
         if self.branch_exists_local(base_branch):
             self._run("checkout", base_branch)
             if self.branch_exists_remote(base_branch):
-                self._run("reset", "--hard", f"origin/{base_branch}")
+                self._run_no_check("pull", "--ff-only", "origin", base_branch)
         else:
             if self.branch_exists_remote(base_branch):
                 self._run("checkout", "-B", base_branch, f"origin/{base_branch}")
@@ -150,7 +150,7 @@ class GitBranchExecutor:
         return True
 
     def push(self, branch_name: str) -> None:
-        self._run("push", "-u", "origin", branch_name, "--force-with-lease")
+        self._run("push", "-u", "origin", branch_name)
 
     def branch_for_architecture_run(self, run_id: str) -> str:
         return f"daddy-architecture-{run_id.lower()}"

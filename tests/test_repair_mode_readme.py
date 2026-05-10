@@ -35,8 +35,8 @@ def _make_record(patches_applied=None, trace=None) -> RunRecord:
     return record
 
 
-def test_repair_mode_forced_readme_counts_as_satisfied(tmp_path):
-    """README.md patch + forced_target_patch_generated trace marker satisfies repair completion."""
+def test_repair_mode_forced_readme_does_not_count_as_satisfied(tmp_path):
+    """README.md fallback cannot satisfy repair completion for execution-path targets."""
     engine = _make_engine(tmp_path)
     record = _make_record(
         patches_applied=[{"path": "README.md"}],
@@ -48,7 +48,7 @@ def test_repair_mode_forced_readme_counts_as_satisfied(tmp_path):
             }
         ],
     )
-    assert engine._repair_mode_completion_satisfied(record) is True
+    assert engine._repair_mode_completion_satisfied(record) is False
 
 
 def test_arbitrary_readme_patch_does_not_satisfy(tmp_path):
@@ -71,8 +71,8 @@ def test_engine_or_cli_patch_still_satisfies(tmp_path):
     assert engine._repair_mode_completion_satisfied(record) is True
 
 
-def test_helper_lane_counts_as_repair_complete(tmp_path):
-    """Helper-lane patch satisfies repair mode even with no execution target modified."""
+def test_helper_lane_does_not_count_as_repair_complete(tmp_path):
+    """Helper-lane patch alone is not enough for execution-path repair completion."""
     engine = _make_engine(tmp_path)
     record = _make_record(
         patches_applied=[],
@@ -82,4 +82,4 @@ def test_helper_lane_counts_as_repair_complete(tmp_path):
             }
         ],
     )
-    assert engine._repair_mode_completion_satisfied(record) is True
+    assert engine._repair_mode_completion_satisfied(record) is False

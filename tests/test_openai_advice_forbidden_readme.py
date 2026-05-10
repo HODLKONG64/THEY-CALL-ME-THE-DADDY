@@ -177,7 +177,7 @@ class TestReadmeHeartbeatSuppressed:
 
 class TestForcedTargetPatchesSuppressed:
     def test_forced_readme_blocked_when_advice_forbids(self, tmp_path):
-        """_build_forced_target_patches must return [] when README is forbidden."""
+        """_build_forced_target_patches is disabled entirely to prevent filler loops."""
         (tmp_path / "README.md").write_text("# test\n", encoding="utf-8")
         engine = _make_engine(tmp_path)
         engine.upgrade_advice = {
@@ -191,18 +191,10 @@ class TestForcedTargetPatchesSuppressed:
         patches = engine._build_forced_target_patches(record)
 
         assert patches == []
-        blocked_events = [
-            e for e in record.trace
-            if e.get("event") == "openai_advice_forbidden_patch_blocked"
-        ]
-        assert len(blocked_events) >= 1
-        assert any(
-            "readme" in str(e.get("reason", "")).lower()
-            for e in blocked_events
-        )
+        assert any(e.get("event") == "forced_target_patch_generation_skipped" for e in record.trace)
 
     def test_forced_readme_allowed_when_advice_permits(self, tmp_path):
-        """_build_forced_target_patches proceeds normally when README is not forbidden."""
+        """Forced README fallback remains disabled even when advice permits it."""
         (tmp_path / "README.md").write_text("# test\n", encoding="utf-8")
         engine = _make_engine(tmp_path)
         engine.upgrade_advice = {
@@ -217,8 +209,7 @@ class TestForcedTargetPatchesSuppressed:
 
         patches = engine._build_forced_target_patches(record)
 
-        assert len(patches) == 1
-        assert patches[0].path == "README.md"
+        assert patches == []
 
 
 # ---------------------------------------------------------------------------

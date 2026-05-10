@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from the_daddy.engine import CLI_PROBE_TARGET, DaddyEngine, make_run_id
 from the_daddy.models import PatchAction, RunRecord
 
@@ -20,13 +18,11 @@ def _make_run_id() -> str:
     return make_run_id()
 
 
-def test_probe_generates_patch_for_cli_target(tmp_path, monkeypatch):
+def test_probe_generates_patch_for_cli_target(tmp_path):
     target_dir = tmp_path / "src" / "the_daddy"
     target_dir.mkdir(parents=True)
     cli_file = target_dir / "cli.py"
     cli_file.write_text("# cli\n", encoding="utf-8")
-
-    monkeypatch.setattr(os.path, "exists", lambda p: p == CLI_PROBE_TARGET)
 
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)
@@ -69,13 +65,11 @@ def test_probe_returns_empty_when_no_required_targets(tmp_path):
     assert patches == []
 
 
-def test_probe_returns_empty_when_cli_file_missing(tmp_path, monkeypatch):
+def test_probe_returns_empty_when_cli_file_missing(tmp_path):
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)
     engine.upgrade_advice = {"target_files": [CLI_PROBE_TARGET], "repair_mode": True}
     run_id = _make_run_id()
-
-    monkeypatch.setattr(os.path, "exists", lambda p: False)
 
     # cli.py is in targets but doesn't exist on disk
     patches = engine._build_minimal_execution_probe_patch(run_id)
@@ -110,14 +104,12 @@ def test_probe_does_not_target_engine_py(tmp_path):
     assert patches == []
 
 
-def test_probe_wired_into_repair_mode_fallback_block(tmp_path, monkeypatch):
+def test_probe_wired_into_repair_mode_fallback_block(tmp_path):
     """Probe targets cli.py (not engine.py or README.md) in the fallback block."""
     target_dir = tmp_path / "src" / "the_daddy"
     target_dir.mkdir(parents=True)
     (target_dir / "cli.py").write_text("# cli\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("# Repo\n", encoding="utf-8")
-
-    monkeypatch.setattr(os.path, "exists", lambda p: p == CLI_PROBE_TARGET)
 
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)
