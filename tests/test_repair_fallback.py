@@ -29,15 +29,17 @@ def test_repair_fallback_forced_readme_disabled(tmp_path):
     assert patches == []
 
 
-def test_fallback_patch_does_not_target_engine(tmp_path):
+def test_forced_fallback_disabled_emits_explicit_skip_reason(tmp_path):
     (tmp_path / "README.md").write_text("hello\n")
     settings = _make_settings_with_root(tmp_path)
     engine = DaddyEngine(settings)
     engine.upgrade_advice = {"target_files": ["src/the_daddy/engine.py"], "repair_mode": True}
     record = _make_record()
     patches = engine._build_forced_target_patches(record)
-    assert all(p.path != "src/the_daddy/engine.py" for p in patches)
-    assert all(p.path != "src/the_daddy/cli.py" for p in patches)
+    assert patches == []
+    evt = next((e for e in record.trace if e.get("event") == "forced_target_patch_generation_skipped"), None)
+    assert evt is not None
+    assert "forced README fallback disabled" in str(evt.get("reason", ""))
 
 
 def test_fallback_patch_is_not_generated(tmp_path):
