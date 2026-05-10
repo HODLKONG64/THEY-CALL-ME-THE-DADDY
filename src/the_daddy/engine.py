@@ -485,8 +485,8 @@ class DaddyEngine:
         record.trace.append(
             {
                 "event": "doctor_agent_takeover",
-                "diagnosis": str(plan.get("diagnosis", "")),
-                "root_cause": str(plan.get("root_cause", "")),
+                "diagnosis": sanitize_text(str(plan.get("diagnosis", ""))),
+                "root_cause": sanitize_text(str(plan.get("root_cause", ""))),
                 "proposed_paths": [getattr(change, "path", "") for change in list(plan.get("changes", []) or [])],
                 "allowed_paths": [getattr(change, "path", "") for change in filtered],
             }
@@ -564,21 +564,22 @@ class DaddyEngine:
                     self.settings.allow_extensions,
                 )
             except Exception as exc:
+                redacted_error = sanitize_text(str(exc))
                 record.trace.append(
                     {
                         "event": "patch_apply_failed",
                         "path": getattr(patch, "path", ""),
                         "description": getattr(patch, "description", ""),
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": redacted_error,
                     }
                 )
                 self.memory.record_failure_pattern(
-                    self.memory.fingerprint(f"{patch.path}:{type(exc).__name__}:{str(exc)}"),
+                    self.memory.fingerprint(f"{patch.path}:{type(exc).__name__}:{redacted_error}"),
                     {
                         "route": mode,
-                        "diagnosis": "patch application rejected",
-                        "summary": str(exc),
+                        "diagnosis": sanitize_text("patch application rejected"),
+                        "summary": redacted_error,
                         "related_files": [getattr(patch, "path", "")],
                     },
                     False,
@@ -927,7 +928,7 @@ class DaddyEngine:
         else:
             self.memory.record_failure_pattern(
                 self.memory.fingerprint((verification.stderr or verification.stdout)[:2000]),
-                {"route": mode, "diagnosis": "post-rollback verification failure"},
+                {"route": mode, "diagnosis": sanitize_text("post-rollback verification failure")},
                 False,
             )
 
@@ -1331,7 +1332,7 @@ class DaddyEngine:
                     {
                         "event": "branch_prepare_failed",
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": sanitize_text(str(exc)),
                     }
                 )
                 prepared_branch = None
@@ -1382,7 +1383,7 @@ class DaddyEngine:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
             self.memory.record_failure_pattern(
                 sig,
-                {"route": mode, "diagnosis": "run failure"},
+                {"route": mode, "diagnosis": sanitize_text("run failure")},
                 False,
             )
             record.success = False
@@ -1439,7 +1440,7 @@ class DaddyEngine:
                     {
                         "event": "pr_delivery_failed",
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": sanitize_text(str(exc)),
                     }
                 )
         else:
