@@ -93,7 +93,7 @@ class GitBranchExecutor:
         if self.branch_exists_local(base_branch):
             self._run("checkout", base_branch)
             if self.branch_exists_remote(base_branch):
-                self._run_no_check("pull", "--ff-only", "origin", base_branch)
+                self._run("pull", "--ff-only", "origin", base_branch)
         else:
             if self.branch_exists_remote(base_branch):
                 self._run("checkout", "-B", base_branch, f"origin/{base_branch}")
