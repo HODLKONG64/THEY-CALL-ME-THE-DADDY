@@ -102,7 +102,11 @@ class GitBranchExecutor:
 
     def create_or_checkout_branch(self, branch_name: str, base_branch: str = "main") -> str:
         self.refresh_base_branch(base_branch)
-        if self.branch_exists_local(branch_name):
+        remote_exists = self.branch_exists_remote(branch_name)
+        if remote_exists:
+            self._run("fetch", "origin", branch_name)
+            self._run("checkout", "-B", branch_name, f"origin/{branch_name}")
+        elif self.branch_exists_local(branch_name):
             self._run("checkout", branch_name)
         else:
             self._run("checkout", "-b", branch_name)

@@ -1262,20 +1262,31 @@ class DaddyEngine:
                 )
 
         if self.repair_mode_active and not patches:
+            required_execution_targets = self._required_execution_targets()
             record.trace.append(
                 {
                     "event": "repair_mode_no_patches_remaining",
                     "reason": "no valid engine/cli execution-target patch was proposed",
-                    "required_execution_targets": self._required_execution_targets(),
+                    "required_execution_targets": required_execution_targets,
                 }
             )
-            helper_patches = self._build_safe_helper_lane_patch(record)
-            record.trace.append(
-                {
-                    "event": "helper_lane_attempted",
-                    "result": "success" if helper_patches else "empty",
-                }
-            )
+            helper_patches = []
+            if required_execution_targets:
+                record.trace.append(
+                    {
+                        "event": "helper_lane_skipped_for_execution_target_repair",
+                        "reason": "helper-lane targets cannot satisfy required execution-target completion",
+                        "required_execution_targets": required_execution_targets,
+                    }
+                )
+            else:
+                helper_patches = self._build_safe_helper_lane_patch(record)
+                record.trace.append(
+                    {
+                        "event": "helper_lane_attempted",
+                        "result": "success" if helper_patches else "empty",
+                    }
+                )
             if helper_patches:
                 patches = helper_patches
             else:
@@ -1341,7 +1352,8 @@ class DaddyEngine:
         if result.returncode == 0:
             record.success = True
             record.summary = "Success"
-            if len(record.patches_applied) == 0:
+            patch_work_expected = mode in {"build", "repair"} or bool(patches)
+            if len(record.patches_applied) == 0 and patch_work_expected:
                 record.success = False
                 record.summary = "No patch applied; blocked to avoid no-op completion"
                 record.trace.append(
@@ -1350,6 +1362,7 @@ class DaddyEngine:
                         "reason": "verification passed but no patch was applied",
                         "policy_route": policy_route,
                         "selected_mode": mode,
+                        "patch_work_expected": patch_work_expected,
                     }
                 )
             if self.repair_mode_active and not self._repair_mode_completion_satisfied(record):

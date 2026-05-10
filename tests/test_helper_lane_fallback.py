@@ -348,8 +348,8 @@ class TestRunFlowHelperLane:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"Expected safe_helper_lane_patch_generated in trace. Events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"Expected helper_lane_skipped_for_execution_target_repair in trace. Events: {events}"
         )
 
     def test_helper_lane_not_triggered_when_patches_survive_filtering(self, tmp_path, monkeypatch):
@@ -456,11 +456,8 @@ class TestRunFlowHelperLane:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        assert "helper_lane_attempted" in events, (
-            f"Expected helper_lane_attempted in trace. Events: {events}"
-        )
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"Expected helper-lane to be used as primary fallback. Events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"Expected helper_lane_skipped_for_execution_target_repair in trace. Events: {events}"
         )
 
     def test_readme_not_used_when_helper_lane_available(self, tmp_path, monkeypatch):
@@ -469,7 +466,7 @@ class TestRunFlowHelperLane:
         - problem_type = healthy_safe_loop
         - no candidate patches
 
-        Helper lane MUST generate a patch and README MUST NOT be used.
+        Helper lane MUST be skipped for required execution-target repair, and README MUST NOT be used.
         """
         _write_trace_summary(tmp_path)
         advice_path = _write_advice(tmp_path / "advice.json")
@@ -499,16 +496,8 @@ class TestRunFlowHelperLane:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        # Helper lane must be attempted and must succeed
-        assert "helper_lane_attempted" in events, (
-            f"helper_lane_attempted not in trace. Events: {events}"
-        )
-        attempted_evt = next(e for e in record.trace if e.get("event") == "helper_lane_attempted")
-        assert attempted_evt["result"] == "success", (
-            f"helper_lane_attempted result should be success, got: {attempted_evt}"
-        )
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"safe_helper_lane_patch_generated not in trace. Events: {events}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"helper_lane_skipped_for_execution_target_repair not in trace. Events: {events}"
         )
         # README must NOT be used
         applied_paths = [
@@ -736,14 +725,7 @@ class TestHelperLaneFallbackRealRepoScenario:
         record = engine.run()
 
         events = [e.get("event") for e in record.trace]
-        assert "safe_helper_lane_patch_generated" in events, (
-            f"Expected safe_helper_lane_patch_generated. Trace events: {events}"
-        )
-        # Must target run_health, not trace_summary
-        gen_event = next(
-            e for e in record.trace if e.get("event") == "safe_helper_lane_patch_generated"
-        )
-        assert "run_health" in gen_event.get("chosen_path", ""), (
-            f"Expected run_health as chosen_path, got: {gen_event}"
+        assert "helper_lane_skipped_for_execution_target_repair" in events, (
+            f"Expected helper_lane_skipped_for_execution_target_repair. Trace events: {events}"
         )
 

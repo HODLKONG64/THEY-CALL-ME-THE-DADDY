@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from the_daddy.engine import DaddyEngine
-from the_daddy.models import ArchitectureReview
+from the_daddy.models import ArchitectureReview, PatchAction, SelfEvolutionAction
 
 
 def _write_advice(path: Path, *, allow_proceed: bool, problem_type: str) -> None:
@@ -62,3 +62,75 @@ def test_run_blocks_success_when_no_patch_applied(tmp_path, monkeypatch):
     assert "No patch applied" in record.summary
     assert any(e.get("event") == "no_patch_blocker_recorded" for e in record.trace)
 
+
+def test_architecture_safe_noop_is_not_incorrectly_failed(tmp_path, monkeypatch):
+    advice_path = tmp_path / "advice.json"
+    _write_advice(advice_path, allow_proceed=True, problem_type="healthy_meaningful_progress")
+    monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+    (tmp_path / "src" / "the_daddy").mkdir(parents=True)
+    (tmp_path / "src" / "the_daddy" / "cli.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+
+    engine = DaddyEngine(_settings(tmp_path))
+    monkeypatch.setattr(engine, "choose_mode", lambda _review: "architecture")
+    monkeypatch.setattr(engine.reviewer, "review", lambda **_: ArchitectureReview(
+        diagnosis="d",
+        system_intent="i",
+        strengths=[],
+        weaknesses=[],
+        recommendations=[],
+        backlog_items=[],
+        self_evolution_actions=[],
+        build_actions=[],
+        architecture_plans=[],
+        execution_notes=[],
+        risk_level="low",
+    ))
+
+    record = engine.run()
+    assert record.selected_mode == "architecture"
+    assert record.success is True
+    assert not any(e.get("event") == "no_patch_blocker_recorded" for e in record.trace)
+
+
+def test_attempted_patch_with_zero_applied_is_blocked(tmp_path, monkeypatch):
+    advice_path = tmp_path / "advice.json"
+    _write_advice(advice_path, allow_proceed=True, problem_type="healthy_meaningful_progress")
+    monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+    (tmp_path / "src" / "the_daddy").mkdir(parents=True)
+    (tmp_path / "src" / "the_daddy" / "cli.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+
+    engine = DaddyEngine(_settings(tmp_path))
+    proposed = SelfEvolutionAction(
+        title="unsafe patch",
+        description="will be rejected by policy",
+        risk="safe",
+        patches=[
+            PatchAction(
+                path="src/the_daddy/runtime/trace_summary.exe",
+                operation="regex_replace",
+                pattern=r"\Z",
+                replacement="\n# bad\n",
+                description="bad ext",
+            )
+        ],
+    )
+    monkeypatch.setattr(engine.reviewer, "review", lambda **_: ArchitectureReview(
+        diagnosis="d",
+        system_intent="i",
+        strengths=[],
+        weaknesses=[],
+        recommendations=[],
+        backlog_items=[],
+        self_evolution_actions=[proposed],
+        build_actions=[],
+        architecture_plans=[],
+        execution_notes=[],
+        risk_level="low",
+    ))
+
+    record = engine.run()
+    assert record.selected_mode == "build"
+    assert record.success is False
+    assert any(e.get("event") == "no_patch_blocker_recorded" for e in record.trace)
