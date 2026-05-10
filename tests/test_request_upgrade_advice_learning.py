@@ -32,7 +32,18 @@ def test_request_upgrade_advice_includes_learning_summary(tmp_path: Path, monkey
     memory_dir = tmp_path / "doctor_local"
     memory_dir.mkdir(parents=True, exist_ok=True)
     (memory_dir / "sam-memory.json").write_text(
-        json.dumps({"schema_version": "3.0", "run_learning_ledger": [{"run_id": "r1", "outcome": "blocked_fake_noop"}]}),
+        json.dumps(
+            {
+                "schema_version": "3.0",
+                "run_learning_ledger": [
+                    {
+                        "run_id": "r1",
+                        "outcome": "blocked_fake_noop",
+                        "blocked_reason": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -83,3 +94,9 @@ def test_request_upgrade_advice_includes_learning_summary(tmp_path: Path, monkey
     parsed = json.loads(content_text)
     assert "run_learning_summary" in parsed
     assert parsed["run_learning_summary"]["recent_outcomes"] == ["blocked_fake_noop"]
+    stats = parsed["run_learning_summary"]["advice_actionability"]
+    assert stats["fake_noop_blocked_count"] == 1
+    assert stats["verified_progress_count"] == 0
+    payload_blob = json.dumps(parsed)
+    assert "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456" not in payload_blob
+    assert "[REDACTED" in payload_blob

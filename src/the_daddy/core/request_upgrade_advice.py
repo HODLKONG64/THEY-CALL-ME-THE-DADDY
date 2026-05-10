@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from ..models import MemoryState
+from ..runtime.redaction import sanitize_list, sanitize_mapping, sanitize_text
 
 
 SYSTEM_PROMPT = """You are auditing a bounded self-maintaining repository agent.
@@ -74,7 +75,16 @@ def build_learning_summary(repo_root: Path) -> dict[str, Any]:
             "subsystems": [],
             "avoid_next_time": [],
             "successful_patterns": [],
-            "advice_actionability": {"total": 0, "actionable": 0, "not_actionable": 0, "blocked_fake_noop": 0, "actionable_rate": 0.0},
+            "advice_actionability": {
+                "total": 0,
+                "advice_actionable_count": 0,
+                "patch_attempted_count": 0,
+                "verified_progress_count": 0,
+                "clean_no_action_count": 0,
+                "blocked_or_failed_count": 0,
+                "advice_not_actionable_count": 0,
+                "fake_noop_blocked_count": 0,
+            },
         }
     try:
         payload = json.loads(memory_path.read_text(encoding="utf-8"))
@@ -87,7 +97,16 @@ def build_learning_summary(repo_root: Path) -> dict[str, Any]:
             "subsystems": [],
             "avoid_next_time": [],
             "successful_patterns": [],
-            "advice_actionability": {"total": 0, "actionable": 0, "not_actionable": 0, "blocked_fake_noop": 0, "actionable_rate": 0.0},
+            "advice_actionability": {
+                "total": 0,
+                "advice_actionable_count": 0,
+                "patch_attempted_count": 0,
+                "verified_progress_count": 0,
+                "clean_no_action_count": 0,
+                "blocked_or_failed_count": 0,
+                "advice_not_actionable_count": 0,
+                "fake_noop_blocked_count": 0,
+            },
         }
 
     items = list(state.run_learning_ledger or [])[-10:]
@@ -99,45 +118,66 @@ def build_learning_summary(repo_root: Path) -> dict[str, Any]:
     success: list[str] = []
     for item in items:
         if item.blocked_reason:
-            blockers[item.blocked_reason] = blockers.get(item.blocked_reason, 0) + 1
+            cleaned_reason = sanitize_text(item.blocked_reason)
+            blockers[cleaned_reason] = blockers.get(cleaned_reason, 0) + 1
         for path in item.files_involved:
             files[path] = files.get(path, 0) + 1
         if item.subsystem:
             subsystems.append(item.subsystem)
         for lesson in item.avoid_next_time:
-            if lesson and lesson not in avoid:
-                avoid.append(lesson)
+            cleaned_lesson = sanitize_text(lesson)
+            if cleaned_lesson and cleaned_lesson not in avoid:
+                avoid.append(cleaned_lesson)
         if item.outcome == "success_with_patch":
             for pattern in item.what_worked:
-                if pattern and pattern not in success:
-                    success.append(pattern)
+                cleaned_pattern = sanitize_text(pattern)
+                if cleaned_pattern and cleaned_pattern not in success:
+                    success.append(cleaned_pattern)
 
     total = len(items)
-    actionable = sum(1 for i in items if i.outcome not in {"advice_not_actionable", "blocked_fake_noop"})
-    not_actionable = sum(1 for i in items if i.outcome == "advice_not_actionable")
-    blocked_fake_noop = sum(1 for i in items if i.outcome == "blocked_fake_noop")
+    advice_actionable_count = sum(1 for i in items if i.outcome in {"success_with_patch", "clean_no_action"})
+    patch_attempted_count = sum(1 for i in items if int(getattr(i, "attempted_patch_count", 0) or 0) > 0)
+    verified_progress_count = sum(1 for i in items if i.outcome == "success_with_patch")
+    clean_no_action_count = sum(1 for i in items if i.outcome == "clean_no_action")
+    blocked_or_failed_count = sum(
+        1
+        for i in items
+        if i.outcome
+        in {
+            "verification_failed",
+            "attempted_patch_failed",
+            "policy_rejected",
+            "git_pr_lane_failed",
+            "blocked_fake_noop",
+        }
+    )
+    advice_not_actionable_count = sum(1 for i in items if i.outcome == "advice_not_actionable")
+    fake_noop_blocked_count = sum(1 for i in items if i.outcome == "blocked_fake_noop")
 
-    return {
+    return sanitize_mapping({
         "recent_outcomes": outcomes,
         "recurring_blockers": [
-            {"blocked_reason": reason, "count": count}
+            {"blocked_reason": sanitize_text(reason), "count": count}
             for reason, count in sorted(blockers.items(), key=lambda x: (-x[1], x[0]))[:5]
         ],
         "repeated_files": [
-            {"path": path, "count": count}
+            {"path": sanitize_text(path), "count": count}
             for path, count in sorted(files.items(), key=lambda x: (-x[1], x[0]))[:5]
         ],
-        "subsystems": subsystems[-10:],
-        "avoid_next_time": avoid[:10],
-        "successful_patterns": success[:10],
+        "subsystems": sanitize_list(subsystems[-10:]),
+        "avoid_next_time": sanitize_list(avoid[:10]),
+        "successful_patterns": sanitize_list(success[:10]),
         "advice_actionability": {
             "total": total,
-            "actionable": actionable,
-            "not_actionable": not_actionable,
-            "blocked_fake_noop": blocked_fake_noop,
-            "actionable_rate": (float(actionable) / float(total)) if total else 0.0,
+            "advice_actionable_count": advice_actionable_count,
+            "patch_attempted_count": patch_attempted_count,
+            "verified_progress_count": verified_progress_count,
+            "clean_no_action_count": clean_no_action_count,
+            "blocked_or_failed_count": blocked_or_failed_count,
+            "advice_not_actionable_count": advice_not_actionable_count,
+            "fake_noop_blocked_count": fake_noop_blocked_count,
         },
-    }
+    })
 
 
 def advice_schema() -> dict[str, Any]:

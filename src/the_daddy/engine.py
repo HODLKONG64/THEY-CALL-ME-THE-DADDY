@@ -34,6 +34,7 @@ from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
 from .runtime.iterative_depth_learner import IterativeDepthLearner
 from .runtime.learning_journal import build_learning_journal_entry
+from .runtime.redaction import sanitize_text
 from .scoring import rank_patch_set
 
 
@@ -1425,7 +1426,7 @@ class DaddyEngine:
                 {
                     "event": "run_learning_ledger_save_failed",
                     "error_type": type(exc).__name__,
-                    "error": str(exc),
+                    "error": sanitize_text(str(exc)),
                 }
             )
 

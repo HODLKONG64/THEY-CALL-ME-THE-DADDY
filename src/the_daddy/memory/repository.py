@@ -19,6 +19,7 @@ from ..models import (
     VettingDecision,
     utc_now_iso,
 )
+from ..runtime.redaction import sanitize_list, sanitize_mapping, sanitize_text
 
 # Legacy compat for older tests/imports
 MEMORY_SCHEMA_VERSION = "3.0"
@@ -171,7 +172,7 @@ class MemoryRepository:
     def ranked_recurring_blockers(self) -> list[dict[str, Any]]:
         counts: dict[str, int] = {}
         for item in self._state.run_learning_ledger:
-            reason = str(getattr(item, "blocked_reason", "") or "").strip()
+            reason = sanitize_text(str(getattr(item, "blocked_reason", "") or "").strip())
             if not reason:
                 continue
             counts[reason] = counts.get(reason, 0) + 1
@@ -181,15 +182,36 @@ class MemoryRepository:
     def advice_actionability_stats(self) -> dict[str, Any]:
         items = list(self._state.run_learning_ledger or [])
         total = len(items)
-        actionable = sum(1 for i in items if str(getattr(i, "outcome", "")) not in {"advice_not_actionable", "blocked_fake_noop"})
-        not_actionable = sum(1 for i in items if str(getattr(i, "outcome", "")) == "advice_not_actionable")
-        blocked_fake_noop = sum(1 for i in items if str(getattr(i, "outcome", "")) == "blocked_fake_noop")
+        advice_actionable_count = sum(
+            1 for i in items if str(getattr(i, "outcome", "")) in {"success_with_patch", "clean_no_action"}
+        )
+        patch_attempted_count = sum(1 for i in items if int(getattr(i, "attempted_patch_count", 0) or 0) > 0)
+        verified_progress_count = sum(1 for i in items if str(getattr(i, "outcome", "")) == "success_with_patch")
+        clean_no_action_count = sum(1 for i in items if str(getattr(i, "outcome", "")) == "clean_no_action")
+        blocked_or_failed_count = sum(
+            1
+            for i in items
+            if str(getattr(i, "outcome", "")) in {
+                "verification_failed",
+                "attempted_patch_failed",
+                "policy_rejected",
+                "git_pr_lane_failed",
+                "blocked_fake_noop",
+            }
+        )
+        advice_not_actionable_count = sum(
+            1 for i in items if str(getattr(i, "outcome", "")) == "advice_not_actionable"
+        )
+        fake_noop_blocked_count = sum(1 for i in items if str(getattr(i, "outcome", "")) == "blocked_fake_noop")
         return {
             "total": total,
-            "actionable": actionable,
-            "not_actionable": not_actionable,
-            "blocked_fake_noop": blocked_fake_noop,
-            "actionable_rate": (float(actionable) / float(total)) if total else 0.0,
+            "advice_actionable_count": advice_actionable_count,
+            "patch_attempted_count": patch_attempted_count,
+            "verified_progress_count": verified_progress_count,
+            "clean_no_action_count": clean_no_action_count,
+            "blocked_or_failed_count": blocked_or_failed_count,
+            "advice_not_actionable_count": advice_not_actionable_count,
+            "fake_noop_blocked_count": fake_noop_blocked_count,
         }
 
     def summarize_recent_learning(self, limit: int = 10) -> dict[str, Any]:
@@ -211,15 +233,15 @@ class MemoryRepository:
                         successful_patterns.append(worked)
 
         ranked_files = sorted(failed_files.items(), key=lambda x: (-x[1], x[0]))
-        return {
+        return sanitize_mapping({
             "recent_outcomes": outcomes[-5:],
             "recurring_blockers": self.ranked_recurring_blockers()[:5],
             "repeated_files": [{"path": p, "count": c} for p, c in ranked_files[:5]],
             "subsystems": subsystems[-10:],
-            "avoid_next_time": avoid_lessons[:10],
-            "successful_patterns": successful_patterns[:10],
+            "avoid_next_time": sanitize_list(avoid_lessons[:10]),
+            "successful_patterns": sanitize_list(successful_patterns[:10]),
             "advice_actionability": self.advice_actionability_stats(),
-        }
+        })
 
     def add_backlog_items(self, items: list[str]) -> list[str]:
         self._state.backlog = _dedupe_keep_order(self._state.backlog + [str(item) for item in items])

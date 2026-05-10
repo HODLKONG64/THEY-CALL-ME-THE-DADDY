@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import RunLearningLedgerEntry, RunRecord
+from .redaction import sanitize_list, sanitize_text
 
 
 def _event_names(record: RunRecord) -> list[str]:
@@ -102,7 +103,7 @@ def build_run_learning_ledger_entry(
             "forced_target_patch_generation_skipped",
             "helper_lane_skipped_for_execution_target_repair",
         }:
-            blocked_reason = str(event.get("reason", "")).strip()
+            blocked_reason = sanitize_text(str(event.get("reason", "")).strip())
             if blocked_reason:
                 break
 
@@ -110,7 +111,7 @@ def build_run_learning_ledger_entry(
     if getattr(record, "command", ""):
         tests_run.append(str(record.command))
     for item in list((upgrade_advice or {}).get("tests_to_run") or []):
-        text = str(item).strip()
+        text = sanitize_text(str(item).strip())
         if text and text not in tests_run:
             tests_run.append(text)
 
@@ -158,20 +159,20 @@ def build_run_learning_ledger_entry(
         selected_mode=str(record.selected_mode or ""),
         outcome=outcome,
         subsystem=subsystem,
-        root_cause=blocked_reason or str(getattr(record, "summary", "") or ""),
-        why_it_happened=str(getattr(record, "summary", "") or ""),
-        what_worked=what_worked,
-        what_failed=what_failed,
+        root_cause=sanitize_text(blocked_reason or str(getattr(record, "summary", "") or "")),
+        why_it_happened=sanitize_text(str(getattr(record, "summary", "") or "")),
+        what_worked=sanitize_list(what_worked),
+        what_failed=sanitize_list(what_failed),
         files_involved=files,
         target_files=target_files,
         tests_run=tests_run,
-        trace_events=events[-25:],
+        trace_events=sanitize_list(events[-25:]),
         patch_count=patch_count,
         attempted_patch_count=attempted_patch_count,
         successful_patch_count=patch_count,
-        blocked_reason=blocked_reason,
-        next_best_action=next_best_action,
-        avoid_next_time=avoid_next_time[:10],
+        blocked_reason=sanitize_text(blocked_reason),
+        next_best_action=sanitize_text(next_best_action),
+        avoid_next_time=sanitize_list(avoid_next_time[:10]),
         confidence=0.8 if patch_count > 0 else 0.6,
         source=source,
     )

@@ -9,6 +9,7 @@ import the_daddy.engine as engine_module
 from the_daddy.engine import DaddyEngine
 from the_daddy.git_tools import GitBranchExecutor
 from the_daddy.merge_rules import AutoMergeJudge
+from the_daddy.core.request_upgrade_advice import build_learning_summary
 from the_daddy.core.upgrade_gate import UpgradeGateError, validate_upgrade_advice
 from the_daddy.memory.repository import MemoryRepository
 from the_daddy.models import CommandResult, PatchAction, RunRecord
@@ -230,6 +231,43 @@ def main() -> int:
         out["ledger_outcomes"] = [i.outcome for i in learning_repo.latest_run_learning_entries(limit=10)]
         out["ledger_recurring_blockers"] = learning_repo.ranked_recurring_blockers()
         out["ledger_learning_summary"] = learning_repo.summarize_recent_learning(limit=10)
+
+        # Add a secret-like blocker and verify prompt-learning summary redacts it.
+        secret_entry = build_run_learning_ledger_entry(
+            record=blocked_noop_rec,
+            upgrade_advice={"target_files": ["src/the_daddy/cli.py"]},
+            policy_route="safe",
+            proposed_patches=[],
+            source="stress_harness",
+        )
+        secret_entry.blocked_reason = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"
+        secret_entry.avoid_next_time = ["OPENAI_API_KEY=sk-super-secret-value"]
+        learning_repo.add_run_learning_entry(secret_entry)
+        local_state = root / "doctor_local"
+        local_state.mkdir(parents=True, exist_ok=True)
+        memory_path = local_state / "sam-memory.json"
+        memory_path.write_text(json.dumps(learning_repo.snapshot(), indent=2), encoding="utf-8")
+        prompt_summary = build_learning_summary(root)
+        out["prompt_learning_summary"] = prompt_summary
+
+        expected_outcomes = {
+            "success_with_patch",
+            "blocked_fake_noop",
+            "advice_not_actionable",
+            "clean_no_action",
+        }
+        observed_outcomes = set(str(x) for x in out["ledger_outcomes"])
+        assert expected_outcomes.issubset(observed_outcomes), "missing expected ledger outcomes"
+
+        stats = out["ledger_learning_summary"]["advice_actionability"]  # type: ignore[index]
+        assert int(stats["verified_progress_count"]) == 1, "verified progress misclassified"
+        assert int(stats["blocked_or_failed_count"]) >= 1, "blocked/failed not counted"
+
+        summary_blob = json.dumps(prompt_summary)
+        assert "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456" not in summary_blob, "prompt summary leaked auth token"
+        assert "sk-super-secret-value" not in summary_blob, "prompt summary leaked api key"
+        assert "[REDACTED" in summary_blob, "redaction marker missing from prompt summary"
+        assert len(summary_blob) < 12000, "prompt summary payload too large"
 
     print(json.dumps(out, indent=2))
     return 0
