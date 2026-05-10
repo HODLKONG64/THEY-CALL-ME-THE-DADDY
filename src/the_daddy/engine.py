@@ -28,11 +28,13 @@ from .policy import classify_patch_risk, _POLICY_README_FORBIDDEN_KEYWORDS
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
 from .runtime import run_health as run_health_runtime
+from .runtime import run_learning_ledger as run_learning_ledger_runtime
 from .runtime import trace_summary as trace_summary_runtime
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
 from .runtime.iterative_depth_learner import IterativeDepthLearner
 from .runtime.learning_journal import build_learning_journal_entry
+from .runtime.redaction import sanitize_text
 from .scoring import rank_patch_set
 
 
@@ -483,8 +485,8 @@ class DaddyEngine:
         record.trace.append(
             {
                 "event": "doctor_agent_takeover",
-                "diagnosis": str(plan.get("diagnosis", "")),
-                "root_cause": str(plan.get("root_cause", "")),
+                "diagnosis": sanitize_text(str(plan.get("diagnosis", ""))),
+                "root_cause": sanitize_text(str(plan.get("root_cause", ""))),
                 "proposed_paths": [getattr(change, "path", "") for change in list(plan.get("changes", []) or [])],
                 "allowed_paths": [getattr(change, "path", "") for change in filtered],
             }
@@ -562,21 +564,22 @@ class DaddyEngine:
                     self.settings.allow_extensions,
                 )
             except Exception as exc:
+                redacted_error = sanitize_text(str(exc))
                 record.trace.append(
                     {
                         "event": "patch_apply_failed",
                         "path": getattr(patch, "path", ""),
                         "description": getattr(patch, "description", ""),
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": redacted_error,
                     }
                 )
                 self.memory.record_failure_pattern(
-                    self.memory.fingerprint(f"{patch.path}:{type(exc).__name__}:{str(exc)}"),
+                    self.memory.fingerprint(f"{patch.path}:{type(exc).__name__}:{redacted_error}"),
                     {
                         "route": mode,
-                        "diagnosis": "patch application rejected",
-                        "summary": str(exc),
+                        "diagnosis": sanitize_text("patch application rejected"),
+                        "summary": redacted_error,
                         "related_files": [getattr(patch, "path", "")],
                     },
                     False,
@@ -925,7 +928,7 @@ class DaddyEngine:
         else:
             self.memory.record_failure_pattern(
                 self.memory.fingerprint((verification.stderr or verification.stdout)[:2000]),
-                {"route": mode, "diagnosis": "post-rollback verification failure"},
+                {"route": mode, "diagnosis": sanitize_text("post-rollback verification failure")},
                 False,
             )
 
@@ -1329,7 +1332,7 @@ class DaddyEngine:
                     {
                         "event": "branch_prepare_failed",
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": sanitize_text(str(exc)),
                     }
                 )
                 prepared_branch = None
@@ -1380,7 +1383,7 @@ class DaddyEngine:
             sig = self.memory.fingerprint((result.stderr or result.stdout)[:2000])
             self.memory.record_failure_pattern(
                 sig,
-                {"route": mode, "diagnosis": "run failure"},
+                {"route": mode, "diagnosis": sanitize_text("run failure")},
                 False,
             )
             record.success = False
@@ -1406,11 +1409,42 @@ class DaddyEngine:
                     {
                         "event": "pr_delivery_failed",
                         "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error": sanitize_text(str(exc)),
                     }
                 )
         else:
             record.trace.append({"event": "pr_skipped", "reason": pr_reason})
+
+        no_action_allowed = str((self.upgrade_advice or {}).get("recommended_next_step", "")).strip().lower() in {
+            "none",
+            "no_action",
+            "no action",
+        }
+        try:
+            learning_entry = run_learning_ledger_runtime.build_run_learning_ledger_entry(
+                record=record,
+                upgrade_advice=self.upgrade_advice,
+                policy_route=policy_route,
+                proposed_patches=patches,
+                source="engine",
+                no_action_allowed=no_action_allowed,
+            )
+            self.memory.add_run_learning_entry(learning_entry)
+            record.trace.append(
+                {
+                    "event": "run_learning_ledger_saved",
+                    "outcome": learning_entry.outcome,
+                    "subsystem": learning_entry.subsystem,
+                }
+            )
+        except Exception as exc:
+            record.trace.append(
+                {
+                    "event": "run_learning_ledger_save_failed",
+                    "error_type": type(exc).__name__,
+                    "error": sanitize_text(str(exc)),
+                }
+            )
 
         self.memory.record_metrics(
             MetricsLedgerEntry(

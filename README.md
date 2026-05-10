@@ -116,6 +116,36 @@ If no patch is valid:
 
 ---
 
+## Learning Ledger
+
+Every workflow run now records a compact Run Learning Ledger entry so the agent keeps useful memory across runs instead of restarting from scratch.
+
+Stored fields are bounded and operational:
+
+- run mode, outcome, subsystem, root cause
+- why a patch worked or failed
+- why no patch was emitted
+- target files and changed file paths
+- tests/verification commands
+- key trace events and blocker reasons
+- next-best action and avoid-next-time lessons
+
+Where it lives:
+
+- local memory JSON in `doctor_local/` (or configured local state dir)
+- mirrored to R2 through existing `R2Store` when configured
+- if R2 is unavailable, local memory remains authoritative fallback
+
+Security rules:
+
+- never store secrets
+- never store API keys or tokens (GitHub/OpenAI/etc.)
+- never store full environment variable dumps
+- never store full large file contents
+- store only compact summaries, paths, outcomes, and lessons needed for safe next-run decisions
+
+---
+
 ## Protected direction
 
 A working agent that improves slowly is better than a smart-looking agent that breaks itself.

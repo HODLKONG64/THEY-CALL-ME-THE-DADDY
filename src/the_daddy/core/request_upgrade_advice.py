@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
+
+from ..models import MemoryState, RunLearningLedgerEntry
+from ..runtime.redaction import sanitize_list, sanitize_mapping, sanitize_text
 
 
 SYSTEM_PROMPT = """You are auditing a bounded self-maintaining repository agent.
@@ -45,7 +49,7 @@ def build_repo_snapshot(repo_root: Path) -> dict[str, Any]:
                 preview_files.append(
                     {
                         "path": rel,
-                        "content_preview": path.read_text(encoding="utf-8", errors="ignore")[:8000],
+                        "content_preview": sanitize_text(path.read_text(encoding="utf-8", errors="ignore")[:8000]),
                     }
                 )
             except Exception:
@@ -58,6 +62,137 @@ def build_repo_snapshot(repo_root: Path) -> dict[str, Any]:
         "tracked_files": tracked_files,
         "preview_files": preview_files,
     }
+
+
+def build_learning_summary(repo_root: Path) -> dict[str, Any]:
+    memory_name = os.environ.get("DADDY_MEMORY_FILE", "sam-memory.json").strip() or "sam-memory.json"
+    local_state_dir = os.environ.get("DADDY_LOCAL_STATE_DIR", "doctor_local").strip() or "doctor_local"
+    memory_path = (repo_root / local_state_dir / memory_name).resolve()
+    if not memory_path.exists():
+        return {
+            "recent_outcomes": [],
+            "recurring_blockers": [],
+            "repeated_files": [],
+            "subsystems": [],
+            "avoid_next_time": [],
+            "successful_patterns": [],
+            "advice_actionability": {
+                "total": 0,
+                "advice_actionable_count": 0,
+                "patch_attempted_count": 0,
+                "verified_progress_count": 0,
+                "clean_no_action_count": 0,
+                "blocked_or_failed_count": 0,
+                "advice_not_actionable_count": 0,
+                "fake_noop_blocked_count": 0,
+            },
+        }
+    try:
+        payload = json.loads(memory_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "recent_outcomes": [],
+            "recurring_blockers": [],
+            "repeated_files": [],
+            "subsystems": [],
+            "avoid_next_time": [],
+            "successful_patterns": [],
+            "advice_actionability": {
+                "total": 0,
+                "advice_actionable_count": 0,
+                "patch_attempted_count": 0,
+                "verified_progress_count": 0,
+                "clean_no_action_count": 0,
+                "blocked_or_failed_count": 0,
+                "advice_not_actionable_count": 0,
+                "fake_noop_blocked_count": 0,
+            },
+        }
+
+    state = None
+    try:
+        state = MemoryState.model_validate(payload)
+        items = list(state.run_learning_ledger or [])
+    except Exception:
+        raw_items = []
+        if isinstance(payload, dict):
+            raw_items = list(payload.get("run_learning_ledger") or [])
+        items = []
+        for item in raw_items:
+            try:
+                items.append(RunLearningLedgerEntry.model_validate(item))
+            except ValidationError:
+                continue
+
+    items = items[-10:]
+    outcomes = [str(i.outcome) for i in items][-5:]
+    blockers: dict[str, int] = {}
+    files: dict[str, int] = {}
+    subsystems: list[str] = []
+    avoid: list[str] = []
+    success: list[str] = []
+    for item in items:
+        if item.blocked_reason:
+            cleaned_reason = sanitize_text(item.blocked_reason)
+            blockers[cleaned_reason] = blockers.get(cleaned_reason, 0) + 1
+        for path in item.files_involved:
+            files[path] = files.get(path, 0) + 1
+        if item.subsystem:
+            subsystems.append(item.subsystem)
+        for lesson in item.avoid_next_time:
+            cleaned_lesson = sanitize_text(lesson)
+            if cleaned_lesson and cleaned_lesson not in avoid:
+                avoid.append(cleaned_lesson)
+        if item.outcome == "success_with_patch":
+            for pattern in item.what_worked:
+                cleaned_pattern = sanitize_text(pattern)
+                if cleaned_pattern and cleaned_pattern not in success:
+                    success.append(cleaned_pattern)
+
+    total = len(items)
+    advice_actionable_count = sum(1 for i in items if i.outcome in {"success_with_patch", "clean_no_action"})
+    patch_attempted_count = sum(1 for i in items if int(getattr(i, "attempted_patch_count", 0) or 0) > 0)
+    verified_progress_count = sum(1 for i in items if i.outcome == "success_with_patch")
+    clean_no_action_count = sum(1 for i in items if i.outcome == "clean_no_action")
+    blocked_or_failed_count = sum(
+        1
+        for i in items
+        if i.outcome
+        in {
+            "verification_failed",
+            "attempted_patch_failed",
+            "policy_rejected",
+            "git_pr_lane_failed",
+            "blocked_fake_noop",
+        }
+    )
+    advice_not_actionable_count = sum(1 for i in items if i.outcome == "advice_not_actionable")
+    fake_noop_blocked_count = sum(1 for i in items if i.outcome == "blocked_fake_noop")
+
+    return sanitize_mapping({
+        "recent_outcomes": outcomes,
+        "recurring_blockers": [
+            {"blocked_reason": sanitize_text(reason), "count": count}
+            for reason, count in sorted(blockers.items(), key=lambda x: (-x[1], x[0]))[:5]
+        ],
+        "repeated_files": [
+            {"path": sanitize_text(path), "count": count}
+            for path, count in sorted(files.items(), key=lambda x: (-x[1], x[0]))[:5]
+        ],
+        "subsystems": sanitize_list(subsystems[-10:]),
+        "avoid_next_time": sanitize_list(avoid[:10]),
+        "successful_patterns": sanitize_list(success[:10]),
+        "advice_actionability": {
+            "total": total,
+            "advice_actionable_count": advice_actionable_count,
+            "patch_attempted_count": patch_attempted_count,
+            "verified_progress_count": verified_progress_count,
+            "clean_no_action_count": clean_no_action_count,
+            "blocked_or_failed_count": blocked_or_failed_count,
+            "advice_not_actionable_count": advice_not_actionable_count,
+            "fake_noop_blocked_count": fake_noop_blocked_count,
+        },
+    })
 
 
 def advice_schema() -> dict[str, Any]:
@@ -132,10 +267,12 @@ def request_upgrade_advice(repo_root: Path, model: str) -> dict[str, Any]:
         raise RuntimeError("OPENAI_API_KEY is required")
 
     snapshot = build_repo_snapshot(repo_root)
+    learning_summary = build_learning_summary(repo_root)
     user_prompt = json.dumps(
         {
             "instruction": "Audit this repository snapshot and decide whether the upgrade workflow should proceed. If it is in a safe-loop, explicitly identify that and recommend the best bounded upgrade targets.",
             "repo_snapshot": snapshot,
+            "run_learning_summary": learning_summary,
             "current_goal": "Do not let the workflow move forward until OpenAI provides explicit upgrade advice.",
         },
         indent=2,

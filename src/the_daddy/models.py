@@ -271,6 +271,30 @@ class MetricsLedgerEntry(BaseModel):
     created_at: str = Field(default_factory=utc_now_iso)
 
 
+class RunLearningLedgerEntry(BaseModel):
+    run_id: str
+    created_at: str = Field(default_factory=utc_now_iso)
+    selected_mode: str = "repair"
+    outcome: str = "clean_no_action"
+    subsystem: str = "engine"
+    root_cause: str = ""
+    why_it_happened: str = ""
+    what_worked: list[str] = Field(default_factory=list)
+    what_failed: list[str] = Field(default_factory=list)
+    files_involved: list[str] = Field(default_factory=list)
+    target_files: list[str] = Field(default_factory=list)
+    tests_run: list[str] = Field(default_factory=list)
+    trace_events: list[str] = Field(default_factory=list)
+    patch_count: int = 0
+    attempted_patch_count: int = 0
+    successful_patch_count: int = 0
+    blocked_reason: str = ""
+    next_best_action: str = ""
+    avoid_next_time: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+    source: str = "engine"
+
+
 class RunRecord(BaseModel):
     run_id: str
     command: str
@@ -304,6 +328,7 @@ class MemoryState(BaseModel):
     planned_work: list[PlannedWorkItem] = Field(default_factory=list)
     architecture_queue: list[ArchitecturePlan] = Field(default_factory=list)
     patch_provenance: list[PatchProvenance] = Field(default_factory=list)
+    run_learning_ledger: list[RunLearningLedgerEntry] = Field(default_factory=list)
     learning_weights: LearningWeights = Field(default_factory=LearningWeights)
     learning_journal: list[LearningJournalEntry] = Field(default_factory=list)
     last_saved_at: str = Field(default_factory=utc_now_iso)
