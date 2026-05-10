@@ -1,4 +1,4 @@
-﻿"""Tests for helper-lane behavior and execution-target repair safeguards."""
+"""Tests for helper-lane behavior and execution-target repair safeguards."""
 from __future__ import annotations
 
 import json
@@ -193,7 +193,7 @@ class TestBuildSafeHelperLanePatch:
 
         patches = engine._build_safe_helper_lane_patch(record)
 
-        # trace_summary has the guard, other helpers don't exist in tmp_path â†’ empty
+        # trace_summary has the guard, other helpers don't exist in tmp_path -> empty
         assert patches == []
 
     def test_falls_back_to_run_health_when_trace_summary_already_patched(self, tmp_path):
