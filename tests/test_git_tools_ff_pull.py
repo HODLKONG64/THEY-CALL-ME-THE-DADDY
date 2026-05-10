@@ -39,6 +39,7 @@ def test_refresh_base_branch_raises_and_stops_when_fetch_fails(tmp_path, monkeyp
         return ""
 
     monkeypatch.setattr(executor, "_run", fake_run)
+    monkeypatch.setattr(executor, "branch_exists_remote", lambda _branch: True)
     monkeypatch.setattr(executor, "branch_exists_local", lambda _branch: (_ for _ in ()).throw(AssertionError("branch_exists_local should not be called after fetch failure")))
 
     with pytest.raises(RuntimeError, match="fetch"):
@@ -47,7 +48,20 @@ def test_refresh_base_branch_raises_and_stops_when_fetch_fails(tmp_path, monkeyp
     assert calls == [("fetch", "origin", "main")]
 
 
-def test_create_or_checkout_branch_rebases_on_remote_when_remote_branch_exists(tmp_path, monkeypatch):
+def test_refresh_base_branch_raises_when_remote_base_branch_missing(tmp_path, monkeypatch):
+    executor = GitBranchExecutor(repo_root=tmp_path)
+    calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(executor, "branch_exists_remote", lambda _branch: False)
+    monkeypatch.setattr(executor, "_run", lambda *args: calls.append(args) or "")
+
+    with pytest.raises(RuntimeError, match="Remote base branch does not exist"):
+        executor.refresh_base_branch("main")
+
+    assert calls == []
+
+
+def test_create_or_checkout_branch_aligns_with_remote_when_remote_branch_exists(tmp_path, monkeypatch):
     executor = GitBranchExecutor(repo_root=tmp_path)
     calls: list[tuple[str, ...]] = []
 
