@@ -111,3 +111,19 @@ def test_sanitize_text_contract_for_generic_keys():
     assert "SERVICE_API_KEY=[REDACTED_SECRET]" in cleaned
     assert "password=[REDACTED_SECRET]" in cleaned
     assert "abc123" not in cleaned
+
+
+def test_sanitize_text_redacts_quoted_json_style_secrets():
+    text = (
+        '"password": "hunter2" '
+        '"SERVICE_API_KEY": "abc123" '
+        '"GITHUB_TOKEN": "ghp_testsecret" '
+        "'OPENAI_API_KEY': 'sk-test-secret'"
+    )
+    cleaned = sanitize_text(text)
+    assert '"password": "[REDACTED_SECRET]"' in cleaned
+    assert '"SERVICE_API_KEY": "[REDACTED_SECRET]"' in cleaned
+    assert '"GITHUB_TOKEN": "[REDACTED_TOKEN]"' in cleaned
+    assert "'OPENAI_API_KEY': '[REDACTED_SECRET]'" in cleaned
+    for raw in ["hunter2", "abc123", "ghp_testsecret", "sk-test-secret"]:
+        assert raw not in cleaned

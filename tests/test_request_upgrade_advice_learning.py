@@ -100,3 +100,21 @@ def test_request_upgrade_advice_includes_learning_summary(tmp_path: Path, monkey
     payload_blob = json.dumps(parsed)
     assert "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456" not in payload_blob
     assert "[REDACTED" in payload_blob
+
+
+def test_build_learning_summary_tolerates_corrupted_rows(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("DADDY_LOCAL_STATE_DIR", "doctor_local")
+    monkeypatch.setenv("DADDY_MEMORY_FILE", "sam-memory.json")
+    memory_dir = tmp_path / "doctor_local"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "3.0",
+        "run_learning_ledger": [
+            {"run_id": "r-good", "outcome": "success_with_patch", "subsystem": "engine"},
+            {"run_id": "r-bad", "outcome": {"bad": "shape"}},
+        ],
+    }
+    (memory_dir / "sam-memory.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = advice_module.build_learning_summary(tmp_path)
+    assert "success_with_patch" in summary["recent_outcomes"]

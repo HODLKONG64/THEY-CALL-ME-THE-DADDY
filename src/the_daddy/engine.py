@@ -1400,6 +1400,21 @@ class DaddyEngine:
 
         self._emit_runtime_summaries(record=record, review=review)
 
+        can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
+        if can_use_pr_lane:
+            try:
+                self._deliver_patch_via_pr(record, policy_route, prepared_branch=prepared_branch)
+            except Exception as exc:
+                record.trace.append(
+                    {
+                        "event": "pr_delivery_failed",
+                        "error_type": type(exc).__name__,
+                        "error": sanitize_text(str(exc)),
+                    }
+                )
+        else:
+            record.trace.append({"event": "pr_skipped", "reason": pr_reason})
+
         no_action_allowed = str((self.upgrade_advice or {}).get("recommended_next_step", "")).strip().lower() in {
             "none",
             "no_action",
@@ -1430,21 +1445,6 @@ class DaddyEngine:
                     "error": sanitize_text(str(exc)),
                 }
             )
-
-        can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
-        if can_use_pr_lane:
-            try:
-                self._deliver_patch_via_pr(record, policy_route, prepared_branch=prepared_branch)
-            except Exception as exc:
-                record.trace.append(
-                    {
-                        "event": "pr_delivery_failed",
-                        "error_type": type(exc).__name__,
-                        "error": sanitize_text(str(exc)),
-                    }
-                )
-        else:
-            record.trace.append({"event": "pr_skipped", "reason": pr_reason})
 
         self.memory.record_metrics(
             MetricsLedgerEntry(

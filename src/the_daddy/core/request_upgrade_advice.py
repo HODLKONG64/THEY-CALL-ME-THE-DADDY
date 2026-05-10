@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
-from ..models import MemoryState
+from ..models import MemoryState, RunLearningLedgerEntry
 from ..runtime.redaction import sanitize_list, sanitize_mapping, sanitize_text
 
 
@@ -88,7 +89,6 @@ def build_learning_summary(repo_root: Path) -> dict[str, Any]:
         }
     try:
         payload = json.loads(memory_path.read_text(encoding="utf-8"))
-        state = MemoryState.model_validate(payload)
     except Exception:
         return {
             "recent_outcomes": [],
@@ -109,7 +109,22 @@ def build_learning_summary(repo_root: Path) -> dict[str, Any]:
             },
         }
 
-    items = list(state.run_learning_ledger or [])[-10:]
+    state = None
+    try:
+        state = MemoryState.model_validate(payload)
+        items = list(state.run_learning_ledger or [])
+    except Exception:
+        raw_items = []
+        if isinstance(payload, dict):
+            raw_items = list(payload.get("run_learning_ledger") or [])
+        items = []
+        for item in raw_items:
+            try:
+                items.append(RunLearningLedgerEntry.model_validate(item))
+            except ValidationError:
+                continue
+
+    items = items[-10:]
     outcomes = [str(i.outcome) for i in items][-5:]
     blockers: dict[str, int] = {}
     files: dict[str, int] = {}

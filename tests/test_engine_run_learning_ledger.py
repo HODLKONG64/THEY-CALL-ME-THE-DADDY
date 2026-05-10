@@ -335,3 +335,56 @@ def test_doctor_takeover_trace_fields_are_sanitized(tmp_path: Path, monkeypatch)
     assert "OPENAI_API_KEY=[REDACTED_SECRET]" in blob
     assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in blob
     assert "password=[REDACTED_SECRET]" in blob
+
+
+def test_ledger_saved_after_pr_delivery_failure_records_git_pr_lane_failed(tmp_path: Path, monkeypatch):
+    advice_path = tmp_path / "advice.json"
+    _write_advice(advice_path, next_step="repair")
+    monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+    runtime_dir = tmp_path / "src" / "the_daddy" / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "trace_summary.py").write_text("x=1\n", encoding="utf-8")
+    (tmp_path / "src" / "the_daddy" / "cli.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+
+    engine = DaddyEngine(_settings(tmp_path))
+    patch = PatchAction(
+        path="src/the_daddy/runtime/trace_summary.py",
+        operation="regex_replace",
+        pattern=r"\Z",
+        replacement="\n# pr-fail-test\n",
+        description="force successful patch then pr failure",
+    )
+    action = SelfEvolutionAction(title="a", description="d", risk="safe", patches=[patch])
+    monkeypatch.setattr(
+        engine.reviewer,
+        "review",
+        lambda **_: ArchitectureReview(
+            diagnosis="d",
+            system_intent="i",
+            strengths=[],
+            weaknesses=[],
+            recommendations=[],
+            backlog_items=[],
+            self_evolution_actions=[action],
+            build_actions=[],
+            architecture_plans=[],
+            execution_notes=[],
+            risk_level="low",
+        ),
+    )
+    monkeypatch.setattr(engine, "_can_use_pr_lane", lambda _record: (True, ""))
+    monkeypatch.setattr(
+        engine,
+        "_deliver_patch_via_pr",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("pr lane failed")),
+    )
+
+    record = engine.run()
+    trace_events = [e.get("event") for e in record.trace]
+    assert "pr_delivery_failed" in trace_events
+    assert "run_learning_ledger_saved" in trace_events
+    assert trace_events.index("pr_delivery_failed") < trace_events.index("run_learning_ledger_saved")
+
+    ledger = engine.memory.state.run_learning_ledger[-1]
+    assert ledger.outcome == "git_pr_lane_failed"

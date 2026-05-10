@@ -25,6 +25,9 @@ _SIMPLE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 _KEY_VALUE_PATTERN = re.compile(
     r"(?i)\b([A-Za-z_][A-Za-z0-9_]*?(?:API_KEY|SECRET|TOKEN|PASSWORD))\s*[:=]\s*([^\s,;\"']{1,})"
 )
+_QUOTED_KEY_VALUE_PATTERN = re.compile(
+    r"(?i)(['\"])((?:[A-Za-z_][A-Za-z0-9_]*?(?:API_KEY|SECRET|TOKEN|PASSWORD))|password)\1\s*:\s*(['\"])(.*?)\3"
+)
 
 
 def _shannon_entropy(text: str) -> float:
@@ -66,6 +69,16 @@ def sanitize_text(value: str) -> str:
         return f"{key}=[REDACTED_SECRET]"
 
     out = _KEY_VALUE_PATTERN.sub(_replace_key_value, out)
+
+    def _replace_quoted_key_value(match: re.Match[str]) -> str:
+        key_quote = str(match.group(1) or '"')
+        key = str(match.group(2) or "")
+        value_quote = str(match.group(3) or '"')
+        key_upper = key.upper()
+        redacted = "[REDACTED_TOKEN]" if "TOKEN" in key_upper and "PASSWORD" not in key_upper else "[REDACTED_SECRET]"
+        return f"{key_quote}{key}{key_quote}: {value_quote}{redacted}{value_quote}"
+
+    out = _QUOTED_KEY_VALUE_PATTERN.sub(_replace_quoted_key_value, out)
 
     def _entropy_replacer(match: re.Match[str]) -> str:
         token = match.group(0)

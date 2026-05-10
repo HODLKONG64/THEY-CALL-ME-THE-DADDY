@@ -109,7 +109,7 @@ def build_run_learning_ledger_entry(
 
     tests_run = []
     if getattr(record, "command", ""):
-        tests_run.append(str(record.command))
+        tests_run.append(sanitize_text(str(record.command)))
     for item in list((upgrade_advice or {}).get("tests_to_run") or []):
         text = sanitize_text(str(item).strip())
         if text and text not in tests_run:

@@ -81,3 +81,21 @@ def test_ledger_entry_created_for_clean_no_action():
         no_action_allowed=True,
     )
     assert entry.outcome == "clean_no_action"
+
+
+def test_ledger_entry_sanitizes_record_command_in_tests_run():
+    rec = _record(success=True, patches=[], trace=[], rc=0)
+    rec.command = "pytest -q OPENAI_API_KEY=sk-test-secret Authorization: Bearer sk-test-secret GITHUB_TOKEN=ghp_testsecret"
+    entry = build_run_learning_ledger_entry(
+        record=rec,
+        upgrade_advice={"target_files": [], "recommended_next_step": "no_action"},
+        policy_route="safe",
+        proposed_patches=[],
+        no_action_allowed=True,
+    )
+    blob = " ".join(entry.tests_run)
+    assert "sk-test-secret" not in blob
+    assert "ghp_testsecret" not in blob
+    assert "Authorization: Bearer" not in blob
+    assert "OPENAI_API_KEY=[REDACTED_SECRET]" in blob
+    assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in blob
