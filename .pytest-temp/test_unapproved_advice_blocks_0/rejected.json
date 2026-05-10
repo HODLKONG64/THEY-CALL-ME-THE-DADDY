@@ -1,1 +1,0 @@
-{"allow_proceed": false, "summary": "rejected", "repo_state": "test", "problem_type": "failing_repo", "recommended_next_step": "run bounded upgrade", "target_files": ["src/the_daddy/engine.py", "src/the_daddy/cli.py"], "forbidden_repeat_patterns": ["no filler"], "required_constraints": [], "tests_to_run": ["pytest -q"], "generated_at": "2026-05-10T13:22:36.176024+00:00"}
