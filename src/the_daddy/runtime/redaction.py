@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""Secret redaction contract for persisted diagnostics and prompt context.
+
+Contract:
+- Preserve useful diagnostic structure while redacting secret values.
+- ``*_TOKEN`` keys keep the key name; values become ``[REDACTED_TOKEN]``.
+- ``*_SECRET``, ``*_API_KEY``, and ``password``/``*_PASSWORD`` keys keep the
+  key name; values become ``[REDACTED_SECRET]``.
+- Authorization bearer headers become ``Authorization: [REDACTED_AUTH_HEADER]``.
+- Raw secret values must never survive in persisted traces, ledgers, summaries,
+  or prompt context.
+"""
+
 import math
 import re
 from typing import Any
@@ -43,6 +55,9 @@ def sanitize_text(value: str) -> str:
     out = re.sub(r"(?i)\b(GITHUB_TOKEN)\s*[:=]\s*[^\s,;\"']+", r"\1=[REDACTED_TOKEN]", out)
     out = re.sub(r"(?i)\b(password)\s*[:=]\s*[^\s,;\"']+", r"\1=[REDACTED_SECRET]", out)
 
+    # Preserve the original key name and redact only the value.
+    # TOKEN-like keys are labeled as token redactions; other secret-bearing
+    # keys are labeled as secret redactions.
     def _replace_key_value(match: re.Match[str]) -> str:
         key = str(match.group(1) or "")
         key_upper = key.upper()

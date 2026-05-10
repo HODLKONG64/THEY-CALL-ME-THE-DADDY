@@ -94,3 +94,20 @@ def test_sanitize_text_redacts_exact_secret_examples():
     assert "OPENAI_API_KEY=[REDACTED_SECRET]" in cleaned
     assert "GITHUB_TOKEN=[REDACTED_TOKEN]" in cleaned
     assert "password=[REDACTED_SECRET]" in cleaned
+
+
+def test_sanitize_text_contract_for_generic_keys():
+    text = (
+        "SESSION_TOKEN=abc123 "
+        "REFRESH_TOKEN=abc123 "
+        "SOME_SECRET=abc123 "
+        "SERVICE_API_KEY=abc123 "
+        "password=abc123"
+    )
+    cleaned = sanitize_text(text)
+    assert "SESSION_TOKEN=[REDACTED_TOKEN]" in cleaned
+    assert "REFRESH_TOKEN=[REDACTED_TOKEN]" in cleaned
+    assert "SOME_SECRET=[REDACTED_SECRET]" in cleaned
+    assert "SERVICE_API_KEY=[REDACTED_SECRET]" in cleaned
+    assert "password=[REDACTED_SECRET]" in cleaned
+    assert "abc123" not in cleaned
