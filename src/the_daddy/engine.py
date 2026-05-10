@@ -28,6 +28,7 @@ from .policy import classify_patch_risk, _POLICY_README_FORBIDDEN_KEYWORDS
 from .runtime import architecture_probe as architecture_probe_runtime
 from .runtime import reviewer_fallback as reviewer_fallback_runtime
 from .runtime import run_health as run_health_runtime
+from .runtime import run_learning_ledger as run_learning_ledger_runtime
 from .runtime import trace_summary as trace_summary_runtime
 from .runtime.command_runner import run_command
 from .runtime.file_tools import apply_patch_action
@@ -1396,6 +1397,37 @@ class DaddyEngine:
         )
 
         self._emit_runtime_summaries(record=record, review=review)
+
+        no_action_allowed = str((self.upgrade_advice or {}).get("recommended_next_step", "")).strip().lower() in {
+            "none",
+            "no_action",
+            "no action",
+        }
+        try:
+            learning_entry = run_learning_ledger_runtime.build_run_learning_ledger_entry(
+                record=record,
+                upgrade_advice=self.upgrade_advice,
+                policy_route=policy_route,
+                proposed_patches=patches,
+                source="engine",
+                no_action_allowed=no_action_allowed,
+            )
+            self.memory.add_run_learning_entry(learning_entry)
+            record.trace.append(
+                {
+                    "event": "run_learning_ledger_saved",
+                    "outcome": learning_entry.outcome,
+                    "subsystem": learning_entry.subsystem,
+                }
+            )
+        except Exception as exc:
+            record.trace.append(
+                {
+                    "event": "run_learning_ledger_save_failed",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
 
         can_use_pr_lane, pr_reason = self._can_use_pr_lane(record)
         if can_use_pr_lane:

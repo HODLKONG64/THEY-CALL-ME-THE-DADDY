@@ -10,9 +10,11 @@ from the_daddy.engine import DaddyEngine
 from the_daddy.git_tools import GitBranchExecutor
 from the_daddy.merge_rules import AutoMergeJudge
 from the_daddy.core.upgrade_gate import UpgradeGateError, validate_upgrade_advice
-from the_daddy.models import PatchAction, RunRecord
+from the_daddy.memory.repository import MemoryRepository
+from the_daddy.models import CommandResult, PatchAction, RunRecord
 from the_daddy.policy import classify_patch_risk
 from the_daddy.runtime.file_tools import apply_patch_action
+from the_daddy.runtime.run_learning_ledger import build_run_learning_ledger_entry
 
 
 def _settings(root: Path):
@@ -168,6 +170,66 @@ def main() -> int:
             out["direct_failing_patch_blocked"] = False
         except Exception:
             out["direct_failing_patch_blocked"] = True
+
+        # Learning ledger coverage.
+        success_rec = RunRecord(run_id="ledger-success", command="pytest -q")
+        success_rec.selected_mode = "repair"
+        success_rec.success = True
+        success_rec.patches_applied = [{"path": "src/the_daddy/cli.py", "description": "patch"}]
+        success_rec.trace = [{"event": "patch_applied"}]
+        success_rec.verification = CommandResult(returncode=0)
+        success_entry = build_run_learning_ledger_entry(
+            record=success_rec,
+            upgrade_advice={"target_files": ["src/the_daddy/cli.py"]},
+            policy_route="safe",
+            proposed_patches=[passing],
+            source="stress_harness",
+        )
+
+        blocked_noop_rec = RunRecord(run_id="ledger-noop", command="pytest -q")
+        blocked_noop_rec.selected_mode = "repair"
+        blocked_noop_rec.success = False
+        blocked_noop_rec.trace = [{"event": "no_patch_blocker_recorded", "reason": "verification passed but no patch was applied"}]
+        blocked_noop_rec.verification = CommandResult(returncode=0)
+        blocked_noop_entry = build_run_learning_ledger_entry(
+            record=blocked_noop_rec,
+            upgrade_advice={"target_files": ["src/the_daddy/engine.py"]},
+            policy_route="safe",
+            proposed_patches=[],
+            source="stress_harness",
+        )
+
+        advice_gap_rec = RunRecord(run_id="ledger-advice-gap", command="pytest -q")
+        advice_gap_rec.selected_mode = "repair"
+        advice_gap_rec.success = True
+        advice_gap_rec.verification = CommandResult(returncode=0)
+        advice_gap_entry = build_run_learning_ledger_entry(
+            record=advice_gap_rec,
+            upgrade_advice={"target_files": ["src/the_daddy/engine.py"]},
+            policy_route="safe",
+            proposed_patches=[],
+            source="stress_harness",
+        )
+
+        clean_no_action_rec = RunRecord(run_id="ledger-clean-no-action", command="pytest -q")
+        clean_no_action_rec.selected_mode = "architecture"
+        clean_no_action_rec.success = True
+        clean_no_action_rec.verification = CommandResult(returncode=0)
+        clean_no_action_entry = build_run_learning_ledger_entry(
+            record=clean_no_action_rec,
+            upgrade_advice={"target_files": [], "recommended_next_step": "no_action"},
+            policy_route="safe",
+            proposed_patches=[],
+            no_action_allowed=True,
+            source="stress_harness",
+        )
+
+        learning_repo = MemoryRepository()
+        for entry in [success_entry, blocked_noop_entry, advice_gap_entry, clean_no_action_entry]:
+            learning_repo.add_run_learning_entry(entry)
+        out["ledger_outcomes"] = [i.outcome for i in learning_repo.latest_run_learning_entries(limit=10)]
+        out["ledger_recurring_blockers"] = learning_repo.ranked_recurring_blockers()
+        out["ledger_learning_summary"] = learning_repo.summarize_recent_learning(limit=10)
 
     print(json.dumps(out, indent=2))
     return 0

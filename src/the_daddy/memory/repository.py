@@ -14,6 +14,7 @@ from ..models import (
     MetricsLedgerEntry,
     PatchProvenance,
     PlannedWorkItem,
+    RunLearningLedgerEntry,
     RunRecord,
     VettingDecision,
     utc_now_iso,
@@ -156,6 +157,69 @@ class MemoryRepository:
         self._state.runs.append(record)
         self.save()
         return record
+
+    def add_run_learning_entry(self, entry: RunLearningLedgerEntry) -> RunLearningLedgerEntry:
+        self._state.run_learning_ledger.append(entry)
+        # bound growth to keep memory compact
+        self._state.run_learning_ledger = self._state.run_learning_ledger[-500:]
+        self.save()
+        return entry
+
+    def latest_run_learning_entries(self, limit: int = 10) -> list[RunLearningLedgerEntry]:
+        return list(self._state.run_learning_ledger[-max(1, int(limit)):])
+
+    def ranked_recurring_blockers(self) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for item in self._state.run_learning_ledger:
+            reason = str(getattr(item, "blocked_reason", "") or "").strip()
+            if not reason:
+                continue
+            counts[reason] = counts.get(reason, 0) + 1
+        ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+        return [{"blocked_reason": reason, "count": count} for reason, count in ranked[:20]]
+
+    def advice_actionability_stats(self) -> dict[str, Any]:
+        items = list(self._state.run_learning_ledger or [])
+        total = len(items)
+        actionable = sum(1 for i in items if str(getattr(i, "outcome", "")) not in {"advice_not_actionable", "blocked_fake_noop"})
+        not_actionable = sum(1 for i in items if str(getattr(i, "outcome", "")) == "advice_not_actionable")
+        blocked_fake_noop = sum(1 for i in items if str(getattr(i, "outcome", "")) == "blocked_fake_noop")
+        return {
+            "total": total,
+            "actionable": actionable,
+            "not_actionable": not_actionable,
+            "blocked_fake_noop": blocked_fake_noop,
+            "actionable_rate": (float(actionable) / float(total)) if total else 0.0,
+        }
+
+    def summarize_recent_learning(self, limit: int = 10) -> dict[str, Any]:
+        recent = self.latest_run_learning_entries(limit=limit)
+        outcomes = [str(item.outcome) for item in recent]
+        subsystems = [str(item.subsystem) for item in recent if str(item.subsystem)]
+        failed_files: dict[str, int] = {}
+        avoid_lessons: list[str] = []
+        successful_patterns: list[str] = []
+        for item in recent:
+            for path in item.files_involved:
+                failed_files[path] = failed_files.get(path, 0) + 1
+            for lesson in item.avoid_next_time:
+                if lesson and lesson not in avoid_lessons:
+                    avoid_lessons.append(lesson)
+            if item.outcome == "success_with_patch":
+                for worked in item.what_worked:
+                    if worked and worked not in successful_patterns:
+                        successful_patterns.append(worked)
+
+        ranked_files = sorted(failed_files.items(), key=lambda x: (-x[1], x[0]))
+        return {
+            "recent_outcomes": outcomes[-5:],
+            "recurring_blockers": self.ranked_recurring_blockers()[:5],
+            "repeated_files": [{"path": p, "count": c} for p, c in ranked_files[:5]],
+            "subsystems": subsystems[-10:],
+            "avoid_next_time": avoid_lessons[:10],
+            "successful_patterns": successful_patterns[:10],
+            "advice_actionability": self.advice_actionability_stats(),
+        }
 
     def add_backlog_items(self, items: list[str]) -> list[str]:
         self._state.backlog = _dedupe_keep_order(self._state.backlog + [str(item) for item in items])
@@ -304,6 +368,12 @@ class MemoryRepository:
             for item in raw.get("patch_provenance", []) or []:
                 try:
                     state.patch_provenance.append(PatchProvenance.model_validate(item))
+                except ValidationError:
+                    continue
+
+            for item in raw.get("run_learning_ledger", []) or []:
+                try:
+                    state.run_learning_ledger.append(RunLearningLedgerEntry.model_validate(item))
                 except ValidationError:
                     continue
 

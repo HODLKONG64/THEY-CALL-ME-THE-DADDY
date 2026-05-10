@@ -9,6 +9,8 @@ from typing import Any
 
 import httpx
 
+from ..models import MemoryState
+
 
 SYSTEM_PROMPT = """You are auditing a bounded self-maintaining repository agent.
 Your job is to decide whether the workflow should proceed with an upgrade cycle right now.
@@ -57,6 +59,84 @@ def build_repo_snapshot(repo_root: Path) -> dict[str, Any]:
     return {
         "tracked_files": tracked_files,
         "preview_files": preview_files,
+    }
+
+
+def build_learning_summary(repo_root: Path) -> dict[str, Any]:
+    memory_name = os.environ.get("DADDY_MEMORY_FILE", "sam-memory.json").strip() or "sam-memory.json"
+    local_state_dir = os.environ.get("DADDY_LOCAL_STATE_DIR", "doctor_local").strip() or "doctor_local"
+    memory_path = (repo_root / local_state_dir / memory_name).resolve()
+    if not memory_path.exists():
+        return {
+            "recent_outcomes": [],
+            "recurring_blockers": [],
+            "repeated_files": [],
+            "subsystems": [],
+            "avoid_next_time": [],
+            "successful_patterns": [],
+            "advice_actionability": {"total": 0, "actionable": 0, "not_actionable": 0, "blocked_fake_noop": 0, "actionable_rate": 0.0},
+        }
+    try:
+        payload = json.loads(memory_path.read_text(encoding="utf-8"))
+        state = MemoryState.model_validate(payload)
+    except Exception:
+        return {
+            "recent_outcomes": [],
+            "recurring_blockers": [],
+            "repeated_files": [],
+            "subsystems": [],
+            "avoid_next_time": [],
+            "successful_patterns": [],
+            "advice_actionability": {"total": 0, "actionable": 0, "not_actionable": 0, "blocked_fake_noop": 0, "actionable_rate": 0.0},
+        }
+
+    items = list(state.run_learning_ledger or [])[-10:]
+    outcomes = [str(i.outcome) for i in items][-5:]
+    blockers: dict[str, int] = {}
+    files: dict[str, int] = {}
+    subsystems: list[str] = []
+    avoid: list[str] = []
+    success: list[str] = []
+    for item in items:
+        if item.blocked_reason:
+            blockers[item.blocked_reason] = blockers.get(item.blocked_reason, 0) + 1
+        for path in item.files_involved:
+            files[path] = files.get(path, 0) + 1
+        if item.subsystem:
+            subsystems.append(item.subsystem)
+        for lesson in item.avoid_next_time:
+            if lesson and lesson not in avoid:
+                avoid.append(lesson)
+        if item.outcome == "success_with_patch":
+            for pattern in item.what_worked:
+                if pattern and pattern not in success:
+                    success.append(pattern)
+
+    total = len(items)
+    actionable = sum(1 for i in items if i.outcome not in {"advice_not_actionable", "blocked_fake_noop"})
+    not_actionable = sum(1 for i in items if i.outcome == "advice_not_actionable")
+    blocked_fake_noop = sum(1 for i in items if i.outcome == "blocked_fake_noop")
+
+    return {
+        "recent_outcomes": outcomes,
+        "recurring_blockers": [
+            {"blocked_reason": reason, "count": count}
+            for reason, count in sorted(blockers.items(), key=lambda x: (-x[1], x[0]))[:5]
+        ],
+        "repeated_files": [
+            {"path": path, "count": count}
+            for path, count in sorted(files.items(), key=lambda x: (-x[1], x[0]))[:5]
+        ],
+        "subsystems": subsystems[-10:],
+        "avoid_next_time": avoid[:10],
+        "successful_patterns": success[:10],
+        "advice_actionability": {
+            "total": total,
+            "actionable": actionable,
+            "not_actionable": not_actionable,
+            "blocked_fake_noop": blocked_fake_noop,
+            "actionable_rate": (float(actionable) / float(total)) if total else 0.0,
+        },
     }
 
 
@@ -132,10 +212,12 @@ def request_upgrade_advice(repo_root: Path, model: str) -> dict[str, Any]:
         raise RuntimeError("OPENAI_API_KEY is required")
 
     snapshot = build_repo_snapshot(repo_root)
+    learning_summary = build_learning_summary(repo_root)
     user_prompt = json.dumps(
         {
             "instruction": "Audit this repository snapshot and decide whether the upgrade workflow should proceed. If it is in a safe-loop, explicitly identify that and recommend the best bounded upgrade targets.",
             "repo_snapshot": snapshot,
+            "run_learning_summary": learning_summary,
             "current_goal": "Do not let the workflow move forward until OpenAI provides explicit upgrade advice.",
         },
         indent=2,
