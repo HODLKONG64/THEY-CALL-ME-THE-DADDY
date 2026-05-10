@@ -5,7 +5,7 @@ from pathlib import Path
 
 import the_daddy.engine as engine_module
 from the_daddy.engine import DaddyEngine
-from the_daddy.models import ArchitectureReview, PatchAction, SelfEvolutionAction
+from the_daddy.models import ArchitectureReview, PatchAction, RunRecord, SelfEvolutionAction
 
 
 def _write_advice(path: Path, *, next_step: str = "repair") -> None:
@@ -218,4 +218,105 @@ def test_pr_delivery_failed_error_is_sanitized(tmp_path: Path, monkeypatch):
         "password=supersecret",
     ]:
         assert secret not in blob
+    assert "[REDACTED" in blob
+
+
+def test_branch_prepare_failed_error_is_sanitized(tmp_path: Path, monkeypatch):
+    advice_path = tmp_path / "advice.json"
+    _write_advice(advice_path, next_step="repair")
+    monkeypatch.setenv("DADDY_UPGRADE_ADVICE_PATH", str(advice_path))
+
+    runtime_dir = tmp_path / "src" / "the_daddy" / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "trace_summary.py").write_text("x=1\n", encoding="utf-8")
+    (tmp_path / "src" / "the_daddy" / "cli.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+
+    engine = DaddyEngine(_settings(tmp_path))
+    engine.settings.github_token = "x"
+    engine.settings.github_repo = "o/r"
+    monkeypatch.setattr(engine, "_is_git_repo", lambda: True)
+
+    patch = PatchAction(
+        path="src/the_daddy/runtime/trace_summary.py",
+        operation="regex_replace",
+        pattern=r"\Z",
+        replacement="\n# test\n",
+        description="trigger branch prepare",
+    )
+    action = SelfEvolutionAction(title="a", description="d", risk="safe", patches=[patch])
+    monkeypatch.setattr(
+        engine.reviewer,
+        "review",
+        lambda **_: ArchitectureReview(
+            diagnosis="d",
+            system_intent="i",
+            strengths=[],
+            weaknesses=[],
+            recommendations=[],
+            backlog_items=[],
+            self_evolution_actions=[action],
+            build_actions=[],
+            architecture_plans=[],
+            execution_notes=[],
+            risk_level="low",
+        ),
+    )
+    monkeypatch.setattr(
+        engine.git_tools,
+        "prepare_branch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "Authorization: Bearer sk-test-secret OPENAI_API_KEY=sk-test-secret "
+                "GITHUB_TOKEN=ghp_testsecret password=supersecret"
+            )
+        ),
+    )
+    record = engine.run()
+    events = [e for e in record.trace if e.get("event") == "branch_prepare_failed"]
+    assert events
+    blob = json.dumps(events[-1])
+    for fragment in [
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
+        "OPENAI_API_KEY=",
+        "GITHUB_TOKEN=",
+        "password=",
+    ]:
+        assert fragment not in blob
+    assert "[REDACTED" in blob
+
+
+def test_doctor_takeover_trace_fields_are_sanitized(tmp_path: Path, monkeypatch):
+    engine = DaddyEngine(_settings(tmp_path))
+    engine.repair_mode_active = True
+    engine.upgrade_advice = {"target_files": ["src/the_daddy/cli.py"], "repair_mode": True}
+    monkeypatch.setattr(engine, "_recent_same_blocker_count", lambda _blocker: 5)
+    monkeypatch.setattr(engine, "_stuck_same_reason_limit", lambda: 2)
+    monkeypatch.setattr(
+        engine,
+        "_target_file_snapshots",
+        lambda: [{"path": "src/the_daddy/cli.py", "content": "def x():\n    return 1\n"}],
+    )
+    engine.doctor_executor.plan_patches = lambda **_kwargs: {
+        "diagnosis": "Authorization: Bearer sk-test-secret",
+        "root_cause": "OPENAI_API_KEY=sk-test-secret GITHUB_TOKEN=ghp_testsecret password=supersecret",
+        "changes": [],
+    }
+    record = RunRecord(run_id="r-doc", command="pytest -q")
+    _ = engine._doctor_takeover_patches(record)
+    events = [e for e in record.trace if e.get("event") == "doctor_agent_takeover"]
+    assert events
+    blob = json.dumps(events[-1])
+    for fragment in [
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
+        "OPENAI_API_KEY=",
+        "GITHUB_TOKEN=",
+        "password=",
+    ]:
+        assert fragment not in blob
     assert "[REDACTED" in blob

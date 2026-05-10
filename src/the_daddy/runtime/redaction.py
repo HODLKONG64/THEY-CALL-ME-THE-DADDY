@@ -10,13 +10,16 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)Authorization\s*:\s*Bearer\s+\S+"), "Authorization: [REDACTED_AUTH_HEADER]"),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]{16,}\b"), "Bearer [REDACTED_TOKEN]"),
     (re.compile(r"(?im)^\s*Authorization\s*:\s*.+$"), "Authorization: [REDACTED_AUTH_HEADER]"),
+    (re.compile(r"(?i)\bOPENAI_API_KEY\s*[:=]\s*[^\s,;\"']+"), "[REDACTED_SECRET]"),
+    (re.compile(r"(?i)\bGITHUB_TOKEN\s*[:=]\s*[^\s,;\"']+"), "[REDACTED_TOKEN]"),
+    (re.compile(r"(?i)\bpassword\s*[:=]\s*[^\s,;\"']+"), "[REDACTED_SECRET]"),
     (
         re.compile(r"(?i)\b([A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD)[A-Z0-9_]*)\s*[:=]\s*([^\s,;\"']{4,})"),
-        r"\1=[REDACTED_SECRET]",
+        "[REDACTED_SECRET]",
     ),
     (
         re.compile(r"(?im)^\s*([A-Za-z_][A-Za-z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD))\s*=\s*(.+)$"),
-        r"\1=[REDACTED_SECRET]",
+        "[REDACTED_SECRET]",
     ),
 ]
 

@@ -4,6 +4,7 @@ import json
 
 from the_daddy.core import request_upgrade_advice as advice_module
 from the_daddy.models import CommandResult, RunRecord
+from the_daddy.runtime.redaction import sanitize_text
 from the_daddy.runtime.run_learning_ledger import build_run_learning_ledger_entry
 
 
@@ -46,8 +47,8 @@ def test_learning_summary_payload_is_redacted(tmp_path, monkeypatch):
                 "run_id": "r1",
                 "outcome": "blocked_fake_noop",
                 "subsystem": "engine",
-                "blocked_reason": "OPENAI_API_KEY=sk-this-is-a-secret-token-value",
-                "avoid_next_time": ["Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"],
+                "blocked_reason": "OPENAI_API_KEY=sk-test-secret GITHUB_TOKEN=ghp_testsecret password=supersecret",
+                "avoid_next_time": ["Authorization: Bearer sk-test-secret"],
             }
         ],
     }
@@ -55,6 +56,35 @@ def test_learning_summary_payload_is_redacted(tmp_path, monkeypatch):
 
     summary = advice_module.build_learning_summary(tmp_path)
     raw = json.dumps(summary)
-    assert "sk-this-is-a-secret-token-value" not in raw
-    assert "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456" not in raw
+    for fragment in [
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
+        "OPENAI_API_KEY=",
+        "GITHUB_TOKEN=",
+        "password=",
+    ]:
+        assert fragment not in raw
     assert "[REDACTED" in raw
+
+
+def test_sanitize_text_redacts_exact_secret_examples():
+    text = (
+        "Authorization: Bearer sk-test-secret "
+        "OPENAI_API_KEY=sk-test-secret "
+        "GITHUB_TOKEN=ghp_testsecret "
+        "password=supersecret"
+    )
+    cleaned = sanitize_text(text)
+    for fragment in [
+        "sk-test-secret",
+        "ghp_testsecret",
+        "supersecret",
+        "Authorization: Bearer",
+        "OPENAI_API_KEY=",
+        "GITHUB_TOKEN=",
+        "password=",
+    ]:
+        assert fragment not in cleaned
+    assert "[REDACTED" in cleaned
