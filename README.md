@@ -1,71 +1,104 @@
-# THEY-CALL-ME-THE-DADDY
+# SWARMSY
 
-Self-maintaining autonomous dev system focused on one thing first:
+SWARMSY is an open-source experimental app for swarm coordination, agent-assisted building, community tasks, promotion actions, and self-improving project workflows.
 
-**survive, repair, patch safely, and keep shipping clean PRs**
+This repo is the app layer. It is allowed to include experimental self-evolution, architecture planning, automated PR creation, automated merge logic, and internal repair/doctor-style maintenance behaviour.
+
+Read the locked app direction first:
+
+- [`docs/SWARMSY_APP_DIRECTION.md`](docs/SWARMSY_APP_DIRECTION.md)
 
 ---
 
 ## What this project is
 
-THEY-CALL-ME-THE-DADDY is a bounded self-improving repository agent.
+SWARMSY is a test app and open-source build system for agent-powered collaboration.
 
-It reviews the repo, proposes a small safe patch, applies it, runs tests, opens a PR, and auto-merges when the result is safe.
+It is intended to help humans and AI agents coordinate around:
 
-This project is **not** meant to chase fake intelligence milestones, random architecture experiments, or ungrounded agent spawning.
+- app ideas
+- user tasks
+- community promotion
+- feature proposals
+- documentation improvements
+- repo maintenance
+- swarm-style collaboration
+- live project improvement
 
-The system exists to:
-
-- detect failures
-- recover from bad runs
-- avoid deadlocks
-- keep patching safely
-- maintain PR flow
-- learn from repeated success and failure
-
----
-
-## Current direction
-
-This repo already went through a bad drift phase where speculative “Level 2–9” logic got layered on top of the original build and pulled it away from its actual purpose.
-
-That drift caused deadlocks, no-op cycles, broken planner behaviour, and noise.
-
-The correct direction is now restored:
-
-- keep the original bounded patch loop
-- keep helper-lane observability improvements safe
-- protect core planner/engine files from destructive mutation
-- prefer real small reversible patches over speculative expansion
-- do not skip phases
+This is not a normal static app repo. The automation layer is part of the experiment.
 
 ---
 
-## Core operating loop
+## Intentional experimental features
 
-The agent should work like this:
+Do not remove these just because they look risky in a normal production app:
 
-1. Review repo state and memory
-2. Propose a bounded patch
-3. Apply patch safely
-4. Run verification (`pytest -q`)
-5. If tests pass:
-   - open PR
-   - auto-merge if safe
-6. If tests fail:
-   - rollback immediately
-   - record failure pattern
-   - attempt recovery next run
-7. If no patch is available:
-   - diagnose why
-   - avoid empty deadlock cycles
-   - continue improving bounded decision quality
+- self-evolution lane
+- architecture lane
+- auto-PR logic
+- auto-merge logic
+- internal repair/doctor behaviour
+- agent-led maintenance
+- test-app autonomy
+
+These are part of the purpose of SWARMSY.
+
+The goal is not to make the app passive. The goal is to test a living app that can document, review, repair, and improve itself with clear guardrails.
+
+---
+
+## Product role
+
+SWARMSY should become the app-facing swarm system.
+
+The app should focus on:
+
+- community coordination
+- live build feedback
+- contributor workflows
+- app improvement tasks
+- promotion missions
+- swarm ideas
+- agent-assisted issue handling
+- public-facing product direction
+
+---
+
+## Internal agent role
+
+The repo may contain a built-in doctor/repair concept.
+
+That doctor layer should be treated as an internal maintenance agent inside the SWARMSY app system, not as a separate product identity that takes over the app.
+
+Recommended naming:
+
+- **SWARMSY** = app, product, community, swarm layer
+- **Doctor** = internal repair and maintenance layer
+- **Agent** = task runner, reviewer, planner, or fixer
+- **Contributor** = human or AI helper submitting improvements
+
+---
+
+## Guardrails
+
+Even as a test app, SWARMSY should avoid accidental damage.
+
+Required guardrails:
+
+- no accidental cross-repo writes
+- no secret logging
+- no API key/token storage in memory
+- no destructive shell commands
+- no silent failed deploys
+- visible audit trail for automated actions
+- rollback notes for every automated patch
+- clear target repo naming when automation writes to GitHub
 
 ---
 
 ## Patch rules
 
-All patches must be:
+All automated patches should be:
 
 - small
 - bounded
@@ -78,199 +111,88 @@ Preferred operations:
 - append
 - extend
 - safe regex replace
+- targeted file update
 
 Avoid:
 
-- large rewrites
-- speculative architecture churn
-- touching protected core files without a grounded reason
-- duplicate or low-value patch loops
+- large rewrites without a clear reason
+- unrelated cleanup bundled into feature work
+- fake heartbeat/no-op patches
+- product drift away from SWARMSY
+- changing protected core files without grounded evidence
 
 ---
 
 ## Test rule
 
-Every patch must:
+Every meaningful patch should run the relevant verification command before being treated as successful.
 
-- run tests
-- pass before PR
-- rollback immediately on failure
+The current default verification path is Python test based:
 
-No exceptions.
+```bash
+pytest -q
+```
+
+If the app later adds web/mobile/frontend tooling, document the extra commands here rather than hiding them in agent memory.
 
 ---
 
 ## PR rule
 
-If patch is valid:
+If a patch is valid:
 
-- open PR
-- include clear summary
-- auto-merge if safe
+- open a clear PR or commit directly only when explicitly requested
+- include a clear summary
+- include verification details
+- auto-merge only when the configured safety rules allow it
 
 If no patch is valid:
 
-- system must explain why
-- system must record the deadlock or constraint
-- system must improve recovery/fallback logic over time
+- explain why
+- record the blocker
+- avoid empty deadlock cycles
+- improve the next-run decision path
 
 ---
 
-## Learning Ledger
+## Learning and memory
 
-Every workflow run now records a compact Run Learning Ledger entry so the agent keeps useful memory across runs instead of restarting from scratch.
+The app/agent system may keep compact operational memory so it can learn from repeated success and failure.
 
-Stored fields are bounded and operational:
+Memory should store:
 
-- run mode, outcome, subsystem, root cause
-- why a patch worked or failed
-- why no patch was emitted
-- target files and changed file paths
-- tests/verification commands
-- key trace events and blocker reasons
-- next-best action and avoid-next-time lessons
+- run mode
+- outcome
+- subsystem
+- root cause
+- changed paths
+- tests run
+- blocker reasons
+- next-best action
+- avoid-next-time lessons
 
-Where it lives:
+Memory must not store:
 
-- local memory JSON in `doctor_local/` (or configured local state dir)
-- mirrored to R2 through existing `R2Store` when configured
-- if R2 is unavailable, local memory remains authoritative fallback
-
-Security rules:
-
-- never store secrets
-- never store API keys or tokens (GitHub/OpenAI/etc.)
-- never store full environment variable dumps
-- never store full large file contents
-- store only compact summaries, paths, outcomes, and lessons needed for safe next-run decisions
-
----
-
-## Protected direction
-
-A working agent that improves slowly is better than a smart-looking agent that breaks itself.
-
-This project must always prefer:
-
-- survival over ambition
-- repair over expansion
-- stability over novelty
-- grounded patches over speculative behaviour
-
----
-
-## Evolution phases
-
-The agent evolves in this order only.
-
-### Phase 1 — Repair
-Focus on:
-
-- fixing failures
-- rollback reliability
-- retry logic
-- failure recovery
-
-### Phase 2 — Stability
-Focus on:
-
-- eliminating deadlocks
-- improving fallback decisions
-- keeping PR flow alive
-- preventing no-action stalls
-
-### Phase 3 — Awareness
-Focus on:
-
-- trace summaries
-- error summaries
-- run-health visibility
-- architecture visibility
-
-### Phase 4 — Capability
-Focus on:
-
-- safely extending existing agents
-- improving planner/reviewer quality
-- strengthening bounded decision-making
-
-### Phase 5 — Expansion
-Future only.
-
-Not active until Phases 1–4 are genuinely stable.
-
-Examples of future work:
-
-- web crawling
-- broader coding tasks
-- external task execution
-
----
-
-## What this repo is NOT doing right now
-
-This repo is not currently trying to become a free-roaming autonomous architect.
-
-It is not prioritising:
-
-- agent spawning for its own sake
-- self-rewrite experiments
-- speculative multi-layer goal systems
-- synthetic evolution when grounded bounded work is still the real need
-
-If a future change does not make the system better at surviving, patching, and recovering, it should not be implemented.
-
----
-
-## Critical files
-
-These are core to the current brain and should be treated carefully:
-
-- `src/the_daddy/engine.py`
-- `src/the_daddy/agents/reviewer.py`
-- `src/the_daddy/agents/improvement_planner.py`
-- `src/the_daddy/memory/repository.py`
-- `src/the_daddy/core/system_rules.json`
-- `src/the_daddy/core/self_check.py`
-- `src/the_daddy/core/conflict_recovery.py`
-- `src/the_daddy/core/failure_recovery.py`
-
-Runtime helper lane:
-
-- `src/the_daddy/runtime/trace_summary.py`
-- `src/the_daddy/runtime/error_digest.py`
-- `src/the_daddy/runtime/run_health.py`
-- `src/the_daddy/runtime/reviewer_fallback.py`
-- `src/the_daddy/runtime/architecture_probe.py`
+- secrets
+- API keys
+- tokens
+- full environment dumps
+- unnecessary full file contents
 
 ---
 
 ## Current success condition
 
-This system is considered healthy when it can:
+SWARMSY is healthy when it can:
 
-- run continuously
-- fix its own failures
-- recover from bad patches
+- keep app direction visible
+- accept useful community/app changes
+- run safe automated maintenance
+- recover from failed patches
 - avoid deadlocks
-- produce consistent PRs
-- auto-merge safe bounded patches
-- learn from repeated success and failure
-
-without needing constant human rescue.
-
----
-
-## Current repo status
-
-The restored intended behaviour is:
-
-- bounded helper-lane improvements are allowed
-- safe PR flow is restored
-- auto-merge works when verification passes
-- speculative “level” drift is not the main direction anymore
-
-The current focus is to strengthen the original build path, not replace it.
+- keep PR flow readable
+- preserve clear audit trails
+- improve without drifting away from the app mission
 
 ---
 
@@ -278,20 +200,8 @@ The current focus is to strengthen the original build path, not replace it.
 
 Before changing anything, ask:
 
-**Does this make the agent better at surviving and fixing itself?**
+**Does this make the SWARMSY app better as an open-source swarm coordination and agent-powered build system?**
 
-If the answer is no, do not implement it.
+If yes, proceed carefully.
 
-<!-- forced-repair-heartbeat: 20260424T004248Z -->
-
-<!-- forced-repair-heartbeat: 20260424T012308Z -->
-
-<!-- heartbeat: 🔥 20260424T033333Z -->
-
-<!-- heartbeat: 🔥 20260424T121410Z -->
-
-<!-- heartbeat: 🔥 20260426T085811Z -->
-
-<!-- heartbeat: 🔥 20260426T123441Z -->
-
-<!-- heartbeat: 🔥 20260426T124843Z -->
+If no, do not add noise.
