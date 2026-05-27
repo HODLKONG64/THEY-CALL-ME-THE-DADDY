@@ -637,6 +637,16 @@ class TestSummarizeNoopRepairState:
 # ---------------------------------------------------------------------------
 
 class TestRunHealthNoDuplicates:
+    def test_run_health_direct_import_succeeds_with_velocity_default(self):
+        import importlib
+        import sys
+
+        sys.modules.pop("the_daddy.runtime.run_health", None)
+        rh = importlib.import_module("the_daddy.runtime.run_health")
+
+        assert rh.RECENT_VELOCITY_WINDOW == 10
+        assert rh.summarize_run_velocity([])["window"] == 10
+
     def test_run_health_has_exactly_one_recovery_tick_marker(self):
         import inspect
         import the_daddy.runtime.run_health as rh
@@ -752,5 +762,4 @@ class TestHelperLaneFallbackRealRepoScenario:
         assert "helper_lane_skipped_for_execution_target_repair" in events, (
             f"Expected helper_lane_skipped_for_execution_target_repair. Trace events: {events}"
         )
-
 

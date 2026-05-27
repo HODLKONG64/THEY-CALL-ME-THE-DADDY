@@ -1,0 +1,38 @@
+name: swarmsy-doctor-queue
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  process-queued-doctor-request:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: swarmsy-doctor-queue
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Attempt one queued SWARMSY Doctor request
+        env:
+          DADDY_ALLOWED_TARGET_REPOS: ${{ vars.DADDY_ALLOWED_TARGET_REPOS }}
+          DADDY_SWARMSY_AUTO_MERGE: ${{ vars.DADDY_SWARMSY_AUTO_MERGE }}
+        run: |
+          python -m the_daddy.swarmsy_doctor_queue --process-once
+
+      - name: Publish recent repair archive summary
+        run: |
+          python -m the_daddy.swarmsy_doctor_queue --show-recent --limit 20

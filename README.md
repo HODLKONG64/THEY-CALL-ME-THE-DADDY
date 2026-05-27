@@ -7,6 +7,7 @@ This repo is the app layer. It is allowed to include experimental self-evolution
 Read the locked app direction first:
 
 - [`docs/SWARMSY_APP_DIRECTION.md`](docs/SWARMSY_APP_DIRECTION.md)
+- [`docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md`](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md)
 
 ---
 

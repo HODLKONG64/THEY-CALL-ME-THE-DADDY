@@ -173,3 +173,41 @@ def summarize_helper_lane_status(actions: list[dict[str, Any]] | None = None) ->
         "first_helper_path": ranked[0][0] if ranked else "",
         "active": bool(unique_titles) or bool(helper_paths),
     }
+
+
+def summarize_recent_pressure_persistence(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    related_files: list[str] = []
+
+    for item in items:
+        for path in item.get("related_files", []) or []:
+            path_text = str(path).strip()
+            if path_text and path_text not in related_files:
+                related_files.append(path_text)
+
+    return {
+        "related_file_count": len(related_files),
+        "related_files": related_files[:10],
+        "active": bool(related_files),
+    }
+
+
+def summarize_planning_hint_state(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    notes: list[str] = []
+
+    for item in items:
+        for note in item.get("notes", []) or []:
+            note_text = str(note).strip()
+            if note_text:
+                notes.append(note_text)
+
+    unique_notes = list(dict.fromkeys(notes))
+    return {
+        "title_count": len(titles),
+        "note_count": len(unique_notes),
+        "first_title": titles[0] if titles else "",
+        "first_note": unique_notes[0] if unique_notes else "",
+        "active": bool(titles) or bool(unique_notes),
+    }
