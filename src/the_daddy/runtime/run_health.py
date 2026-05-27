@@ -54,3 +54,22 @@ def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:
         "noop_repair_count": noop_count,
         "total_runs": len(items),
     }
+
+
+def summarize_run_velocity(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = RECENT_VELOCITY_WINDOW,
+) -> dict[str, Any]:
+    items = runs or []
+    effective_window = max(1, int(window))
+    sample = items[-effective_window:] if items else []
+
+    success_count = sum(1 for item in sample if bool(item.get("success", False)))
+    failure_count = len(sample) - success_count
+
+    return {
+        "sample_size": len(sample),
+        "window": effective_window,
+        "successes": success_count,
+        "failures": failure_count,
+    }
