@@ -316,6 +316,32 @@ def test_queue_cli_reports_missing_archive_file_even_if_env_set(monkeypatch, tmp
     assert payload["status"] == "queue_source_unavailable"
 
 
+def test_queue_cli_reports_no_queued_requests_for_existing_empty_archive(monkeypatch, tmp_path, capsys):
+    archive_path = tmp_path / "doctor-archive.json"
+    archive_path.write_text('{"requests": []}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DADDY_DOCTOR_ARCHIVE_FILE", str(archive_path))
+
+    exit_code = doctor_queue_main(["--process-once"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "no_queued_requests"
+
+
+def test_queue_cli_recovers_from_corrupt_existing_archive(monkeypatch, tmp_path, capsys):
+    archive_path = tmp_path / "doctor-archive.json"
+    archive_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DADDY_DOCTOR_ARCHIVE_FILE", str(archive_path))
+
+    exit_code = doctor_queue_main(["--process-once"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "no_queued_requests"
+
+
 def test_queue_cli_leaves_request_queued_when_only_noop_worker(monkeypatch, tmp_path, capsys):
     archive_path = tmp_path / "doctor-archive.json"
     request, _ = create_doctor_request_from_plain_language("Ask Daddy to fix workspace upload bug")
