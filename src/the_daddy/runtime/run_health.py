@@ -93,3 +93,25 @@ def summarize_mode_distribution(
         "mode_counts": counts,
         "distinct_modes": len(counts),
     }
+
+
+def summarize_patchless_streak(runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = runs or []
+    streak = 0
+
+    for item in reversed(items):
+        patch_count = int(item.get("patch_count", 0) or 0)
+        if patch_count > 0:
+            break
+        streak += 1
+
+    latest_mode = ""
+    if items:
+        latest_mode = str(items[-1].get("selected_mode", "")).strip()
+
+    return {
+        "patchless_streak": streak,
+        "total_runs": len(items),
+        "latest_mode": latest_mode,
+        "active": streak > 0,
+    }
