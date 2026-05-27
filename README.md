@@ -105,6 +105,7 @@ the allowlist is explicitly extended.
 Cross-repo branch push, PR creation, and PR merge are **blocked** unless the target repo is in
 `DADDY_ALLOWED_TARGET_REPOS`.  The guard runs before every `git push`, before every PR creation,
 and before every PR merge — not only at the PR layer.
+If `GITHUB_REPO` is unset, these write actions fail closed before any git/network write occurs.
 
 External SWARMSY Doctor mode is **explicit and opt-in**:
 

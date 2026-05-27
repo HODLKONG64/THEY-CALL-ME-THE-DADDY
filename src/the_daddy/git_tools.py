@@ -13,6 +13,10 @@ _DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
 _DEFAULT_ALLOWED_TARGET_REPOS: frozenset[str] = frozenset({_DADDY_REPO})
 
 
+def _normalize_repo_slug(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
 class GitBranchExecutor:
     def __init__(
         self,
@@ -23,9 +27,13 @@ class GitBranchExecutor:
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.github_token = github_token
-        self.github_repo = github_repo
-        self.allowed_target_repos: frozenset[str] = (
-            allowed_target_repos if allowed_target_repos is not None else _DEFAULT_ALLOWED_TARGET_REPOS
+        self.github_repo = str(github_repo or "").strip()
+        self._normalized_github_repo = _normalize_repo_slug(self.github_repo)
+        configured_allowed = allowed_target_repos if allowed_target_repos is not None else _DEFAULT_ALLOWED_TARGET_REPOS
+        cleaned_allowed = frozenset(str(repo or "").strip() for repo in configured_allowed if str(repo or "").strip())
+        self.allowed_target_repos: frozenset[str] = cleaned_allowed or _DEFAULT_ALLOWED_TARGET_REPOS
+        self._normalized_allowed_target_repos: frozenset[str] = frozenset(
+            _normalize_repo_slug(repo) for repo in self.allowed_target_repos
         )
 
     def _run(self, *args: str) -> str:
@@ -59,7 +67,12 @@ class GitBranchExecutor:
 
     def _ensure_target_repo_allowed(self, action: str) -> None:
         """Block any write action when github_repo is not in the allowlist."""
-        if self.github_repo and self.github_repo not in self.allowed_target_repos:
+        if not self._normalized_github_repo:
+            raise PermissionError(
+                f"Blocked {action}: GITHUB_REPO is unset; refusing git/network write."
+            )
+
+        if self._normalized_github_repo not in self._normalized_allowed_target_repos:
             raise PermissionError(
                 f"Target repo '{self.github_repo}' is not in the allowed target repos allowlist. "
                 f"Action '{action}' blocked. "
@@ -231,10 +244,9 @@ class GitBranchExecutor:
         return None
 
     def create_pull_request(self, branch_name: str, title: str, body: str, base_branch: str = "main") -> dict | None:
-        if not self.github_token or not self.github_repo:
-            return None
-
         self._ensure_target_repo_allowed("create_pull_request")
+        if not self.github_token:
+            return None
 
         url = f"https://api.github.com/repos/{self.github_repo}/pulls"
         payload = {
@@ -259,9 +271,9 @@ class GitBranchExecutor:
             raise
 
     def merge_pull_request(self, pull_number: int, commit_title: str = "auto: daddy merge") -> dict | None:
-        if not self.github_token or not self.github_repo:
-            return None
         self._ensure_target_repo_allowed("merge_pull_request")
+        if not self.github_token:
+            return None
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
         payload = {"commit_title": commit_title, "merge_method": "squash"}
         response = self._api_request("PUT", url, payload)

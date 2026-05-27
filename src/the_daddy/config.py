@@ -13,10 +13,14 @@ load_dotenv()
 _DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
 
 
+def _normalize_repo_slug(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
 def _parse_allowed_target_repos(value: str) -> frozenset[str]:
     """Parse DADDY_ALLOWED_TARGET_REPOS; fail-closed to Daddy-only when empty/unset."""
-    repos = {item.strip() for item in str(value or "").split(",") if item.strip()}
-    return frozenset(repos) if repos else frozenset({_DADDY_REPO})
+    repos = {_normalize_repo_slug(item) for item in str(value or "").split(",") if str(item).strip()}
+    return frozenset(repos) if repos else frozenset({_normalize_repo_slug(_DADDY_REPO)})
 
 
 class Settings(BaseSettings):

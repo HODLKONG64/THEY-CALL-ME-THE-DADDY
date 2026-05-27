@@ -14,11 +14,15 @@ import pathlib
 import pytest
 
 from the_daddy.config import Settings, _parse_allowed_target_repos
+from the_daddy.engine import DaddyEngine, make_run_id
 from the_daddy.git_tools import GitBranchExecutor, _DEFAULT_ALLOWED_TARGET_REPOS
+from the_daddy.models import RunRecord
 
 DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
 SWARMSY_REPO = "HODLKONG64/SWARMSY"
 EXTERNAL_REPO = "acme/private-repo"
+DADDY_REPO_NORM = DADDY_REPO.lower()
+SWARMSY_REPO_NORM = SWARMSY_REPO.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -28,30 +32,30 @@ EXTERNAL_REPO = "acme/private-repo"
 
 def test_parse_allowed_target_repos_empty_string_fails_closed_to_daddy():
     repos = _parse_allowed_target_repos("")
-    assert repos == frozenset({DADDY_REPO})
+    assert repos == frozenset({DADDY_REPO_NORM})
 
 
 def test_parse_allowed_target_repos_single_entry():
     repos = _parse_allowed_target_repos(DADDY_REPO)
-    assert DADDY_REPO in repos
+    assert DADDY_REPO_NORM in repos
 
 
 def test_parse_allowed_target_repos_comma_separated():
     repos = _parse_allowed_target_repos(f"{DADDY_REPO},{SWARMSY_REPO}")
-    assert DADDY_REPO in repos
-    assert SWARMSY_REPO in repos
+    assert DADDY_REPO_NORM in repos
+    assert SWARMSY_REPO_NORM in repos
 
 
 def test_parse_allowed_target_repos_whitespace_stripped():
     repos = _parse_allowed_target_repos(f"  {DADDY_REPO} , {SWARMSY_REPO}  ")
-    assert DADDY_REPO in repos
-    assert SWARMSY_REPO in repos
+    assert DADDY_REPO_NORM in repos
+    assert SWARMSY_REPO_NORM in repos
 
 
 def test_parse_allowed_target_repos_ignores_empty_items():
     repos = _parse_allowed_target_repos(f"{DADDY_REPO},,{SWARMSY_REPO},")
-    assert DADDY_REPO in repos
-    assert SWARMSY_REPO in repos
+    assert DADDY_REPO_NORM in repos
+    assert SWARMSY_REPO_NORM in repos
     assert "" not in repos
 
 
@@ -63,13 +67,13 @@ def test_parse_allowed_target_repos_ignores_empty_items():
 def test_settings_default_allowed_target_repos_contains_daddy(monkeypatch):
     monkeypatch.delenv("DADDY_ALLOWED_TARGET_REPOS", raising=False)
     settings = Settings()
-    assert DADDY_REPO in settings.allowed_target_repos
+    assert DADDY_REPO_NORM in settings.allowed_target_repos
 
 
 def test_settings_default_allowed_target_repos_fails_closed(monkeypatch):
     monkeypatch.delenv("DADDY_ALLOWED_TARGET_REPOS", raising=False)
     settings = Settings()
-    assert settings.allowed_target_repos == frozenset({DADDY_REPO})
+    assert settings.allowed_target_repos == frozenset({DADDY_REPO_NORM})
 
 
 def test_settings_swarmsy_auto_merge_defaults_false(monkeypatch):
@@ -87,8 +91,8 @@ def test_settings_swarmsy_auto_merge_enabled_by_env(monkeypatch):
 def test_settings_allowed_repos_read_from_env(monkeypatch):
     monkeypatch.setenv("DADDY_ALLOWED_TARGET_REPOS", f"{DADDY_REPO},{SWARMSY_REPO}")
     settings = Settings()
-    assert DADDY_REPO in settings.allowed_target_repos
-    assert SWARMSY_REPO in settings.allowed_target_repos
+    assert DADDY_REPO_NORM in settings.allowed_target_repos
+    assert SWARMSY_REPO_NORM in settings.allowed_target_repos
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +130,33 @@ def test_guard_blocks_disallowed_repo(tmp_path):
         executor._ensure_target_repo_allowed("push")
 
 
-def test_guard_passes_when_github_repo_is_empty(tmp_path):
+def test_push_blocks_when_github_repo_is_empty(tmp_path, monkeypatch):
     executor = GitBranchExecutor(repo_root=tmp_path, github_token="t", github_repo="")
-    executor._ensure_target_repo_allowed("push")  # no target = no guard needed
+    run_calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(executor, "_run", lambda *args: run_calls.append(args))
+    with pytest.raises(PermissionError, match="GITHUB_REPO is unset"):
+        executor.push("some-branch")
+    assert run_calls == [], "git push subprocess must never be reached when github_repo is empty"
+
+
+def test_guard_normalizes_case_and_whitespace_in_github_repo_and_allowlist(tmp_path):
+    executor = GitBranchExecutor(
+        repo_root=tmp_path,
+        github_token="t",
+        github_repo="  HODLKONG64/They-Call-Me-The-Daddy ",
+        allowed_target_repos=frozenset({"hodlkong64/they-call-me-the-daddy"}),
+    )
+    executor._ensure_target_repo_allowed("push")
+
+
+def test_guard_normalized_mixed_case_allowlist_matches_lowercase_repo(tmp_path):
+    executor = GitBranchExecutor(
+        repo_root=tmp_path,
+        github_token="t",
+        github_repo="hodlkong64/they-call-me-the-daddy",
+        allowed_target_repos=frozenset({"  HODLKONG64/THEY-CALL-ME-THE-DADDY "}),
+    )
+    executor._ensure_target_repo_allowed("create_pull_request")
 
 
 def test_guard_passes_for_swarmsy_when_explicitly_allowlisted(tmp_path):
@@ -190,10 +218,10 @@ def test_create_pr_blocked_for_disallowed_repo_before_api_call(tmp_path, monkeyp
     assert api_calls == [], "no remote API call must be attempted for disallowed repo"
 
 
-def test_create_pr_returns_none_when_github_not_configured(tmp_path):
-    executor = GitBranchExecutor(repo_root=tmp_path, github_token="", github_repo="")
-    result = executor.create_pull_request("branch", "title", "body")
-    assert result is None
+def test_create_pr_blocks_when_github_repo_is_empty(tmp_path):
+    executor = GitBranchExecutor(repo_root=tmp_path, github_token="t", github_repo="")
+    with pytest.raises(PermissionError, match="GITHUB_REPO is unset"):
+        executor.create_pull_request("branch", "title", "body")
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +240,10 @@ def test_merge_pr_blocked_for_disallowed_repo_before_api_call(tmp_path, monkeypa
     assert api_calls == [], "no remote API call must be attempted for disallowed repo"
 
 
-def test_merge_pr_returns_none_when_github_not_configured(tmp_path):
-    executor = GitBranchExecutor(repo_root=tmp_path, github_token="", github_repo="")
-    result = executor.merge_pull_request(1)
-    assert result is None
+def test_merge_pr_blocks_when_github_repo_is_empty(tmp_path):
+    executor = GitBranchExecutor(repo_root=tmp_path, github_token="t", github_repo="")
+    with pytest.raises(PermissionError, match="GITHUB_REPO is unset"):
+        executor.merge_pull_request(1)
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +275,90 @@ def test_daddy_self_repair_create_pr_succeeds(tmp_path, monkeypatch):
     result = executor.create_pull_request("daddy-branch", "fix: test", "body text")
     assert result is not None
     assert result.get("number") == 7
+
+
+# ---------------------------------------------------------------------------
+# DaddyEngine: SWARMSY auto-merge gating
+# ---------------------------------------------------------------------------
+
+
+def _make_engine_with_repo(tmp_path, repo: str, *, swarmsy_auto_merge: bool) -> DaddyEngine:
+    settings = Settings(
+        target_root=tmp_path,
+        command="python -c \"print('ok')\"",
+        github_token="t",
+        github_repo=repo,
+        swarmsy_auto_merge=swarmsy_auto_merge,
+        enable_self_evolution=False,
+        enable_architecture_lane=False,
+    )
+    return DaddyEngine(settings)
+
+
+def _record_for_pr_delivery() -> RunRecord:
+    record = RunRecord(run_id=make_run_id(), command="pytest -q")
+    record.success = True
+    record.patches_applied = [{"path": "src/the_daddy/git_tools.py", "bytes_before": 10, "bytes_after": 20}]
+    return record
+
+
+class _FakeGitTools:
+    def __init__(self) -> None:
+        self.merge_calls: list[dict] = []
+
+    def prepare_branch(self, run_id):
+        return "test-branch"
+
+    def commit_current_branch_changes(self, run_id, files):
+        return "test-branch"
+
+    def create_pull_request(self, **kwargs):
+        return {"number": 123, "html_url": "https://example.test/pr/123"}
+
+    def merge_pull_request(self, **kwargs):
+        self.merge_calls.append(kwargs)
+        return {"merged": True}
+
+
+def test_daddy_repo_auto_merge_path_still_allowed(tmp_path):
+    engine = _make_engine_with_repo(tmp_path, DADDY_REPO, swarmsy_auto_merge=False)
+    fake_git = _FakeGitTools()
+    engine.git_tools = fake_git
+    engine.merge_judge.should_auto_merge = lambda **_kwargs: (True, ["allowed_for_test"])
+
+    record = _record_for_pr_delivery()
+    engine._deliver_patch_via_pr(record, "safe")
+
+    assert len(fake_git.merge_calls) == 1
+
+
+def test_swarmsy_repo_auto_merge_disabled_leaves_pr_open(tmp_path):
+    engine = _make_engine_with_repo(tmp_path, SWARMSY_REPO, swarmsy_auto_merge=False)
+    fake_git = _FakeGitTools()
+    engine.git_tools = fake_git
+    engine.merge_judge.should_auto_merge = lambda **_kwargs: (True, ["allowed_for_test"])
+
+    record = _record_for_pr_delivery()
+    engine._deliver_patch_via_pr(record, "safe")
+
+    assert fake_git.merge_calls == []
+    assert any(
+        event.get("event") == "pr_left_open"
+        and "swarmsy_auto_merge_disabled" in (event.get("reasons") or [])
+        for event in record.trace
+    )
+
+
+def test_swarmsy_repo_auto_merge_enabled_can_merge_when_normal_gates_allow(tmp_path):
+    engine = _make_engine_with_repo(tmp_path, SWARMSY_REPO, swarmsy_auto_merge=True)
+    fake_git = _FakeGitTools()
+    engine.git_tools = fake_git
+    engine.merge_judge.should_auto_merge = lambda **_kwargs: (True, ["allowed_for_test"])
+
+    record = _record_for_pr_delivery()
+    engine._deliver_patch_via_pr(record, "safe")
+
+    assert len(fake_git.merge_calls) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,7 @@ CLI_PROBE_TARGET = "src/the_daddy/cli.py"
 # This alias preserves the name used by tests that import _README_FORBIDDEN_KEYWORDS
 # from this module.
 _README_FORBIDDEN_KEYWORDS: tuple[str, ...] = _POLICY_README_FORBIDDEN_KEYWORDS
+_SWARMSY_REPO_SLUG = "hodlkong64/swarmsy"
 
 # Ordered list of safe helper-lane targets for bounded fallback patches.
 # These must never include README.md, engine.py, or cli.py.
@@ -69,6 +70,10 @@ SAFE_HELPER_LANE_TARGETS = [
 
 def make_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _normalize_repo_slug(value: str) -> str:
+    return str(value or "").strip().lower()
 
 
 class DaddyEngine:
@@ -1025,6 +1030,13 @@ class DaddyEngine:
             )
             return
 
+        target_repo_slug = _normalize_repo_slug(getattr(self.settings, "github_repo", ""))
+        if target_repo_slug == _SWARMSY_REPO_SLUG and not getattr(self.settings, "swarmsy_auto_merge", False):
+            record.trace.append(
+                {"event": "pr_left_open", "pr_number": pr_number, "reasons": ["swarmsy_auto_merge_disabled"]}
+            )
+            return
+
         if not pr_number:
             record.trace.append({"event": "pr_merge_failed", "reason": "missing_pr_number"})
             return
@@ -1471,4 +1483,3 @@ class DaddyEngine:
         return record
 
 DADDY_REPAIR_FALLBACK_MARKER = "20260423T195459Z"
-
