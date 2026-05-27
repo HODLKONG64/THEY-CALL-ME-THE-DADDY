@@ -1,207 +1,72 @@
-# SWARMSY
+# THEY-CALL-ME-THE-DADDY
 
-SWARMSY is an open-source experimental app for swarm coordination, agent-assisted building, community tasks, promotion actions, and self-improving project workflows.
+THEY-CALL-ME-THE-DADDY ("Daddy") is the Doctor/self-repair engine repo.
 
-This repo is the app layer. It is allowed to include experimental self-evolution, architecture planning, automated PR creation, automated merge logic, and internal repair/doctor-style maintenance behaviour.
+It is **not** the SWARMSY app or product runtime.
 
-Read the locked app direction first:
+- **Daddy** = Doctor engine, repair layer, self-maintaining automation
+- **SWARMSY** = separate app/product runtime with its own repo and product docs
+- Daddy may later repair SWARMSY by opening PRs, but only when the target repo is explicitly configured and allowlisted
 
-- [`docs/SWARMSY_APP_DIRECTION.md`](docs/SWARMSY_APP_DIRECTION.md)
+Start here:
 
----
+- [`docs/SWARMSY_DOCTOR_BRIDGE.md`](docs/SWARMSY_DOCTOR_BRIDGE.md)
+- [`docs/TARGET_REPO_SAFETY_CONTRACT.md`](docs/TARGET_REPO_SAFETY_CONTRACT.md)
 
-## What this project is
+## What this repo does
 
-SWARMSY is a test app and open-source build system for agent-powered collaboration.
+Daddy is the engine layer for:
 
-It is intended to help humans and AI agents coordinate around:
+- self-evolution
+- architecture planning
+- bounded patch generation
+- automated PR creation
+- automated merge decisions
+- internal repair and recovery loops
+- run memory and audit trails
 
-- app ideas
-- user tasks
-- community promotion
-- feature proposals
-- documentation improvements
-- repo maintenance
-- swarm-style collaboration
-- live project improvement
+Those capabilities belong to the Doctor engine. They should not be described as proof that this repo is the SWARMSY app layer.
 
-This is not a normal static app repo. The automation layer is part of the experiment.
+## Operating modes
 
----
+### Self-repair mode
 
-## Intentional experimental features
+Self-repair mode targets Daddy itself.
 
-Do not remove these just because they look risky in a normal production app:
+- default target repo: `HODLKONG64/THEY-CALL-ME-THE-DADDY`
+- default target root: this checked-out Daddy repo
+- default allowlist: `HODLKONG64/THEY-CALL-ME-THE-DADDY`
 
-- self-evolution lane
-- architecture lane
-- auto-PR logic
-- auto-merge logic
-- internal repair/doctor behaviour
-- agent-led maintenance
-- test-app autonomy
+This is the safe default for continuous repair, auto-PR, and auto-merge behavior.
 
-These are part of the purpose of SWARMSY.
+### External Doctor mode
 
-The goal is not to make the app passive. The goal is to test a living app that can document, review, repair, and improve itself with clear guardrails.
+Daddy can later act as a Doctor layer for another repo such as SWARMSY, but only with explicit target-repo configuration.
 
----
+External mode requires all of the following:
 
-## Product role
+- `GITHUB_REPO` set to the target repo, for example `HODLKONG64/SWARMSY`
+- `DADDY_TARGET_ROOT` set to an actual checked-out copy of that target repo
+- `DADDY_COMMAND` / validation commands set to the correct verification command for that target repo
+- `DADDY_ALLOWED_TARGET_REPOS` updated to include that target repo
 
-SWARMSY should become the app-facing swarm system.
-
-The app should focus on:
-
-- community coordination
-- live build feedback
-- contributor workflows
-- app improvement tasks
-- promotion missions
-- swarm ideas
-- agent-assisted issue handling
-- public-facing product direction
-
----
-
-## Internal agent role
-
-The repo may contain a built-in doctor/repair concept.
-
-That doctor layer should be treated as an internal maintenance agent inside the SWARMSY app system, not as a separate product identity that takes over the app.
-
-Recommended naming:
-
-- **SWARMSY** = app, product, community, swarm layer
-- **Doctor** = internal repair and maintenance layer
-- **Agent** = task runner, reviewer, planner, or fixer
-- **Contributor** = human or AI helper submitting improvements
-
----
+Until then, Daddy should treat SWARMSY support as planned bridge work, not as an already-enabled runtime path.
 
 ## Guardrails
 
-Even as a test app, SWARMSY should avoid accidental damage.
+- no cross-repo writes unless the target repo is allowlisted
+- PR creation and PR merge are blocked for non-allowlisted repos
+- auto-merge remains a Doctor-engine capability, not a product-app claim
+- validation must run against the currently configured target repo
+- audit trails should clearly show which repo the Doctor is acting on
 
-Required guardrails:
+## Success condition
 
-- no accidental cross-repo writes
-- no secret logging
-- no API key/token storage in memory
-- no destructive shell commands
-- no silent failed deploys
-- visible audit trail for automated actions
-- rollback notes for every automated patch
-- clear target repo naming when automation writes to GitHub
+Daddy is healthy when it can:
 
----
-
-## Patch rules
-
-All automated patches should be:
-
-- small
-- bounded
-- reversible
-- testable
-- non-destructive
-
-Preferred operations:
-
-- append
-- extend
-- safe regex replace
-- targeted file update
-
-Avoid:
-
-- large rewrites without a clear reason
-- unrelated cleanup bundled into feature work
-- fake heartbeat/no-op patches
-- product drift away from SWARMSY
-- changing protected core files without grounded evidence
-
----
-
-## Test rule
-
-Every meaningful patch should run the relevant verification command before being treated as successful.
-
-The current default verification path is Python test based:
-
-```bash
-pytest -q
-```
-
-If the app later adds web/mobile/frontend tooling, document the extra commands here rather than hiding them in agent memory.
-
----
-
-## PR rule
-
-If a patch is valid:
-
-- open a clear PR or commit directly only when explicitly requested
-- include a clear summary
-- include verification details
-- auto-merge only when the configured safety rules allow it
-
-If no patch is valid:
-
-- explain why
-- record the blocker
-- avoid empty deadlock cycles
-- improve the next-run decision path
-
----
-
-## Learning and memory
-
-The app/agent system may keep compact operational memory so it can learn from repeated success and failure.
-
-Memory should store:
-
-- run mode
-- outcome
-- subsystem
-- root cause
-- changed paths
-- tests run
-- blocker reasons
-- next-best action
-- avoid-next-time lessons
-
-Memory must not store:
-
-- secrets
-- API keys
-- tokens
-- full environment dumps
-- unnecessary full file contents
-
----
-
-## Current success condition
-
-SWARMSY is healthy when it can:
-
-- keep app direction visible
-- accept useful community/app changes
-- run safe automated maintenance
-- recover from failed patches
-- avoid deadlocks
-- keep PR flow readable
-- preserve clear audit trails
-- improve without drifting away from the app mission
-
----
-
-## Rule for future agents touching this repo
-
-Before changing anything, ask:
-
-**Does this make the SWARMSY app better as an open-source swarm coordination and agent-powered build system?**
-
-If yes, proceed carefully.
-
-If no, do not add noise.
+- repair itself safely
+- produce bounded, reviewable patches
+- open clear PRs for allowed targets
+- merge only when configured safety rules allow it
+- stay distinct from SWARMSY product identity
+- avoid accidental cross-repo confusion

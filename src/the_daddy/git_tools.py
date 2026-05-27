@@ -9,12 +9,26 @@ import urllib.request
 from pathlib import Path
 from typing import Iterable
 
+from .config import DEFAULT_ALLOWED_TARGET_REPOS
+
+
+def _normalize_allowed_target_repos(allowed_target_repos: Iterable[str] | None) -> tuple[str, ...]:
+    values = tuple(dict.fromkeys(str(repo).strip() for repo in (allowed_target_repos or DEFAULT_ALLOWED_TARGET_REPOS) if str(repo).strip()))
+    return values or DEFAULT_ALLOWED_TARGET_REPOS
+
 
 class GitBranchExecutor:
-    def __init__(self, repo_root: Path | str = ".", github_token: str = "", github_repo: str = "") -> None:
+    def __init__(
+        self,
+        repo_root: Path | str = ".",
+        github_token: str = "",
+        github_repo: str = "",
+        allowed_target_repos: Iterable[str] | None = None,
+    ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.github_token = github_token
         self.github_repo = github_repo
+        self.allowed_target_repos = _normalize_allowed_target_repos(allowed_target_repos)
 
     def _run(self, *args: str) -> str:
         result = subprocess.run(
@@ -44,6 +58,16 @@ class GitBranchExecutor:
         if "/" not in self.github_repo:
             raise RuntimeError(f"Invalid github_repo value: {self.github_repo!r}")
         return self.github_repo.split("/", 1)[0]
+
+    def _ensure_target_repo_allowed(self, action: str) -> None:
+        repo = self.github_repo.strip()
+        if not repo or repo in self.allowed_target_repos:
+            return
+        allowed = ", ".join(self.allowed_target_repos)
+        raise RuntimeError(
+            f"Blocked {action}: GITHUB_REPO {repo!r} is not allowlisted in "
+            f"DADDY_ALLOWED_TARGET_REPOS ({allowed})."
+        )
 
     def _api_request(self, method: str, url: str, payload: dict | None = None) -> dict | list:
         if not self.github_token or not self.github_repo:
@@ -211,6 +235,7 @@ class GitBranchExecutor:
     def create_pull_request(self, branch_name: str, title: str, body: str, base_branch: str = "main") -> dict | None:
         if not self.github_token or not self.github_repo:
             return None
+        self._ensure_target_repo_allowed("PR creation")
 
         url = f"https://api.github.com/repos/{self.github_repo}/pulls"
         payload = {
@@ -237,6 +262,7 @@ class GitBranchExecutor:
     def merge_pull_request(self, pull_number: int, commit_title: str = "auto: daddy merge") -> dict | None:
         if not self.github_token or not self.github_repo:
             return None
+        self._ensure_target_repo_allowed("PR merge")
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
         payload = {"commit_title": commit_title, "merge_method": "squash"}
         response = self._api_request("PUT", url, payload)
