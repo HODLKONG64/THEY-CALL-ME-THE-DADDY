@@ -72,3 +72,24 @@ def summarize_run_velocity(
         "successes": success_count,
         "failures": failure_count,
     }
+
+
+def summarize_mode_distribution(
+    runs: list[dict[str, Any]] | None = None,
+    window: int = 20,
+) -> dict[str, Any]:
+    items = runs or []
+    effective_window = max(1, int(window))
+    sample = items[-effective_window:] if items else []
+    counts: dict[str, int] = {}
+
+    for item in sample:
+        mode = str(item.get("selected_mode", "unknown")).strip() or "unknown"
+        counts[mode] = counts.get(mode, 0) + 1
+
+    return {
+        "sample_size": len(sample),
+        "window": effective_window,
+        "mode_counts": counts,
+        "distinct_modes": len(counts),
+    }
