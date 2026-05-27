@@ -37,8 +37,9 @@ def _archive_path() -> Path:
 
 
 def _queue_source_available(path: Path) -> bool:
-    if os.getenv("DADDY_DOCTOR_ARCHIVE_FILE"):
-        return True
+    configured = os.getenv("DADDY_DOCTOR_ARCHIVE_FILE")
+    if configured:
+        return path.exists()
     return path.exists()
 
 

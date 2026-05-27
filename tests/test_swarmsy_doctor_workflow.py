@@ -23,7 +23,12 @@ from the_daddy.swarmsy_doctor_queue import main as doctor_queue_main
 
 
 class FakeWorker:
-    def __init__(self, initial: DoctorRepairAttempt, follow_up: list[DoctorRepairAttempt] | None = None, merge_result: bool = False):
+    def __init__(
+        self,
+        initial: DoctorRepairAttempt,
+        follow_up: list[DoctorRepairAttempt] | None = None,
+        merge_result: bool = False,
+    ):
         self.initial = initial
         self.follow_up = list(follow_up or [])
         self.merge_result = merge_result
@@ -32,7 +37,12 @@ class FakeWorker:
     def run_initial_repair(self, request: DoctorRequest) -> DoctorRepairAttempt:
         return self.initial
 
-    def apply_review_comment_fixes(self, request: DoctorRequest, actionable_comments: list[DoctorReviewComment], cycle: int) -> DoctorRepairAttempt:
+    def apply_review_comment_fixes(
+        self,
+        request: DoctorRequest,
+        actionable_comments: list[DoctorReviewComment],
+        cycle: int,
+    ) -> DoctorRepairAttempt:
         self.fix_calls += 1
         if self.follow_up:
             return self.follow_up.pop(0)
@@ -286,6 +296,18 @@ def test_queue_cli_reports_missing_hydrated_queue_source(monkeypatch, tmp_path, 
     monkeypatch.delenv("DADDY_DOCTOR_ARCHIVE_FILE", raising=False)
     monkeypatch.delenv("DADDY_ALLOWED_TARGET_REPOS", raising=False)
     monkeypatch.delenv("DADDY_SWARMSY_REVIEW_MAX_CYCLES", raising=False)
+
+    exit_code = doctor_queue_main(["--process-once"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "queue_source_unavailable"
+
+
+def test_queue_cli_reports_missing_archive_file_even_if_env_set(monkeypatch, tmp_path, capsys):
+    missing = tmp_path / "missing-archive.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DADDY_DOCTOR_ARCHIVE_FILE", str(missing))
 
     exit_code = doctor_queue_main(["--process-once"])
     payload = json.loads(capsys.readouterr().out)

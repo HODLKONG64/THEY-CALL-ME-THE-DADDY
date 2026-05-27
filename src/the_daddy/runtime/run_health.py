@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+RECENT_VELOCITY_WINDOW = 10
+
 
 def summarize_run_health(
     runs: list[dict[str, Any]] | None = None,
@@ -46,10 +48,7 @@ def recovery_tick_marker_v2() -> dict[str, Any]:
 
 def summarize_repair_noop_ticks(runs: list[dict] | None = None) -> dict:
     items = runs or []
-    noop_count = sum(
-        1 for r in items
-        if str(r.get("summary", "")).startswith("No safe repair")
-    )
+    noop_count = sum(1 for r in items if str(r.get("summary", "")).startswith("No safe repair"))
     return {
         "noop_repair_count": noop_count,
         "total_runs": len(items),
