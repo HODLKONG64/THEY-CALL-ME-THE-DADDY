@@ -1,23 +1,57 @@
-# THEY-CALL-ME-THE-DADDY (Daddy)
+# THEY CALL ME THE DADDY
 
-**Self-repairing maintenance agent for SWARMSY swarm coordination system.**
+**Self-repairing autonomous development agent for SWARMSY swarm coordination.**
 
-## Overview
-This repo contains the core `the_daddy` Python package - an experimental, failure-driven, autonomous repo maintenance and self-evolution system.
+`the_daddy` is an experimental, failure-driven, multi-agent system designed to diagnose, repair, and evolve its own codebase (and eventually the full swarm). Built with strict safety guards, decision contracts, and phased stability checks.
 
-It is designed to audit, diagnose, repair, and evolve the codebase safely with strict guardrails.
+## Philosophy & Core Features
+- Failure-driven evolution instead of traditional dev cycles
+- Multi-agent architecture (Planner, Reviewer, Diagnoser, Doctor takeover, Depth Learner)
+- Bounded self-patching with risk classification and upgrade gates
+- GitHub auto-PR + merge workflows
+- R2 / Cloudflare memory layer
+- CLI + FastAPI dashboard
+- Phase-based stability (see `phase2_stability_checklist.json` & `decision_contract.json`)
 
-## Quick Links
-- [Full Architecture](/docs/ARCHITECTURE.md)
-- [SWARMSY App Direction](/docs/SWARMSY_APP_DIRECTION.md)
-- [Doctor No-Middleman Flow](/docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md)
-- [Failure Driven Repair Layer](README_FAILURE_DRIVEN_REPAIR_LAYER.md) (move to docs/ pending)
+## Quick Start
+1. Clone & install
+   ```bash
+   git clone https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY.git
+   cd THEY-CALL-ME-THE-DADDY
+   # Recommended: uv sync or pip install -e .
+   ```
+2. Setup environment
+   ```bash
+   cp .env.example .env
+   # Fill your OpenAI key, GitHub token, R2 credentials, etc.
+   ```
+3. Run self-repair
+   ```bash
+   python attempt_real_repair.py
+   ```
+4. Start CLI / dashboard (see `src/the_daddy/cli.py`)
 
-See `/docs/` for detailed design, safety rules, and operational memory.
+## Architecture
+See [`docs/architecture.md`](docs/architecture.md) for full lanes, commit gating, engine details, and agent flow.
 
-## Setup
-1. Copy `.env.example` to `.env` and fill in keys
-2. `uv sync` or `pip install -e .`
-3. Run `the-daddy` CLI or `python -m attempt_real_repair`
+## Failure-Driven Repair Layers
+See [`docs/failure-driven-repair-layer.md`](docs/failure-driven-repair-layer.md) — the core self-healing mechanism.
 
-More details in the docs.
+## OpenAI Upgrade Gate & Safety
+See [`docs/openai-upgrade-gate.md`](docs/openai-upgrade-gate.md) — how the system protects itself during model/LLM changes.
+
+## Additional Documentation
+- [`docs/final-agent-direction.md`](docs/final-agent-direction.md)
+- [`docs/level2-safe.md`](docs/level2-safe.md) (legacy safety notes)
+- [`docs/original-build-fix.md`](docs/original-build-fix.md) (historical context)
+- `system_rules.json`, `decision_contract.json`, `phase2_stability_checklist.json`
+
+## Current Status
+Unfinished hookups (LLM client, R2 memory, full SWARMSY integration) are being prioritized next. Some "wants" are still placeholders/fake — we will replace them systematically.
+
+## Development / Self-Repair
+The system is designed to help *you* improve it. Run `attempt_real_repair.py` or let Daddy take over.
+
+---
+
+**Built with ❤️ for SWARMSY** — they call me the Daddy.
