@@ -190,3 +190,24 @@ def summarize_recent_pressure_persistence(actions: list[dict[str, Any]] | None =
         "related_files": related_files[:10],
         "active": bool(related_files),
     }
+
+
+def summarize_planning_hint_state(actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = actions or []
+    titles = [str(item.get("title", "")).strip() for item in items if str(item.get("title", "")).strip()]
+    notes: list[str] = []
+
+    for item in items:
+        for note in item.get("notes", []) or []:
+            note_text = str(note).strip()
+            if note_text:
+                notes.append(note_text)
+
+    unique_notes = list(dict.fromkeys(notes))
+    return {
+        "title_count": len(titles),
+        "note_count": len(unique_notes),
+        "first_title": titles[0] if titles else "",
+        "first_note": unique_notes[0] if unique_notes else "",
+        "active": bool(titles) or bool(unique_notes),
+    }

@@ -7,17 +7,21 @@ from pathlib import Path
 
 from .swarmsy_doctor import (
     DoctorQueueConsumer,
+    DoctorRequest,
     JsonDoctorArchive,
     NoopDoctorWorker,
     show_recent_daddy_repairs,
 )
+
+DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
+DEFAULT_ARCHIVE_FILE = "doctor_local/swarmsy_repair_archive.json"
 
 
 def _parse_allowed_repos(value: str) -> set[str]:
     repos = {item.strip() for item in str(value or "").split(",") if item.strip()}
     if repos:
         return repos
-    return {"HODLKONG64/THEY-CALL-ME-THE-DADDY", "HODLKONG64/SWARMSY"}
+    return {DADDY_REPO}
 
 
 def _bool_from_env(name: str, default: bool = False) -> bool:
@@ -28,8 +32,28 @@ def _bool_from_env(name: str, default: bool = False) -> bool:
 
 
 def _archive_path() -> Path:
-    raw = os.getenv("DADDY_DOCTOR_ARCHIVE_FILE", "doctor_local/swarmsy_repair_archive.json")
+    raw = os.getenv("DADDY_DOCTOR_ARCHIVE_FILE", DEFAULT_ARCHIVE_FILE)
     return Path(raw).resolve()
+
+
+def _queue_source_available(path: Path) -> bool:
+    if os.getenv("DADDY_DOCTOR_ARCHIVE_FILE"):
+        return True
+    return path.exists()
+
+
+def _parse_max_review_cycles(raw: str, default: int = 3) -> int:
+    try:
+        return max(1, int(str(raw or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _next_queued_request(archive: JsonDoctorArchive) -> DoctorRequest | None:
+    queued = archive.list_queued_requests()
+    if not queued:
+        return None
+    return queued[0]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,20 +75,47 @@ def main(argv: list[str] | None = None) -> int:
 
     allowed_repos = _parse_allowed_repos(os.getenv("DADDY_ALLOWED_TARGET_REPOS", ""))
     auto_merge = _bool_from_env("DADDY_SWARMSY_AUTO_MERGE", default=False)
-    max_cycles = int(os.getenv("DADDY_SWARMSY_REVIEW_MAX_CYCLES", "3"))
+    max_cycles = _parse_max_review_cycles(os.getenv("DADDY_SWARMSY_REVIEW_MAX_CYCLES", "3"))
+
+    if not _queue_source_available(archive.path):
+        print(
+            json.dumps(
+                {
+                    "status": "queue_source_unavailable",
+                    "reason": "No hydrated Doctor queue source is configured for this checkout.",
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    queued_request = _next_queued_request(archive)
+    if queued_request is None:
+        print(json.dumps({"status": "no_queued_requests"}, indent=2))
+        return 0
+
+    worker = NoopDoctorWorker()
+    if isinstance(worker, NoopDoctorWorker):
+        print(
+            json.dumps(
+                {
+                    "status": "worker_unavailable",
+                    "request_id": queued_request.request_id,
+                    "reason": "No real Doctor worker is configured; queued request was left unchanged.",
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     consumer = DoctorQueueConsumer(
         archive=archive,
-        worker=NoopDoctorWorker(),
+        worker=worker,
         allowed_target_repos=allowed_repos,
         swarmsy_auto_merge=auto_merge,
         max_review_cycles=max_cycles,
     )
-    result = consumer.process_next()
-
-    if result is None:
-        print(json.dumps({"status": "no_queued_requests"}, indent=2))
-        return 0
+    result = consumer.process_request(queued_request)
 
     print(json.dumps(result.model_dump(mode="json"), indent=2))
     return 0

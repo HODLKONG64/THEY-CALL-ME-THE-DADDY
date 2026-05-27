@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from the_daddy.config import Settings
@@ -10,11 +11,15 @@ from the_daddy.swarmsy_doctor import (
     DoctorRequest,
     DoctorReviewComment,
     InMemoryDoctorArchive,
+    JsonDoctorArchive,
     SWARMSY_REPO,
+    _extract_feature_hint,
+    _normalize_path,
     classify_review_comment,
     create_doctor_request_from_plain_language,
     show_recent_daddy_repairs,
 )
+from the_daddy.swarmsy_doctor_queue import main as doctor_queue_main
 
 
 class FakeWorker:
@@ -55,7 +60,24 @@ def test_plain_language_request_is_converted_to_structured_doctor_request():
     assert request.repo_target == SWARMSY_REPO
     assert request.archive_id
     assert request.allowed_paths
+    assert "tsconfig.json" in request.allowed_paths
     assert response == "Doctor request queued. You can leave this. I’ll track it in the repair archive."
+
+
+def test_path_normalization_preserves_dotfiles_and_rejects_traversal():
+    assert _normalize_path(".env") == ".env"
+    assert _normalize_path("./src/upload.ts") == "src/upload.ts"
+
+    try:
+        _normalize_path("../../secrets.txt")
+    except ValueError as exc:
+        assert "traversal" in str(exc).lower()
+    else:
+        raise AssertionError("Expected traversal path to be rejected")
+
+
+def test_feature_hint_handles_case_insensitive_marker():
+    assert _extract_feature_hint("Ask Daddy to fix Bug in Upload Modal.") == "Upload Modal"
 
 
 def test_queued_request_is_consumed_and_enters_repair_flow():
@@ -227,3 +249,64 @@ def test_failed_repair_has_terminal_failure_status_not_silent_wait():
     assert result is not None
     assert result.status == "failed_with_reason"
     assert result.status in {"merged", "pr_opened_waiting_review", "blocked_needs_human_permission", "failed_with_reason"}
+
+
+def test_traversal_changed_path_is_blocked_not_normalized_into_scope():
+    archive = InMemoryDoctorArchive()
+    request, _ = create_doctor_request_from_plain_language("Ask Daddy to fix workspace upload bug")
+    archive.upsert_request(request)
+
+    worker = FakeWorker(
+        DoctorRepairAttempt(
+            validation_passed=True,
+            pr_url="https://github.com/HODLKONG64/SWARMSY/pull/7",
+            changed_paths=["../src/upload.ts"],
+        )
+    )
+
+    result = _consumer(archive, worker).process_next()
+
+    assert result is not None
+    assert result.status == "blocked_needs_human_permission"
+    assert "unsafe" in result.final_reason
+
+
+def test_corrupt_json_archive_is_ignored_safely(tmp_path):
+    archive_path = tmp_path / "doctor-archive.json"
+    archive_path.write_text("{not-json", encoding="utf-8")
+
+    archive = JsonDoctorArchive(archive_path)
+
+    assert archive.list_queued_requests() == []
+    assert archive.recent_requests() == []
+
+
+def test_queue_cli_reports_missing_hydrated_queue_source(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DADDY_DOCTOR_ARCHIVE_FILE", raising=False)
+    monkeypatch.delenv("DADDY_ALLOWED_TARGET_REPOS", raising=False)
+    monkeypatch.delenv("DADDY_SWARMSY_REVIEW_MAX_CYCLES", raising=False)
+
+    exit_code = doctor_queue_main(["--process-once"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "queue_source_unavailable"
+
+
+def test_queue_cli_leaves_request_queued_when_only_noop_worker(monkeypatch, tmp_path, capsys):
+    archive_path = tmp_path / "doctor-archive.json"
+    request, _ = create_doctor_request_from_plain_language("Ask Daddy to fix workspace upload bug")
+    JsonDoctorArchive(archive_path).upsert_request(request)
+
+    monkeypatch.setenv("DADDY_DOCTOR_ARCHIVE_FILE", str(archive_path))
+    monkeypatch.setenv("DADDY_SWARMSY_REVIEW_MAX_CYCLES", "not-an-int")
+    monkeypatch.delenv("DADDY_ALLOWED_TARGET_REPOS", raising=False)
+
+    exit_code = doctor_queue_main(["--process-once"])
+    payload = json.loads(capsys.readouterr().out)
+    stored = JsonDoctorArchive(archive_path).recent_requests(limit=1)[0]
+
+    assert exit_code == 0
+    assert payload["status"] == "worker_unavailable"
+    assert stored.status == "queued"

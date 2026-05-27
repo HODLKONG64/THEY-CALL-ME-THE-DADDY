@@ -45,10 +45,10 @@
 
 ## Queue poller workflow
 
-Daddy includes `.github/workflows/swarmsy-doctor-queue.yml` with:
+Daddy includes `.github/workflows/swarmsy-doctor-queue.yml` as a manual operator entrypoint.
 
-- schedule (every 30 minutes)
-- manual dispatch
-- safe issue label trigger (`doctor-request-queued`)
+- current trigger: manual dispatch only
+- scheduled/issue-label polling stays disabled until a real remote queue source is wired in
+- current behavior is truthful: if no hydrated queue source is configured, the CLI reports that condition and leaves queued requests unchanged
 
-It processes one queued request at a time and prints recent archived repairs.
+It attempts one queued request at a time from a configured archive source and prints recent archived repairs.

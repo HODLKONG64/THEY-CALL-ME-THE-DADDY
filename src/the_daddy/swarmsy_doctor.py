@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,15 +35,29 @@ def utc_now_iso() -> str:
 
 
 def _normalize_path(path: str) -> str:
-    value = str(path or "").replace("\\", "/").strip().lstrip("./")
+    value = str(path or "").replace("\\", "/").strip()
     while "//" in value:
         value = value.replace("//", "/")
-    return value
+    if value.startswith("./"):
+        value = value[2:]
+    if not value:
+        return ""
+    if value.startswith("/") or (len(value) >= 3 and value[1] == ":" and value[2] == "/"):
+        raise ValueError(f"Absolute paths are not allowed: {path}")
+
+    parts: list[str] = []
+    for part in value.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            raise ValueError(f"Parent-directory traversal is not allowed: {path}")
+        parts.append(part)
+    return "/".join(parts)
 
 
 def default_allowed_paths_for_repo(target_repo: str) -> list[str]:
     if target_repo == SWARMSY_REPO:
-        return ["src/", "app/", "components/", "lib/", "tests/", "docs/", "package.json", "package-lock.json", "tsconfig"]
+        return ["src/", "app/", "components/", "lib/", "tests/", "docs/", "package.json", "package-lock.json", "tsconfig.json"]
     return ["src/", "tests/", "docs/", "pyproject.toml", "README.md"]
 
 
@@ -59,10 +74,12 @@ def _extract_problem_summary(command: str) -> str:
 
 
 def _extract_feature_hint(command: str) -> str:
-    lowered = str(command or "").lower()
+    text = str(command or "")
+    lowered = text.lower()
     for marker in ("bug in", "issue in", "on page", "in screen", "in feature"):
-        if marker in lowered:
-            return str(command).split(marker, 1)[-1].strip(" .!:\n")
+        start = lowered.find(marker)
+        if start >= 0:
+            return text[start + len(marker) :].strip(" .!:\n")
     return ""
 
 
@@ -149,7 +166,11 @@ class JsonDoctorArchive:
     def _load(self) -> list[DoctorRequest]:
         if not self.path.exists():
             return []
-        raw = json.loads(self.path.read_text(encoding="utf-8") or "[]")
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8") or "[]")
+        except json.JSONDecodeError as exc:
+            print(f"Warning: ignoring corrupt Doctor archive {self.path}: {exc}", file=sys.stderr)
+            return []
         if not isinstance(raw, list):
             return []
         out: list[DoctorRequest] = []
@@ -257,14 +278,23 @@ def create_doctor_request_from_plain_language(
 
 
 def _is_secret_path(path: str) -> bool:
-    norm = _normalize_path(path).lower()
+    try:
+        norm = _normalize_path(path).lower()
+    except ValueError:
+        return False
     return any(marker in norm for marker in _SECRET_PATH_MARKERS)
 
 
 def _path_within_allowlist(path: str, allowed_paths: list[str]) -> bool:
-    norm = _normalize_path(path).lower()
+    try:
+        norm = _normalize_path(path).lower()
+    except ValueError:
+        return False
     for allow in allowed_paths:
-        candidate = _normalize_path(allow).lower()
+        try:
+            candidate = _normalize_path(allow).lower()
+        except ValueError:
+            continue
         if not candidate:
             continue
         if norm == candidate or norm.startswith(candidate.rstrip("/") + "/"):
@@ -334,6 +364,10 @@ class DoctorQueueConsumer:
         if not request.allowed_paths:
             return False, "No allowed paths provided."
         for path in request.allowed_paths:
+            try:
+                _normalize_path(path)
+            except ValueError:
+                return False, f"Allowed path is unsafe: {path}"
             if _is_secret_path(path):
                 return False, f"Allowed path is unsafe: {path}"
         return True, ""
@@ -342,6 +376,10 @@ class DoctorQueueConsumer:
         if attempt.destructive_change:
             return False, "Destructive change flagged by worker."
         for changed in attempt.changed_paths:
+            try:
+                _normalize_path(changed)
+            except ValueError:
+                return False, f"Changed path is unsafe: {changed}"
             if _is_secret_path(changed):
                 return False, f"Secret file path touched: {changed}"
             if not _path_within_allowlist(changed, request.allowed_paths):
