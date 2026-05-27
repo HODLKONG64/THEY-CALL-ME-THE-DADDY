@@ -97,6 +97,33 @@ Required guardrails:
 
 ---
 
+## Target-repo safety guards
+
+Daddy self-repair is the **default mode**: Daddy targets only `HODLKONG64/THEY-CALL-ME-THE-DADDY` unless
+the allowlist is explicitly extended.
+
+Cross-repo branch push, PR creation, and PR merge are **blocked** unless the target repo is in
+`DADDY_ALLOWED_TARGET_REPOS`.  The guard runs before every `git push`, before every PR creation,
+and before every PR merge — not only at the PR layer.
+If `GITHUB_REPO` is unset, these write actions fail closed before any git/network write occurs.
+
+External SWARMSY Doctor mode is **explicit and opt-in**:
+
+```bash
+DADDY_ALLOWED_TARGET_REPOS=HODLKONG64/THEY-CALL-ME-THE-DADDY,HODLKONG64/SWARMSY
+GITHUB_REPO=HODLKONG64/SWARMSY
+DADDY_TARGET_ROOT=/path/to/SWARMSY
+```
+
+SWARMSY auto-merge is **off by default** (`DADDY_SWARMSY_AUTO_MERGE=false`).  In external SWARMSY
+Doctor mode Daddy opens PRs only; set `DADDY_SWARMSY_AUTO_MERGE=true` to enable auto-merge after
+all safety gates pass.
+
+See [`docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md`](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) for the full
+no-middleman queue flow that governs SWARMSY Doctor requests.
+
+---
+
 ## Patch rules
 
 All automated patches should be:

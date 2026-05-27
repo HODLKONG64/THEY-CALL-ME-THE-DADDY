@@ -10,6 +10,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
+_DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
+
+
+def _normalize_repo_slug(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _parse_allowed_target_repos(value: str) -> frozenset[str]:
+    """Parse DADDY_ALLOWED_TARGET_REPOS; fail-closed to Daddy-only when empty/unset."""
+    repos = {_normalize_repo_slug(item) for item in str(value or "").split(",") if str(item).strip()}
+    return frozenset(repos) if repos else frozenset({_normalize_repo_slug(_DADDY_REPO)})
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
@@ -25,6 +37,14 @@ class Settings(BaseSettings):
     # GitHub / PR lane
     github_token: str = Field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
     github_repo: str = Field(default_factory=lambda: os.getenv("GITHUB_REPO", ""))  # owner/repo
+
+    # Target-repo safety
+    allowed_target_repos: frozenset[str] = Field(
+        default_factory=lambda: _parse_allowed_target_repos(os.getenv("DADDY_ALLOWED_TARGET_REPOS", ""))
+    )
+    swarmsy_auto_merge: bool = Field(
+        default_factory=lambda: os.getenv("DADDY_SWARMSY_AUTO_MERGE", "false").lower() == "true"
+    )
 
     # Runtime
     command: str = Field(default_factory=lambda: os.getenv("DADDY_COMMAND", "pytest -q"))

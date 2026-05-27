@@ -9,12 +9,32 @@ import urllib.request
 from pathlib import Path
 from typing import Iterable
 
+_DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
+_DEFAULT_ALLOWED_TARGET_REPOS: frozenset[str] = frozenset({_DADDY_REPO})
+
+
+def _normalize_repo_slug(value: str) -> str:
+    return str(value or "").strip().lower()
+
 
 class GitBranchExecutor:
-    def __init__(self, repo_root: Path | str = ".", github_token: str = "", github_repo: str = "") -> None:
+    def __init__(
+        self,
+        repo_root: Path | str = ".",
+        github_token: str = "",
+        github_repo: str = "",
+        allowed_target_repos: frozenset[str] | None = None,
+    ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.github_token = github_token
-        self.github_repo = github_repo
+        self.github_repo = str(github_repo or "").strip()
+        self._normalized_github_repo = _normalize_repo_slug(self.github_repo)
+        configured_allowed = allowed_target_repos if allowed_target_repos is not None else _DEFAULT_ALLOWED_TARGET_REPOS
+        cleaned_allowed = frozenset(str(repo or "").strip() for repo in configured_allowed if str(repo or "").strip())
+        self.allowed_target_repos: frozenset[str] = cleaned_allowed or _DEFAULT_ALLOWED_TARGET_REPOS
+        self._normalized_allowed_target_repos: frozenset[str] = frozenset(
+            _normalize_repo_slug(repo) for repo in self.allowed_target_repos
+        )
 
     def _run(self, *args: str) -> str:
         result = subprocess.run(
@@ -44,6 +64,20 @@ class GitBranchExecutor:
         if "/" not in self.github_repo:
             raise RuntimeError(f"Invalid github_repo value: {self.github_repo!r}")
         return self.github_repo.split("/", 1)[0]
+
+    def _ensure_target_repo_allowed(self, action: str) -> None:
+        """Block any write action when github_repo is not in the allowlist."""
+        if not self._normalized_github_repo:
+            raise PermissionError(
+                f"Blocked {action}: GITHUB_REPO is unset; refusing git/network write."
+            )
+
+        if self._normalized_github_repo not in self._normalized_allowed_target_repos:
+            raise PermissionError(
+                f"Target repo '{self.github_repo}' is not in the allowed target repos allowlist. "
+                f"Action '{action}' blocked. "
+                f"Set DADDY_ALLOWED_TARGET_REPOS to include this repo."
+            )
 
     def _api_request(self, method: str, url: str, payload: dict | None = None) -> dict | list:
         if not self.github_token or not self.github_repo:
@@ -154,6 +188,7 @@ class GitBranchExecutor:
         return True
 
     def push(self, branch_name: str) -> None:
+        self._ensure_target_repo_allowed("push")
         self._run("push", "-u", "origin", branch_name)
 
     def branch_for_architecture_run(self, run_id: str) -> str:
@@ -209,7 +244,8 @@ class GitBranchExecutor:
         return None
 
     def create_pull_request(self, branch_name: str, title: str, body: str, base_branch: str = "main") -> dict | None:
-        if not self.github_token or not self.github_repo:
+        self._ensure_target_repo_allowed("create_pull_request")
+        if not self.github_token:
             return None
 
         url = f"https://api.github.com/repos/{self.github_repo}/pulls"
@@ -235,7 +271,8 @@ class GitBranchExecutor:
             raise
 
     def merge_pull_request(self, pull_number: int, commit_title: str = "auto: daddy merge") -> dict | None:
-        if not self.github_token or not self.github_repo:
+        self._ensure_target_repo_allowed("merge_pull_request")
+        if not self.github_token:
             return None
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
         payload = {"commit_title": commit_title, "merge_method": "squash"}
