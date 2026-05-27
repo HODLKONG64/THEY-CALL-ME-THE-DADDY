@@ -13,6 +13,12 @@
 - CLI + FastAPI dashboard
 - Phase-based stability (see `phase2_stability_checklist.json` & `decision_contract.json`)
 
+## Safety & Target Repo Configuration
+Daddy has strong built-in safety guards:
+- `DADDY_ALLOWED_TARGET_REPOS` controls which repositories Daddy can push/PR/merge to (defaults to self-repair on this repo only)
+- `DADDY_SWARMSY_AUTO_MERGE` controls auto-merge behavior in SWARMSY external mode (defaults to `false` — opens PRs only)
+- See [`docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md`](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) for the full no-middleman queue flow and doctor mode details.
+
 ## Quick Start
 1. Clone & install
    ```bash
