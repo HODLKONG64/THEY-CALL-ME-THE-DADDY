@@ -35,3 +35,30 @@ If any of those steps are missing, Daddy should remain in Daddy-only self-repair
 2. keep SWARMSY product docs in the SWARMSY repo
 3. enable SWARMSY Doctor mode only after explicit allowlisting
 4. prefer dry runs before any automatic SWARMSY PR or merge path
+
+## Doctor request queue handoff (v1)
+
+When SWARMSY needs Doctor help but Daddy is busy/no response, SWARMSY should queue a Doctor Request and continue local handling.
+
+- Preferred v1 queue: GitHub issue in `HODLKONG64/THEY-CALL-ME-THE-DADDY`
+- Required labels: `doctor-request`, `target:swarmsy`
+- SWARMSY should record the request id, queue URL, and status `waiting_for_doctor`
+
+See `docs/SWARMSY_DOCTOR_REQUEST_QUEUE.md` for schema and status transitions.
+
+## Full handoff flow
+
+1. SWARMSY detects a fix need.
+2. SWARMSY attempts normal local/app-side repair first.
+3. If Daddy is unavailable/busy, SWARMSY queues a Doctor Request.
+4. Daddy self-repair flow continues independently.
+5. Daddy later enters explicit SWARMSY Doctor mode (manual/scheduled/dispatch).
+6. Daddy validates allowlist + target root + SWARMSY validation command + safe path scope.
+7. Daddy pushes a SWARMSY branch, patches, validates, and opens a PR.
+8. Daddy updates the Doctor Request with branch/PR/results and final status.
+
+## SWARMSY auto-merge policy
+
+- Default: **off** (`DADDY_SWARMSY_AUTO_MERGE=false`)
+- Enabled only with explicit opt-in and successful SWARMSY validation
+- Daddy must never silently auto-merge external repos by default

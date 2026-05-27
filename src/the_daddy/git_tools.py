@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 from typing import Iterable
 
-from .config import DEFAULT_ALLOWED_TARGET_REPOS
+from .config import DADDY_REPO, DEFAULT_ALLOWED_TARGET_REPOS
 
 
 def _normalize_allowed_target_repos(allowed_target_repos: Iterable[str] | None) -> tuple[str, ...]:
@@ -61,7 +61,7 @@ class GitBranchExecutor:
 
     def _ensure_target_repo_allowed(self, action: str) -> None:
         repo = self.github_repo.strip()
-        if not repo or repo in self.allowed_target_repos:
+        if not repo or repo == DADDY_REPO or repo in self.allowed_target_repos:
             return
         allowed = ", ".join(self.allowed_target_repos)
         raise RuntimeError(
@@ -178,6 +178,7 @@ class GitBranchExecutor:
         return True
 
     def push(self, branch_name: str) -> None:
+        self._ensure_target_repo_allowed("git push")
         self._run("push", "-u", "origin", branch_name)
 
     def branch_for_architecture_run(self, run_id: str) -> str:

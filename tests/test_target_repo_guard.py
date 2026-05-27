@@ -33,6 +33,43 @@ def test_disallowed_github_repo_blocks_pr_creation(tmp_path: Path, monkeypatch):
         executor.create_pull_request("branch", "title", "body")
 
 
+def test_disallowed_github_repo_blocks_push_before_network_write(tmp_path: Path, monkeypatch):
+    executor = GitBranchExecutor(
+        repo_root=tmp_path,
+        github_token="token",
+        github_repo="HODLKONG64/SWARMSY",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_run(*args: str):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(executor, "_run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="not allowlisted"):
+        executor.push("branch")
+    assert calls == []
+
+
+def test_default_self_repair_repo_can_push(tmp_path: Path, monkeypatch):
+    executor = GitBranchExecutor(
+        repo_root=tmp_path,
+        github_token="token",
+        github_repo="HODLKONG64/THEY-CALL-ME-THE-DADDY",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_run(*args: str):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(executor, "_run", _fake_run)
+
+    executor.push("branch")
+    assert calls == [("push", "-u", "origin", "branch")]
+
+
 def test_disallowed_github_repo_blocks_pr_merge(tmp_path: Path, monkeypatch):
     executor = GitBranchExecutor(
         repo_root=tmp_path,
@@ -74,3 +111,25 @@ def test_allowlisted_swarmsy_target_is_accepted_when_explicitly_configured(tmp_p
     assert result == {"number": 1, "html_url": "https://example.test/pull/1"}
     assert calls[0][0] == "POST"
     assert calls[0][1].endswith("/repos/HODLKONG64/SWARMSY/pulls")
+
+
+def test_allowlisted_swarmsy_target_can_push_when_explicitly_configured(tmp_path: Path, monkeypatch):
+    executor = GitBranchExecutor(
+        repo_root=tmp_path,
+        github_token="token",
+        github_repo="HODLKONG64/SWARMSY",
+        allowed_target_repos=[
+            "HODLKONG64/THEY-CALL-ME-THE-DADDY",
+            "HODLKONG64/SWARMSY",
+        ],
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def _fake_run(*args: str):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(executor, "_run", _fake_run)
+
+    executor.push("branch")
+    assert calls == [("push", "-u", "origin", "branch")]

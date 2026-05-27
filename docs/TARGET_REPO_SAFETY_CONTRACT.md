@@ -11,7 +11,7 @@ The default mode targets Daddy only.
 - `DADDY_COMMAND` uses the Daddy validation command
 - `DADDY_ALLOWED_TARGET_REPOS=HODLKONG64/THEY-CALL-ME-THE-DADDY`
 
-This is the only allowlisted target by default.
+This is the only allowlisted target by default, and Daddy self-repair remains allowed in this mode.
 
 ## External Doctor mode
 
@@ -25,13 +25,16 @@ For a future SWARMSY target, all of the following must be set:
 - `DADDY_MAINTENANCE_COMMAND=<SWARMSY maintenance validation command>`
 - `DADDY_ALLOWED_TARGET_REPOS=HODLKONG64/THEY-CALL-ME-THE-DADDY,HODLKONG64/SWARMSY`
 
-If SWARMSY is not in the allowlist, Daddy must not create or merge SWARMSY PRs.
+If SWARMSY is not in the allowlist, Daddy must not push branches, create PRs, or merge SWARMSY PRs.
 
 ## Enforcement
 
 - no cross-repo writes unless the target repo is allowlisted
+- self-repair to `HODLKONG64/THEY-CALL-ME-THE-DADDY` is always allowed by default
+- `git push` is blocked when `GITHUB_REPO` is not in `DADDY_ALLOWED_TARGET_REPOS`
 - PR creation is blocked when `GITHUB_REPO` is not in `DADDY_ALLOWED_TARGET_REPOS`
 - PR merge is blocked when `GITHUB_REPO` is not in `DADDY_ALLOWED_TARGET_REPOS`
+- SWARMSY external mode defaults to PR-only (`DADDY_SWARMSY_AUTO_MERGE=false`)
 - adding a repo to the allowlist is an explicit opt-in, not an automatic discovery step
 
 This contract keeps self-repair mode scoped to Daddy and prevents SWARMSY/Daddy repo confusion.

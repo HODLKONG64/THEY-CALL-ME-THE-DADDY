@@ -11,7 +11,7 @@ from .agents.diagnoser import Diagnoser
 from .agents.doctor_executor import DoctorExecutor
 from .agents.improvement_planner import ImprovementPlanner
 from .agents.reviewer import WakeReviewer
-from .config import Settings, get_settings
+from .config import SWARMSY_REPO, Settings, get_settings
 from .core.failure_recovery import (
     recent_failed_runs,
     restore_from_rollback_manifest,
@@ -1010,6 +1010,12 @@ class DaddyEngine:
             review_risk=getattr(getattr(record, "architecture_review", None), "risk_level", ""),
             readme_patch_forbidden=readme_only_forbidden,
         )
+        if should_merge and self.settings.github_repo.strip() == SWARMSY_REPO and not self.settings.swarmsy_auto_merge:
+            should_merge = False
+            reasons = [
+                *reasons,
+                "SWARMSY auto-merge disabled by default; set DADDY_SWARMSY_AUTO_MERGE=true to enable.",
+            ]
 
         record.trace.append(
             {

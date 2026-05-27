@@ -10,7 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
-DEFAULT_ALLOWED_TARGET_REPOS = ("HODLKONG64/THEY-CALL-ME-THE-DADDY",)
+DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
+SWARMSY_REPO = "HODLKONG64/SWARMSY"
+DEFAULT_ALLOWED_TARGET_REPOS = (DADDY_REPO,)
 
 
 def _parse_allowed_target_repos() -> list[str]:
@@ -36,6 +38,9 @@ class Settings(BaseSettings):
     github_token: str = Field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
     github_repo: str = Field(default_factory=lambda: os.getenv("GITHUB_REPO", ""))  # owner/repo
     allowed_target_repos: list[str] = Field(default_factory=_parse_allowed_target_repos)
+    swarmsy_auto_merge: bool = Field(
+        default_factory=lambda: os.getenv("DADDY_SWARMSY_AUTO_MERGE", "false").lower() == "true"
+    )
 
     # Runtime
     command: str = Field(default_factory=lambda: os.getenv("DADDY_COMMAND", "pytest -q"))
