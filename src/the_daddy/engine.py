@@ -92,6 +92,7 @@ class DaddyEngine:
             repo_root=self.settings.target_root,
             github_token=self.settings.github_token,
             github_repo=self.settings.github_repo,
+            allowed_target_repos=self.settings.allowed_target_repos,
         )
 
     def repo_fingerprint(self):
