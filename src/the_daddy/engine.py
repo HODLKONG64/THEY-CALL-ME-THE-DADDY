@@ -1483,3 +1483,21 @@ class DaddyEngine:
         return record
 
 DADDY_REPAIR_FALLBACK_MARKER = "20260423T195459Z"
+
+
+# wake-review append: sanitized ledger error helper
+try:
+    from the_daddy.runtime.redaction import redact_text as _wake_review_redact_text
+except Exception:  # pragma: no cover
+    _wake_review_redact_text = None
+
+
+def _wake_review_sanitize_error_text(message: object) -> str:
+    text = str(message)
+    if _wake_review_redact_text is None:
+        return text.replace("sk-", "[redacted]-") if "sk-" in text else text
+    try:
+        redacted = _wake_review_redact_text(text)
+        return str(redacted)
+    except Exception:
+        return text.replace("sk-", "[redacted]-") if "sk-" in text else text
