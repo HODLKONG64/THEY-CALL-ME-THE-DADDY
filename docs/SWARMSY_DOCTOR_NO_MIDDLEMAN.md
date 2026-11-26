@@ -20,7 +20,7 @@ Use a Linux host with Python 3.11+, Git and Docker. Keep the archive on a persis
 | Setting | Purpose |
 | --- | --- |
 | `OPENAI_API_KEY` | Access to the configured repair and review models. |
-| `GITHUB_TOKEN` | GitHub user token with target repo contents and pull request write access, and checks and commit statuses read access. Use a Codex-connected account and keep the token subject to the target branch's protections. |
+| `GITHUB_TOKEN` | GitHub user token with target repo contents and pull request write access, and checks and commit statuses read access. Use a Codex-connected account subject to branch protections. Require up-to-date checks on the production branch before enabling automatic merge. |
 | `GITHUB_REPO` | One target per worker. Configure the Codex GitHub integration on this repository. |
 | `DADDY_ALLOWED_TARGET_REPOS` | Comma-separated repo allowlist. Defaults to Daddy only. |
 | `DADDY_DOCTOR_ARCHIVE_FILE` | Shared local JSON archive path. Defaults to `doctor_local/swarmsy_repair_archive.json`. |

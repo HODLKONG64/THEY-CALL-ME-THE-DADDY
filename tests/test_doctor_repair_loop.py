@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from the_daddy.config import Settings
-from the_daddy.doctor_repair import DoctorWorkspace
+from the_daddy.doctor_repair import DoctorWorkspace, RepairLoop
 from the_daddy.doctor_worker import CODEX_BOT, GitHubDoctorWorker
 from the_daddy.swarmsy_doctor import DoctorEdit, DoctorRequest, JsonDoctorArchive
 from the_daddy.swarmsy_doctor_queue import main
@@ -222,13 +222,17 @@ def test_queue_restarts_uses_fixes_and_merges_only_reviewed_head(tmp_path, monke
     assert parse_cli(capsys, "--process-once")["status"] == "pr_opened_waiting_review"
     assert not github.merge_calls
     summary["code_review"].update(status="completed", has_any_findings=False, has_unresolved_findings=False)
-    github.issue_comments[0]["body"] = f"<!-- codex-review-state:v1 {json.dumps(summary)} -->"
+    github.issue_comments[0].update(body=f"<!-- codex-review-state:v1 {json.dumps(summary)} -->", updated_at="2026-11-26T22:00:02Z")
+    rejected_review = {"id": 3, "user": BOT, "state": "CHANGES_REQUESTED", "commit_id": second_head,
+                       "submitted_at": "2026-11-26T22:00:01Z"}
+    github.reviews.append(rejected_review)
     assert parse_cli(capsys, "--process-once")["status"] == "pr_opened_waiting_review"
     assert not github.merge_calls
-    github.reviews.extend([
-        {"id": 4, "user": BOT, "state": "APPROVED", "commit_id": second_head, "submitted_at": "2026-11-26T22:00:02Z"},
-        {"id": 3, "user": BOT, "state": "CHANGES_REQUESTED", "commit_id": second_head, "submitted_at": "2026-11-26T22:00:01Z"},
-    ])
+    assert JsonDoctorArchive(path).recent_requests()[0].review_cycles == 1
+    github.reviews[-1:] = [
+        {"id": 4, "user": BOT, "state": "APPROVED", "commit_id": second_head, "submitted_at": "2026-11-26T22:00:03Z"},
+        rejected_review,
+    ]
     summary["code_review"].update(has_any_findings=True, has_unresolved_findings=True)
     github.issue_comments[0].update(body=f"<!-- codex-review-state:v1 {json.dumps(summary)} -->", updated_at="2026-11-26T22:00:01Z")
     github.ci_success = True
@@ -241,7 +245,7 @@ def test_queue_restarts_uses_fixes_and_merges_only_reviewed_head(tmp_path, monke
     assert parse_cli(capsys, "--process-once")["deployment_status"] == "pending"
     github.deploy_runs.append({"id": 12, "head_sha": github.merge_sha, "event": "push", "head_branch": "main",
                                "status": "completed", "conclusion": "success"})
-    github.deploy_jobs = [{"name": "Cloudflare deploy", "conclusion": "success"}]
+    github.deploy_jobs = [{"name": "deploy / Cloudflare deploy", "conclusion": "success"}]
     deployed = parse_cli(capsys, "--process-once")
     assert deployed["deployment_status"] == "deployed"
     assert deployed["deployment_url"].endswith("/actions/runs/12")
@@ -292,3 +296,30 @@ def test_candidate_file_limit_applies_across_batches_and_replays(tmp_path, local
     workspace.reset()
     workspace.apply(request, [*first, *second[:2]])
     assert workspace.diff() == original_diff
+
+
+def test_replay_limit_counts_paths_reverted_between_api_batches(monkeypatch, local_repo):
+    monkeypatch.setattr("the_daddy.doctor_repair.MAX_CHANGED_FILES", 2)
+    settings = Settings(github_repo=REPO, max_attempts=5, openai_api_key="")
+    request = DoctorRequest(problem_summary="Fix answer", repo_target=REPO, source="daddy", allowed_paths=["src/"])
+    workspace = DoctorWorkspace(local_repo, settings)
+    loop = RepairLoop(settings, lambda _root: (True, "tests passed"), lambda _request: None)
+    patches = iter([
+        [{"path": "src/example.py", "old": "answer = 0", "new": "answer = 1"},
+         {"path": "src/additional.py", "old": "", "new": "value = 2\n"}],
+        [{"path": "src/example.py", "old": "answer = 1", "new": "answer = 0"}],
+        [{"path": "src/third.py", "old": "", "new": "value = 3\n"}],
+        [{"path": "src/example.py", "old": "answer = 0", "new": "answer = 2"}],
+    ])
+
+    def decision(*, prompt, **_kwargs):
+        evidence = json.loads(prompt)
+        edits = next(patches, None)
+        if edits is None:
+            return {"verdict": "approved", "candidate_digest": evidence["candidate_digest"], "reason": "Fixed", "edits": []}
+        return {"verdict": "patch", "candidate_digest": "", "reason": "Fix", "edits": edits}
+
+    loop.api.generate_json = decision
+    final_edits, _ = loop.run(workspace, request, [], [])
+    assert final_edits == [DoctorEdit(path="src/example.py", old="answer = 0", new="answer = 2")]
+    assert any(item["event"] == "patch_rejected" and "replayable files" in item["detail"] for item in request.repair_log)

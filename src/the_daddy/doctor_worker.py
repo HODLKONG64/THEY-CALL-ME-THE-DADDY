@@ -268,7 +268,8 @@ class GitHubDoctorWorker:
             and review.get("state") in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}
         ]
         marker = f"DOCTOR_REVIEW_APPROVED {head}"
-        approved = None
+        decisive = None
+        findings: list[DoctorReviewComment] = []
         for review in sorted(completed, key=lambda item: (item.get("submitted_at") or "", int(item["id"])), reverse=True):
             inline = [
                 DoctorReviewComment(comment_id=str(item["id"]), author=CODEX_BOT,
@@ -278,10 +279,9 @@ class GitHubDoctorWorker:
             body = str(review.get("body") or "").strip()
             if review["state"] == "CHANGES_REQUESTED":
                 inline.append(DoctorReviewComment(author=CODEX_BOT, body=f"Codex requested changes: {body}"))
-            if inline:
-                return "changes_requested", inline
-            if review["state"] == "APPROVED" or marker in body.splitlines():
-                approved = review
+            if inline or review["state"] == "APPROVED" or marker in body.splitlines():
+                decisive = review
+                findings = inline
                 break
         # The live integration publishes a commit-bound summary even when it
         # reports no findings through a PR-wide reaction instead of a review.
@@ -290,14 +290,17 @@ class GitHubDoctorWorker:
             summary = codex_summary(item, head)
             if summary is None:
                 continue
-            if approved and (approved.get("submitted_at") or "") > (item.get("updated_at") or ""):
+            reviewed_at = (decisive or {}).get("submitted_at") or ""
+            summarized_at = item.get("updated_at") or ""
+            clean = (summary.get("status") == "completed" and summary.get("has_any_findings") is False
+                     and summary.get("has_unresolved_findings") is False)
+            if clean and (not findings or summarized_at > reviewed_at):
                 return "approved", []
-            if (summary.get("status") == "completed" and summary.get("has_any_findings") is False
-                    and summary.get("has_unresolved_findings") is False):
-                return "approved", []
+            if decisive and (reviewed_at > summarized_at or findings and summary.get("status") == "completed"):
+                break
             return "pending", []
-        if approved:
-            return "approved", []
+        if decisive:
+            return ("changes_requested", findings) if findings else ("approved", [])
         # The GitHub integration can mark a clean review with a reaction. Only a
         # reaction on Doctor's commit-specific request can identify the commit.
         reactions = self._list(f"issues/comments/{request.review_request_id}/reactions")
@@ -400,9 +403,11 @@ class GitHubDoctorWorker:
                 request.deployment_url = f"https://github.com/{self.git.github_repo}/actions/runs/{run_id}"
                 if run.get("status") == "completed":
                     jobs = self._list(f"actions/runs/{run_id}/jobs?filter=latest", list_key="jobs")
-                    deployed = run.get("conclusion") == "success" and any(
-                        job.get("name") == request.deployment_job and job.get("conclusion") == "success" for job in jobs
-                    )
+                    matches = [job for job in jobs if job.get("name") == request.deployment_job]
+                    if not matches:
+                        matches = [job for job in jobs if str(job.get("name", "")).rsplit(" / ", 1)[-1] == request.deployment_job]
+                    deployed = (run.get("conclusion") == "success" and len(matches) == 1
+                                and matches[0].get("conclusion") == "success")
                     request.deployment_status = "deployed" if deployed else "failed"
                     request.deployment_reason = (
                         "Cloudflare deployment job passed for the merged commit." if deployed

@@ -198,7 +198,7 @@ class DoctorWorkspace:
 
     def reset(self) -> None:
         self.git("reset", "--hard", "HEAD")
-        self.git("clean", "-ffd")
+        self.git("clean", "-ffdx")
 
     def commit(self, reference: str) -> str:
         self.git("-c", "user.name=Doctor", "-c", "user.email=doctor@users.noreply.github.com",
@@ -337,8 +337,11 @@ class RepairLoop:
             if attempt == budget:
                 break
             try:
-                if len(edits) + len(decision.edits) > 20:
+                replay = [*edits, *decision.edits]
+                if len(replay) > 20:
                     raise ValueError("Consolidate the correction into at most 20 edits.")
+                if len({edit.path for edit in replay}) > MAX_CHANGED_FILES:
+                    raise ValueError("Consolidate the correction into at most five replayable files.")
                 workspace.apply(request, decision.edits)
                 if not workspace.diff():
                     raise ValueError("Edits left an empty candidate.")
