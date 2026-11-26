@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from .config import _normalize_repo_slug
+from .runtime.redaction import sanitize_text
+
 FINAL_STATUSES = {
     "merged",
-    "pr_opened_waiting_review",
     "blocked_needs_human_permission",
     "failed_with_reason",
 }
@@ -32,6 +37,16 @@ _SECRET_PATH_MARKERS = (
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def archive_lock(path: Path, *, blocking: bool = True):
+    import fcntl
+
+    with path.open("a", encoding="utf-8") as lock:
+        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(lock, flags)
+        yield
 
 
 def _normalize_path(path: str) -> str:
@@ -56,7 +71,7 @@ def _normalize_path(path: str) -> str:
 
 
 def default_allowed_paths_for_repo(target_repo: str) -> list[str]:
-    if target_repo == SWARMSY_REPO:
+    if _normalize_repo_slug(target_repo) == _normalize_repo_slug(SWARMSY_REPO):
         return ["src/", "app/", "components/", "lib/", "tests/", "docs/", "package.json", "package-lock.json", "tsconfig.json"]
     return ["src/", "tests/", "docs/", "pyproject.toml", "README.md"]
 
@@ -90,6 +105,12 @@ class DoctorReviewComment(BaseModel):
     state: Literal["open", "resolved"] = "open"
 
 
+class DoctorEdit(BaseModel, extra="forbid"):
+    path: str
+    old: str
+    new: str
+
+
 class DoctorRepairAttempt(BaseModel):
     validation_passed: bool = False
     pr_url: str = ""
@@ -98,6 +119,9 @@ class DoctorRepairAttempt(BaseModel):
     review_comments: list[DoctorReviewComment] = Field(default_factory=list)
     reason: str = ""
     destructive_change: bool = False
+    review_verdict: Literal["pending", "approved", "changes_requested"] = "pending"
+    merge_ready: bool = False
+    merged: bool = False
 
 
 class DoctorRequest(BaseModel):
@@ -127,6 +151,25 @@ class DoctorRequest(BaseModel):
     swarmsy_pr_url: str = ""
     tests_run: list[str] = Field(default_factory=list)
     final_reason: str = ""
+    pr_number: int = 0
+    head_sha: str = ""
+    base_branch: str = ""
+    base_sha: str = ""
+    merge_sha: str = ""
+    deployment_status: Literal["unconfigured", "pending", "deployed", "failed"] = "unconfigured"
+    deployment_workflow: str = ""
+    deployment_job: str = ""
+    deployment_url: str = ""
+    deployment_reason: str = ""
+    pending_head_sha: str = ""
+    pending_base_sha: str = ""
+    pending_diff_digest: str = ""
+    delivery_retries: int = 0
+    review_cycles: int = 0
+    review_request_id: int = 0
+    repair_log: list[dict[str, str]] = Field(default_factory=list)
+    learned_edits: list[DoctorEdit] = Field(default_factory=list)
+    pending_edits: list[DoctorEdit] = Field(default_factory=list)
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
 
@@ -146,6 +189,9 @@ class DoctorWorker(Protocol):
     def merge_pr(self, request: DoctorRequest, pr_url: str) -> bool:
         ...
 
+    def poll_review(self, request: DoctorRequest) -> DoctorRepairAttempt:
+        ...
+
 
 class DoctorArchive(Protocol):
     def list_queued_requests(self) -> list[DoctorRequest]:
@@ -163,42 +209,61 @@ class JsonDoctorArchive:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _load(self) -> list[DoctorRequest]:
+    def _load(self, *, strict: bool = False) -> list[DoctorRequest]:
         if not self.path.exists():
             return []
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8") or "[]")
         except json.JSONDecodeError as exc:
-            print(f"Warning: ignoring corrupt Doctor archive {self.path}: {exc}", file=sys.stderr)
+            if strict:
+                raise ValueError("Doctor archive is corrupt. Existing data was preserved.") from exc
+            print(f"Warning: unable to read Doctor archive: {exc}", file=sys.stderr)
             return []
+        if isinstance(raw, dict):
+            raw = raw.get("requests")
         if not isinstance(raw, list):
+            if strict:
+                raise ValueError("Doctor archive must contain a list of requests.")
             return []
         out: list[DoctorRequest] = []
         for item in raw:
             try:
                 out.append(DoctorRequest.model_validate(item))
-            except Exception:
+            except ValueError:
+                if strict:
+                    raise
                 continue
         return out
 
     def _save(self, items: list[DoctorRequest]) -> None:
         payload = [item.model_dump(mode="json") for item in items]
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(dir=self.path.parent, mode="w", encoding="utf-8", delete=False) as handle:
+            temporary = Path(handle.name)
+            try:
+                json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+                handle.close()
+                temporary.replace(self.path)
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def list_queued_requests(self) -> list[DoctorRequest]:
         return [item for item in self._load() if item.status == "queued"]
 
+    def active_requests(self, repo: str = "") -> list[DoctorRequest]:
+        return sorted(
+            (item for item in self._load(strict=True)
+             if (item.status not in FINAL_STATUSES or item.status == "merged" and item.deployment_status == "pending")
+             and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
+            key=lambda item: item.updated_at,
+        )
+
     def upsert_request(self, request: DoctorRequest) -> None:
-        items = self._load()
-        replaced = False
-        for idx, item in enumerate(items):
-            if item.request_id == request.request_id:
-                items[idx] = request
-                replaced = True
-                break
-        if not replaced:
-            items.append(request)
-        self._save(items)
+        with archive_lock(self.path.with_suffix(self.path.suffix + ".lock")):
+            items = {item.request_id: item for item in self._load(strict=True)}
+            items[request.request_id] = request
+            self._save(list(items.values()))
 
     def recent_requests(self, limit: int = 10) -> list[DoctorRequest]:
         items = self._load()
@@ -247,6 +312,9 @@ class NoopDoctorWorker:
     def merge_pr(self, request: DoctorRequest, pr_url: str) -> bool:
         return False
 
+    def poll_review(self, request: DoctorRequest) -> DoctorRepairAttempt:
+        return self.run_initial_repair(request)
+
 
 def create_doctor_request_from_plain_language(
     command: str,
@@ -287,26 +355,26 @@ def _is_secret_path(path: str) -> bool:
 
 def _path_within_allowlist(path: str, allowed_paths: list[str]) -> bool:
     try:
-        norm = _normalize_path(path).lower()
+        norm = _normalize_path(path)
     except ValueError:
         return False
     for allow in allowed_paths:
         try:
-            candidate = _normalize_path(allow).lower()
+            candidate = _normalize_path(allow)
         except ValueError:
             continue
         if not candidate:
             continue
-        if norm == candidate or norm.startswith(candidate.rstrip("/") + "/"):
+        if norm == candidate or allow.rstrip().endswith("/") and norm.startswith(candidate + "/"):
             return True
     return False
 
 
 def classify_review_comment(comment: DoctorReviewComment) -> Literal["actionable_blocker", "stale_noise", "needs_human_approval"]:
     body = str(comment.body or "").lower()
-    if any(token in body for token in ("security approval", "human approval", "credentials", "policy override", "manual decision")):
+    if any(token in body for token in ("security approval", "human approval", "credential rotation", "policy override", "manual decision")):
         return "needs_human_approval"
-    if any(token in body for token in ("stale", "nit", "optional", "already fixed", "resolved", "noise")):
+    if body.startswith(("nit:", "optional:", "stale optional nit")) or body.strip() in {"already fixed", "resolved"}:
         return "stale_noise"
     return "actionable_blocker"
 
@@ -322,6 +390,9 @@ def show_recent_daddy_repairs(archive: DoctorArchive, *, limit: int = 10) -> lis
             "pr_url": item.swarmsy_pr_url,
             "updated_at": item.updated_at,
             "reason": item.final_reason,
+            "deployment_status": item.deployment_status,
+            "deployment_url": item.deployment_url,
+            "deployment_reason": item.deployment_reason,
         }
         for item in repairs
     ]
@@ -339,14 +410,15 @@ class DoctorQueueConsumer:
     ) -> None:
         self.archive = archive
         self.worker = worker
-        self.allowed_target_repos = set(allowed_target_repos)
+        self.allowed_target_repos = {_normalize_repo_slug(repo) for repo in allowed_target_repos}
         self.swarmsy_auto_merge = bool(swarmsy_auto_merge)
         self.max_review_cycles = max(1, int(max_review_cycles))
 
     def _transition(self, request: DoctorRequest, status: str, reason: str) -> None:
+        if request.status != status or request.final_reason != reason:
+            request.status_timeline.append({"status": status, "at": utc_now_iso(), "reason": reason})
         request.status = status  # type: ignore[assignment]
         request.updated_at = utc_now_iso()
-        request.status_timeline.append({"status": status, "at": request.updated_at, "reason": reason})
 
     def _finalize(self, request: DoctorRequest, status: str, reason: str, tests_run: list[str] | None = None) -> DoctorRequest:
         self._transition(request, status, reason)
@@ -357,9 +429,9 @@ class DoctorQueueConsumer:
         return request
 
     def _request_is_safe(self, request: DoctorRequest) -> tuple[bool, str]:
-        if request.repo_target not in self.allowed_target_repos:
+        if _normalize_repo_slug(request.repo_target) not in self.allowed_target_repos:
             return False, f"Target repo {request.repo_target} is not allowlisted."
-        if request.source == "swarmsy" and request.repo_target != SWARMSY_REPO:
+        if request.source == "swarmsy" and _normalize_repo_slug(request.repo_target) != _normalize_repo_slug(SWARMSY_REPO):
             return False, "SWARMSY Doctor mode can target only HODLKONG64/SWARMSY."
         if not request.allowed_paths:
             return False, "No allowed paths provided."
@@ -393,14 +465,33 @@ class DoctorQueueConsumer:
         return self.process_request(queued[0])
 
     def process_request(self, request: DoctorRequest) -> DoctorRequest:
-        self._transition(request, "running", "queue_consumer_started")
-        self.archive.upsert_request(request)
-
+        if request.status in FINAL_STATUSES:
+            return request
         safe, reason = self._request_is_safe(request)
         if not safe:
             return self._finalize(request, "blocked_needs_human_permission", reason)
+        if request.status == "queued":
+            self._transition(request, "running", "queue_consumer_started")
+            self.archive.upsert_request(request)
+        try:
+            return self._process(request)
+        except PermissionError as exc:
+            return self._finalize(request, "blocked_needs_human_permission", sanitize_text(str(exc)))
+        except Exception as exc:
+            status = "failed_with_reason"
+            if request.pr_number:
+                status = "pr_opened_waiting_review"
+            elif request.pending_head_sha:
+                status = "running"
+            return self._finalize(request, status, sanitize_text(str(exc)))
 
-        attempt = self.worker.run_initial_repair(request)
+    def _process(self, request: DoctorRequest) -> DoctorRequest:
+        if request.pr_number or request.pending_head_sha:
+            attempt = self.worker.poll_review(request)
+        elif request.swarmsy_pr_url:
+            return self._finalize(request, "blocked_needs_human_permission", "Legacy PR has no recorded validated commit. Review it on GitHub.")
+        else:
+            attempt = self.worker.run_initial_repair(request)
         request.tests_run = list(dict.fromkeys([*request.tests_run, *attempt.tests_run]))
         request.swarmsy_pr_url = attempt.pr_url or request.swarmsy_pr_url
 
@@ -408,7 +499,6 @@ class DoctorQueueConsumer:
         if not safe_attempt:
             return self._finalize(request, "blocked_needs_human_permission", safe_reason, attempt.tests_run)
 
-        cycle = 0
         while True:
             actionable = [c for c in attempt.review_comments if c.state == "open" and classify_review_comment(c) == "actionable_blocker"]
             needs_human = [c for c in attempt.review_comments if c.state == "open" and classify_review_comment(c) == "needs_human_approval"]
@@ -424,7 +514,7 @@ class DoctorQueueConsumer:
             if not actionable:
                 break
 
-            if cycle >= self.max_review_cycles:
+            if request.review_cycles >= self.max_review_cycles:
                 return self._finalize(
                     request,
                     "pr_opened_waiting_review",
@@ -432,14 +522,18 @@ class DoctorQueueConsumer:
                     attempt.tests_run,
                 )
 
-            cycle += 1
-            attempt = self.worker.apply_review_comment_fixes(request, actionable, cycle)
+            request.review_cycles += 1
+            self.archive.upsert_request(request)
+            attempt = self.worker.apply_review_comment_fixes(request, actionable, request.review_cycles)
             request.tests_run = list(dict.fromkeys([*request.tests_run, *attempt.tests_run]))
             if attempt.pr_url:
                 request.swarmsy_pr_url = attempt.pr_url
             safe_attempt, safe_reason = self._attempt_is_safe(request, attempt)
             if not safe_attempt:
                 return self._finalize(request, "blocked_needs_human_permission", safe_reason, attempt.tests_run)
+
+        if attempt.merged:
+            return self._finalize(request, "merged", "GitHub confirmed the validated commit was merged.")
 
         if not attempt.validation_passed:
             return self._finalize(
@@ -458,11 +552,15 @@ class DoctorQueueConsumer:
             )
 
         should_try_merge = (
-            request.repo_target == SWARMSY_REPO
-            and self.swarmsy_auto_merge
-            and attempt.validation_passed
+            (_normalize_repo_slug(request.repo_target) != _normalize_repo_slug(SWARMSY_REPO) or self.swarmsy_auto_merge)
+            and attempt.review_verdict == "approved"
+            and attempt.merge_ready
         )
         if should_try_merge and self.worker.merge_pr(request, request.swarmsy_pr_url):
             return self._finalize(request, "merged", "Merged automatically after passing policy gates.", attempt.tests_run)
 
-        return self._finalize(request, "pr_opened_waiting_review", "PR opened and waiting for review/merge policy.", attempt.tests_run)
+        if attempt.review_verdict == "approved" and attempt.merge_ready and not should_try_merge:
+            return self._finalize(request, "pr_opened_waiting_review", "Codex and CI passed. SWARMSY auto-merge is disabled.")
+        return self._finalize(
+            request, "pr_opened_waiting_review", attempt.reason or "PR opened and waiting for review/merge policy.", attempt.tests_run
+        )

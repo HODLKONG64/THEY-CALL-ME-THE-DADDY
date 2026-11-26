@@ -1037,21 +1037,11 @@ class DaddyEngine:
             )
             return
 
-        if not pr_number:
-            record.trace.append({"event": "pr_merge_failed", "reason": "missing_pr_number"})
-            return
-
-        merge_result = self.git_tools.merge_pull_request(
-            pull_number=pr_number,
-            commit_title=f"auto: daddy merge {record.run_id}",
-        )
-
-        if merge_result:
-            record.trace.append(
-                {"event": "pr_merged", "pr_number": pr_number, "result": merge_result}
-            )
-        else:
-            record.trace.append({"event": "pr_merge_failed", "pr_number": pr_number})
+        record.trace.append({
+            "event": "pr_left_open",
+            "pr_number": pr_number,
+            "reasons": ["legacy_patch_requires_manual_review"],
+        })
 
     def _run_payload(self, record: RunRecord) -> dict[str, Any]:
         return {

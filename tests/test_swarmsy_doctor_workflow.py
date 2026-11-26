@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from the_daddy.config import Settings
 from the_daddy.engine import DaddyEngine
@@ -195,6 +194,8 @@ def test_request_reaches_final_archived_status_and_is_queryable():
         DoctorRepairAttempt(
             validation_passed=True,
             pr_url="https://github.com/HODLKONG64/SWARMSY/pull/4",
+            review_verdict="approved",
+            merge_ready=True,
             changed_paths=["src/upload.ts"],
         ),
         merge_result=True,
@@ -210,9 +211,10 @@ def test_request_reaches_final_archived_status_and_is_queryable():
     assert rows[0]["status"] in {"merged", "pr_opened_waiting_review", "blocked_needs_human_permission", "failed_with_reason"}
 
 
-def test_daddy_self_repair_path_still_runs():
+def test_daddy_self_repair_path_still_runs(tmp_path):
     settings = Settings(
-        target_root=Path("."),
+        target_root=tmp_path,
+        local_state_dir=tmp_path / "doctor_local",
         command="python -c \"print('ok')\"",
         enable_self_evolution=False,
         enable_architecture_lane=False,
@@ -329,7 +331,7 @@ def test_queue_cli_reports_no_queued_requests_for_existing_empty_archive(monkeyp
     assert payload["status"] == "no_queued_requests"
 
 
-def test_queue_cli_recovers_from_corrupt_existing_archive(monkeypatch, tmp_path, capsys):
+def test_queue_cli_reports_and_preserves_corrupt_archive(monkeypatch, tmp_path, capsys):
     archive_path = tmp_path / "doctor-archive.json"
     archive_path.write_text("{not-json", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -339,7 +341,8 @@ def test_queue_cli_recovers_from_corrupt_existing_archive(monkeypatch, tmp_path,
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["status"] == "no_queued_requests"
+    assert payload["status"] == "archive_invalid"
+    assert archive_path.read_text() == "{not-json"
 
 
 def test_queue_cli_leaves_request_queued_when_only_noop_worker(monkeypatch, tmp_path, capsys):

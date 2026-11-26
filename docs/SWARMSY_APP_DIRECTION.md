@@ -1,5 +1,7 @@
 # SWARMSY App Direction
 
+Historical design notes. For current queue behavior, see the [Doctor runbook](SWARMSY_DOCTOR_NO_MIDDLEMAN.md).
+
 SWARMSY is the app layer.
 
 This repo is not dependent on the old Daddy repo direction. The app should carry its own product documentation, its own build direction, and its own agent-facing operating rules.

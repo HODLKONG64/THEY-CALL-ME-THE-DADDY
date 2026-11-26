@@ -198,8 +198,22 @@ def test_push_blocked_for_disallowed_repo_before_git_subprocess(tmp_path, monkey
 
 def test_push_allowed_for_daddy_repo(tmp_path, monkeypatch):
     executor = GitBranchExecutor(repo_root=tmp_path, github_token="t", github_repo=DADDY_REPO)
-    monkeypatch.setattr(executor, "_run", lambda *_args: "")
+    monkeypatch.setattr(executor, "_run", lambda *args: f"https://github.com/{DADDY_REPO}.git" if args[0] == "remote" else "")
     executor.push("daddy-branch")  # must not raise
+
+
+def test_push_blocks_a_different_git_origin_even_with_allowed_github_repo(tmp_path, monkeypatch):
+    executor = GitBranchExecutor(repo_root=tmp_path, github_token="t", github_repo=DADDY_REPO)
+    called = []
+
+    def run(*args):
+        called.append(args[0])
+        return "https://github.com/acme/other.git"
+
+    monkeypatch.setattr(executor, "_run", run)
+    with pytest.raises(PermissionError, match="origin push URL"):
+        executor.push("daddy-branch")
+    assert called == ["remote"]
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +334,7 @@ class _FakeGitTools:
         return {"merged": True}
 
 
-def test_daddy_repo_auto_merge_path_still_allowed(tmp_path):
+def test_legacy_daddy_pr_requires_manual_review(tmp_path):
     engine = _make_engine_with_repo(tmp_path, DADDY_REPO, swarmsy_auto_merge=False)
     fake_git = _FakeGitTools()
     engine.git_tools = fake_git
@@ -329,7 +343,8 @@ def test_daddy_repo_auto_merge_path_still_allowed(tmp_path):
     record = _record_for_pr_delivery()
     engine._deliver_patch_via_pr(record, "safe")
 
-    assert len(fake_git.merge_calls) == 1
+    assert fake_git.merge_calls == []
+    assert any("legacy_patch_requires_manual_review" in event.get("reasons", []) for event in record.trace)
 
 
 def test_swarmsy_repo_auto_merge_disabled_leaves_pr_open(tmp_path):
@@ -349,7 +364,7 @@ def test_swarmsy_repo_auto_merge_disabled_leaves_pr_open(tmp_path):
     )
 
 
-def test_swarmsy_repo_auto_merge_enabled_can_merge_when_normal_gates_allow(tmp_path):
+def test_legacy_swarmsy_pr_cannot_bypass_codex_when_auto_merge_enabled(tmp_path):
     engine = _make_engine_with_repo(tmp_path, SWARMSY_REPO, swarmsy_auto_merge=True)
     fake_git = _FakeGitTools()
     engine.git_tools = fake_git
@@ -358,7 +373,8 @@ def test_swarmsy_repo_auto_merge_enabled_can_merge_when_normal_gates_allow(tmp_p
     record = _record_for_pr_delivery()
     engine._deliver_patch_via_pr(record, "safe")
 
-    assert len(fake_git.merge_calls) == 1
+    assert fake_git.merge_calls == []
+    assert any("legacy_patch_requires_manual_review" in event.get("reasons", []) for event in record.trace)
 
 
 # ---------------------------------------------------------------------------

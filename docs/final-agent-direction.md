@@ -1,5 +1,7 @@
 # THE DADDY — FINAL AGENT DIRECTION README
 
+Historical design notes. For current queue behavior, see the [Doctor runbook](SWARMSY_DOCTOR_NO_MIDDLEMAN.md).
+
 ## Purpose
 This system is a self-repairing, self-stabilising agent first.
 Its future second role is undecided. Until then, every change must improve:

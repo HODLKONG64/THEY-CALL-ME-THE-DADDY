@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import urllib.error
 import urllib.parse
@@ -11,6 +12,7 @@ from typing import Iterable
 
 _DADDY_REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
 _DEFAULT_ALLOWED_TARGET_REPOS: frozenset[str] = frozenset({_DADDY_REPO})
+GITHUB_REPO_SLUG = re.compile(r"[A-Za-z0-9-]+/[A-Za-z0-9_.-]+")
 
 
 def _normalize_repo_slug(value: str) -> str:
@@ -189,6 +191,11 @@ class GitBranchExecutor:
 
     def push(self, branch_name: str) -> None:
         self._ensure_target_repo_allowed("push")
+        push_remotes = self._run("remote", "get-url", "--push", "--all", "origin").splitlines()
+        expected = self._normalized_github_repo
+        allowed = {f"https://github.com/{expected}", f"git@github.com:{expected}", f"ssh://git@github.com/{expected}"}
+        if len(push_remotes) != 1 or push_remotes[0].lower().removesuffix(".git") not in allowed:
+            raise PermissionError("Git origin push URL does not match the allowlisted GitHub target.")
         self._run("push", "-u", "origin", branch_name)
 
     def branch_for_architecture_run(self, run_id: str) -> str:
@@ -270,12 +277,16 @@ class GitBranchExecutor:
                     return existing
             raise
 
-    def merge_pull_request(self, pull_number: int, commit_title: str = "auto: daddy merge") -> dict | None:
+    def merge_pull_request(
+        self, pull_number: int, commit_title: str = "auto: daddy merge", *, head_sha: str = ""
+    ) -> dict | None:
         self._ensure_target_repo_allowed("merge_pull_request")
         if not self.github_token:
             return None
         url = f"https://api.github.com/repos/{self.github_repo}/pulls/{pull_number}/merge"
         payload = {"commit_title": commit_title, "merge_method": "squash"}
+        if head_sha:
+            payload["sha"] = head_sha
         response = self._api_request("PUT", url, payload)
         if isinstance(response, dict):
             return response
