@@ -37,6 +37,8 @@ def _worker(settings: Settings, archive: JsonDoctorArchive) -> GitHubDoctorWorke
     checks = {item.strip() for item in os.getenv("DADDY_DOCTOR_REQUIRED_CHECKS", "").split(",") if item.strip()}
     return GitHubDoctorWorker(
         settings, archive, validation_image=image, validation_command=command, required_checks=checks,
+        deploy_workflow=os.getenv("DADDY_DOCTOR_CLOUDFLARE_WORKFLOW", "").strip(),
+        deploy_job=os.getenv("DADDY_DOCTOR_CLOUDFLARE_JOB", "Cloudflare deploy").strip(),
     )
 
 
@@ -46,7 +48,10 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings) -> dict:
     lock = archive.path.with_suffix(archive.path.suffix + ".process.lock")
     try:
         with archive_lock(lock, blocking=False):
-            active = archive.active_requests(settings.github_repo)
+            try:
+                active = archive.active_requests(settings.github_repo)
+            except ValueError:
+                return {"status": "archive_invalid", "reason": "Doctor could not read the archive. Existing data was preserved."}
             if not active:
                 return {"status": "no_queued_requests"}
             request = active[0]
@@ -56,14 +61,20 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings) -> dict:
                     "status": "worker_unavailable", "request_id": request.request_id,
                     "reason": "Configure the OpenAI and GitHub credentials, target repo, and Docker validation image and test command.",
                 }
-            consumer = DoctorQueueConsumer(
-                archive=archive, worker=worker, allowed_target_repos=set(settings.allowed_target_repos),
-                swarmsy_auto_merge=settings.swarmsy_auto_merge, max_review_cycles=_max_review_cycles(),
-            )
-            result = consumer.process_request(request)
+            if request.status == "merged":
+                worker.poll_deployment(request)
+                result = request
+            else:
+                consumer = DoctorQueueConsumer(
+                    archive=archive, worker=worker, allowed_target_repos=set(settings.allowed_target_repos),
+                    swarmsy_auto_merge=settings.swarmsy_auto_merge, max_review_cycles=_max_review_cycles(),
+                )
+                result = consumer.process_request(request)
             return {
                 "status": result.status, "request_id": result.request_id, "archive_id": result.archive_id,
                 "pr_url": result.swarmsy_pr_url, "reason": scrub(result.final_reason, settings),
+                "deployment_status": result.deployment_status, "deployment_url": result.deployment_url,
+                "deployment_reason": scrub(result.deployment_reason, settings),
             }
     except BlockingIOError:
         return {"status": "worker_busy"}
@@ -89,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         for row in rows:
             row["problem_summary"] = scrub(row["problem_summary"], settings)
             row["reason"] = scrub(row["reason"], settings)
+            row["deployment_reason"] = scrub(row["deployment_reason"], settings)
         print(json.dumps(rows, indent=2))
         return 0
     if args.enqueue is not None:

@@ -331,7 +331,7 @@ def test_queue_cli_reports_no_queued_requests_for_existing_empty_archive(monkeyp
     assert payload["status"] == "no_queued_requests"
 
 
-def test_queue_cli_recovers_from_corrupt_existing_archive(monkeypatch, tmp_path, capsys):
+def test_queue_cli_reports_and_preserves_corrupt_archive(monkeypatch, tmp_path, capsys):
     archive_path = tmp_path / "doctor-archive.json"
     archive_path.write_text("{not-json", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -341,7 +341,8 @@ def test_queue_cli_recovers_from_corrupt_existing_archive(monkeypatch, tmp_path,
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["status"] == "no_queued_requests"
+    assert payload["status"] == "archive_invalid"
+    assert archive_path.read_text() == "{not-json"
 
 
 def test_queue_cli_leaves_request_queued_when_only_noop_worker(monkeypatch, tmp_path, capsys):

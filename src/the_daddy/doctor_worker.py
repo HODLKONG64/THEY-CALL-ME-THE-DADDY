@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import shlex
 import tempfile
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from .config import Settings, _normalize_repo_slug
 from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, log, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
 from .merge_rules import PROTECTED_CORE_FILES
 from .swarmsy_doctor import (
-    DoctorEdit, DoctorRepairAttempt, DoctorRequest, DoctorReviewComment, JsonDoctorArchive,
+    DoctorEdit, DoctorRepairAttempt, DoctorRequest, DoctorReviewComment, JsonDoctorArchive, utc_now_iso,
 )
 
 CODEX_BOT = "chatgpt-codex-connector[bot]"
+CODEX_SUMMARY = re.compile(r"^<!-- codex-review-state:v1 (\{[^\n]+\}) -->$", re.MULTILINE)
 PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
@@ -27,10 +30,24 @@ def is_codex(item: dict) -> bool:
     return user.get("type") == "Bot" and user.get("login") == CODEX_BOT
 
 
+def codex_summary(item: dict, head: str) -> dict | None:
+    if not is_codex(item):
+        return None
+    match = CODEX_SUMMARY.search(str(item.get("body") or ""))
+    if not match:
+        return None
+    try:
+        review = json.loads(match[1]).get("code_review")
+    except (ValueError, AttributeError):
+        return None
+    return review if isinstance(review, dict) and review.get("commit_sha") == head else None
+
+
 class GitHubDoctorWorker:
     def __init__(
         self, settings: Settings, archive: JsonDoctorArchive, *,
         validation_image: str, validation_command: str, required_checks: set[str],
+        deploy_workflow: str = "", deploy_job: str = "Cloudflare deploy",
     ) -> None:
         repo = settings.github_repo.strip()
         if not GITHUB_REPO_SLUG.fullmatch(repo) or repo.split("/")[1] in {".", ".."}:
@@ -38,6 +55,10 @@ class GitHubDoctorWorker:
         self.settings = settings.model_copy(update={"github_repo": repo})
         self.archive = archive
         self.required_checks = required_checks
+        if deploy_workflow and not re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:yml|yaml)", deploy_workflow):
+            raise ValueError("Configure Cloudflare tracking with the target workflow file name.")
+        self.deploy_workflow = deploy_workflow
+        self.deploy_job = deploy_job
         self.git = GitBranchExecutor(
             github_token=settings.github_token, github_repo=repo, allowed_target_repos=settings.allowed_target_repos,
         )
@@ -161,6 +182,7 @@ class GitHubDoctorWorker:
             if pr["state"] != "open" or pr["draft"]:
                 raise PermissionError("The Doctor pull request was closed or converted to draft during delivery.")
         request.head_sha = request.pending_head_sha
+        request.base_branch = base_branch
         request.base_sha = request.pending_base_sha
         request.learned_edits = [*request.learned_edits, *request.pending_edits]
         request.pending_head_sha = request.pending_base_sha = request.pending_diff_digest = ""
@@ -246,22 +268,34 @@ class GitHubDoctorWorker:
             and review.get("state") in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}
         ]
         marker = f"DOCTOR_REVIEW_APPROVED {head}"
-        comments = []
-        approved = False
-        for review in completed:
+        approved = None
+        for review in sorted(completed, key=lambda item: (item.get("submitted_at") or "", int(item["id"])), reverse=True):
             inline = [
                 DoctorReviewComment(comment_id=str(item["id"]), author=CODEX_BOT,
                                     body=f"Codex finding in {item.get('path', '')}: {item.get('body', '')}")
                 for item in self._list(f"pulls/{number}/reviews/{int(review['id'])}/comments") if is_codex(item)
             ]
-            comments.extend(inline)
             body = str(review.get("body") or "").strip()
-            if review["state"] == "CHANGES_REQUESTED" or (not inline and "here are some suggestions" in body.lower()):
-                comments.append(DoctorReviewComment(author=CODEX_BOT, body=f"Codex requested changes: {body}"))
+            if review["state"] == "CHANGES_REQUESTED":
+                inline.append(DoctorReviewComment(author=CODEX_BOT, body=f"Codex requested changes: {body}"))
+            if inline:
+                return "changes_requested", inline
             if review["state"] == "APPROVED" or marker in body.splitlines():
-                approved = True
-        if comments:
-            return "changes_requested", comments
+                approved = review
+                break
+        # The live integration publishes a commit-bound summary even when it
+        # reports no findings through a PR-wide reaction instead of a review.
+        summaries = self._list(f"issues/{number}/comments")
+        for item in reversed(summaries):
+            summary = codex_summary(item, head)
+            if summary is None:
+                continue
+            if approved and (approved.get("submitted_at") or "") > (item.get("updated_at") or ""):
+                return "approved", []
+            if (summary.get("status") == "completed" and summary.get("has_any_findings") is False
+                    and summary.get("has_unresolved_findings") is False):
+                return "approved", []
+            return "pending", []
         if approved:
             return "approved", []
         # The GitHub integration can mark a clean review with a reaction. Only a
@@ -309,6 +343,7 @@ class GitHubDoctorWorker:
         pr = self._api("GET", f"pulls/{request.pr_number}")
         self._verify_pr(request, pr, request.head_sha, base_branch)
         if pr.get("merged") is True:
+            self._record_merge(request, pr["merge_commit_sha"], base_branch)
             return self._attempt(request, merged=True)
         if pr["state"] != "open" or pr["draft"]:
             raise PermissionError("The Doctor pull request is closed or draft.")
@@ -336,4 +371,49 @@ class GitHubDoctorWorker:
         if ready.review_verdict != "approved" or not ready.merge_ready:
             return False
         outcome = self.git.merge_pull_request(request.pr_number, head_sha=request.head_sha)
-        return bool(outcome and outcome.get("merged") is True)
+        if not outcome or outcome.get("merged") is not True:
+            return False
+        self._record_merge(request, outcome["sha"], request.base_branch)
+        return True
+
+    def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:
+        request.merge_sha = sha(commit)
+        request.base_branch = branch
+        if self.deploy_workflow:
+            request.deployment_workflow = self.deploy_workflow
+            request.deployment_job = self.deploy_job
+            request.deployment_status = "pending"
+            request.deployment_reason = "Waiting for the target's Cloudflare deployment workflow."
+
+    def poll_deployment(self, request: DoctorRequest) -> None:
+        try:
+            self._verify_target(request)
+            commit = sha(request.merge_sha)
+            query = urlencode({"head_sha": commit, "branch": request.base_branch, "event": "push"})
+            workflow = quote(request.deployment_workflow, safe="")
+            runs = self._list(f"actions/workflows/{workflow}/runs?{query}", list_key="workflow_runs")
+            matching = [run for run in runs if run.get("head_sha") == commit and run.get("event") == "push"
+                        and run.get("head_branch") == request.base_branch]
+            if matching:
+                run = max(matching, key=lambda item: int(item["id"]))
+                run_id = int(run["id"])
+                request.deployment_url = f"https://github.com/{self.git.github_repo}/actions/runs/{run_id}"
+                if run.get("status") == "completed":
+                    jobs = self._list(f"actions/runs/{run_id}/jobs?filter=latest", list_key="jobs")
+                    deployed = run.get("conclusion") == "success" and any(
+                        job.get("name") == request.deployment_job and job.get("conclusion") == "success" for job in jobs
+                    )
+                    request.deployment_status = "deployed" if deployed else "failed"
+                    request.deployment_reason = (
+                        "Cloudflare deployment job passed for the merged commit." if deployed
+                        else f"Cloudflare job {request.deployment_job!r} did not pass. Workflow conclusion was {run.get('conclusion')}."
+                    )
+                else:
+                    request.deployment_reason = "Cloudflare deployment workflow is running or awaiting approval."
+        except RuntimeError as exc:
+            request.deployment_reason = scrub(str(exc), self.settings)[-1500:]
+        except (PermissionError, ValueError) as exc:
+            request.deployment_status = "failed"
+            request.deployment_reason = scrub(str(exc), self.settings)[-1500:]
+        request.updated_at = utc_now_iso()
+        self.archive.upsert_request(request)

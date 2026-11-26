@@ -180,7 +180,8 @@ class DoctorWorkspace:
             if not replacement.strip() or len(replacement.encode()) > MAX_FILE_BYTES:
                 raise ValueError(f"Edit would empty or oversize the file: {edit.path}")
             proposed[edit.path] = replacement
-        if len(proposed) > MAX_CHANGED_FILES:
+        staged = set(self.git("diff", "--cached", "--name-only", "-z").split("\0")) - {""}
+        if len(staged | proposed.keys()) > MAX_CHANGED_FILES:
             raise ValueError("Doctor candidate touches too many files.")
         for path, content in proposed.items():
             target = self._file(path)
@@ -322,9 +323,14 @@ class RepairLoop:
                     if status in {401, 403, 404}:
                         raise RuntimeError(feedback) from exc
                     continue
+            if decision.verdict == "approved":
+                if not decision.edits and digest and valid and digest == decision.candidate_digest:
+                    log(request, self.settings, "api_approved", decision.reason or "Tested diff approved.", self.checkpoint)
+                    return edits, digest
+                feedback = "Approval rejected. A passing candidate and its matching diff digest are required."
+                log(request, self.settings, "api_approval_rejected", feedback, self.checkpoint)
+                continue
             log(request, self.settings, f"api_{decision.verdict}", decision.reason or "No reason supplied.", self.checkpoint)
-            if decision.verdict == "approved" and not decision.edits and digest and valid and digest == decision.candidate_digest:
-                return edits, digest
             if decision.verdict != "patch" or not decision.edits:
                 feedback = "A tested repair or a concrete patch is required. " + decision.reason
                 continue

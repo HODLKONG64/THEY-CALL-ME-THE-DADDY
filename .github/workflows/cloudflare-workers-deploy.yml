@@ -1,0 +1,59 @@
+name: Reusable Cloudflare Worker deployment
+
+on:
+  workflow_call:
+    inputs:
+      production_branch:
+        type: string
+        default: main
+      working_directory:
+        type: string
+        default: .
+    secrets:
+      cloudflare_api_token:
+        required: true
+      cloudflare_account_id:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Cloudflare deploy
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', inputs.production_branch)
+    environment: production
+    concurrency:
+      group: cloudflare-worker-${{ github.repository }}-${{ inputs.working_directory }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Install locked dependencies
+        if: hashFiles(format('{0}/package-lock.json', inputs.working_directory)) != ''
+        working-directory: ${{ inputs.working_directory }}
+        run: npm ci
+      - name: Verify the production branch still points to this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCTION_BRANCH: ${{ inputs.production_branch }}
+        run: |
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PRODUCTION_BRANCH" --jq '.object.sha')"
+          if [ "$current_sha" != "$GITHUB_SHA" ]; then
+            echo "A newer production commit superseded this deployment."
+            exit 1
+          fi
+      - name: Deploy configured Cloudflare Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.cloudflare_api_token }}
+          accountId: ${{ secrets.cloudflare_account_id }}
+          workingDirectory: ${{ inputs.working_directory }}
+          command: deploy

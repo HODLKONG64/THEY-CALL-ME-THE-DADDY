@@ -153,7 +153,14 @@ class DoctorRequest(BaseModel):
     final_reason: str = ""
     pr_number: int = 0
     head_sha: str = ""
+    base_branch: str = ""
     base_sha: str = ""
+    merge_sha: str = ""
+    deployment_status: Literal["unconfigured", "pending", "deployed", "failed"] = "unconfigured"
+    deployment_workflow: str = ""
+    deployment_job: str = ""
+    deployment_url: str = ""
+    deployment_reason: str = ""
     pending_head_sha: str = ""
     pending_base_sha: str = ""
     pending_diff_digest: str = ""
@@ -246,7 +253,8 @@ class JsonDoctorArchive:
 
     def active_requests(self, repo: str = "") -> list[DoctorRequest]:
         return sorted(
-            (item for item in self._load() if item.status not in FINAL_STATUSES
+            (item for item in self._load(strict=True)
+             if (item.status not in FINAL_STATUSES or item.status == "merged" and item.deployment_status == "pending")
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
             key=lambda item: item.updated_at,
         )
@@ -382,6 +390,9 @@ def show_recent_daddy_repairs(archive: DoctorArchive, *, limit: int = 10) -> lis
             "pr_url": item.swarmsy_pr_url,
             "updated_at": item.updated_at,
             "reason": item.final_reason,
+            "deployment_status": item.deployment_status,
+            "deployment_url": item.deployment_url,
+            "deployment_reason": item.deployment_reason,
         }
         for item in repairs
     ]

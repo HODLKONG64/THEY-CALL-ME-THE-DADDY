@@ -11,7 +11,7 @@ One Doctor worker can process a persistent queue for its configured GitHub repos
 5. On later polls Doctor reads the Codex result. It sends actionable findings or failed required checks, previous logs, and the current files back to the API. Each follow-up commit goes through validation, API approval and a fresh Codex review. The review cycle count survives restarts.
 6. Doctor can merge after Codex approves the validated head and configured CI checks pass. GitHub must report the PR is mergeable. Doctor sends the reviewed SHA with the merge request and records success only when GitHub confirms the merge.
 
-Doctor accepts a completed review from the Codex GitHub bot on the expected commit, with an explicit approval or its commit-specific approval marker. It also accepts a positive reaction from the bot on Doctor's commit-specific review request. Silence, progress reactions, and PR-wide reactions leave the request pending. A moved base, an externally changed head, or a human changes-requested review stops automatic delivery and records the reason.
+Doctor accepts a completed review from the Codex GitHub bot on the expected commit, with an explicit approval or its commit-specific approval marker. It also recognizes the bot's completed review summary when it reports a clean result for that commit. Where the bot leaves a positive reaction on Doctor's commit-specific request, that reaction can identify the reviewed commit too. Silence, progress reactions and PR-wide reactions leave the request pending. A moved base, an externally changed head, or a human changes-requested review stops automatic delivery and records the reason.
 
 ## Configure a worker
 
@@ -39,6 +39,7 @@ Build Daddy's validation image from the repository root and set `DADDY_DOCTOR_VA
 docker build -t daddy-validation -f - . <<'DOCKERFILE'
 FROM python:3.11-slim
 WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml .
 RUN python -m pip install --no-cache-dir .
 DOCKERFILE
@@ -63,3 +64,32 @@ Run `--watch` under a service supervisor for restart recovery. The GitHub Action
 | `failed_with_reason` | Repair ended without a validated fix. The archive contains the recorded evidence. |
 
 The archive includes a status timeline, API verdicts, validation output, PR and commit identifiers, and replayable edits. Existing archive records without an attested PR head require manual review. The focused worker uses this archive for repair memory, while the legacy wake engine keeps its separate R2/local memory.
+
+## Cloudflare Worker deployment
+
+For a target with a Cloudflare Worker and an existing deploy workflow triggered by a push to the production branch, set `DADDY_DOCTOR_CLOUDFLARE_WORKFLOW` to the workflow filename, such as `deploy-worker.yml`, and `DADDY_DOCTOR_CLOUDFLARE_JOB` to its actual deploy job name in GitHub. The Doctor token also needs Actions read access. The target workflow owns the Cloudflare credentials and production environment. Doctor records the merged commit, watches its push-triggered workflow run and shows the deployment result and link in `--show-recent`.
+
+Targets that already have a Wrangler Worker config can use the [reusable deployment workflow](../.github/workflows/cloudflare-workers-deploy.yml). Pin the reference to a reviewed commit of this repository. Configure the production environment and Cloudflare secrets in the target repository.
+
+```yaml
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    uses: HODLKONG64/THEY-CALL-ME-THE-DADDY/.github/workflows/cloudflare-workers-deploy.yml@REVIEWED_DADDY_COMMIT_SHA
+    with:
+      production_branch: main
+      working_directory: .
+    secrets:
+      cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+The deployment job checks out the exact push commit. Doctor keeps source review and merge gates upstream of deployment. If a target already uses Cloudflare's Git integration, its connected production branch deploys after a merge. The workflow tracker above applies to targets deployed through GitHub Actions. Native, desktop, and on-device installation steps still use their platform pipelines.

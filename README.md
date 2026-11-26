@@ -19,6 +19,7 @@ Use `--process-once` to process one queue entry or check one pending PR. Use `--
 - `DADDY_ALLOWED_TARGET_REPOS` defaults to `HODLKONG64/THEY-CALL-ME-THE-DADDY`. Set `GITHUB_REPO` to the target and explicitly allowlist SWARMSY to repair it.
 - Doctor can merge its PR after a completed Codex review of the current commit, all configured CI checks pass, and GitHub permits the merge. Changes to protected files require a manual merge.
 - `DADDY_SWARMSY_AUTO_MERGE` defaults to `false`. SWARMSY requests still get tested, published and reviewed in this mode.
+- For configured Cloudflare Workers, the [deployment workflow and tracking setup](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md#cloudflare-worker-deployment) can ship and verify a reviewed merge.
 - The legacy `the_daddy.cli` engine remains available for diagnostics and manual PR review. The queue worker handles automatic review follow-up and merge.
 
 ## Develop

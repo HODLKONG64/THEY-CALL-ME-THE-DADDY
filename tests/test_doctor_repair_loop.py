@@ -45,11 +45,15 @@ class GitHubStub:
         self.repo = repo
         self.branch = ""
         self.review_requests = []
+        self.issue_comments = []
         self.reviews = []
         self.annotations = {}
         self.reactions = {}
         self.ci_success = False
         self.merged = False
+        self.merge_sha = "a" * 40
+        self.deploy_runs = []
+        self.deploy_jobs = []
         self.merge_calls = []
         self.pr_creates = 0
 
@@ -59,6 +63,7 @@ class GitHubStub:
     def pr(self):
         return {
             "number": 1, "state": "closed" if self.merged else "open", "draft": False, "merged": self.merged,
+            "merge_commit_sha": self.merge_sha if self.merged else None,
             "mergeable": True, "mergeable_state": "clean",
             "head": {"repo": {"full_name": REPO}, "ref": self.branch, "sha": self.head()},
             "base": {"repo": {"full_name": REPO}, "ref": "main", "sha": git(self.repo, "rev-parse", "main")},
@@ -89,7 +94,7 @@ class GitHubStub:
                 row = {"id": len(self.review_requests) + 1, "body": data["body"], "user": {"login": "doctor-user"}}
                 self.review_requests.append(row)
                 return row
-            return list(self.review_requests)
+            return [*self.review_requests, *self.issue_comments]
         if endpoint == "pulls/1/reviews":
             return list(self.reviews)
         if endpoint.startswith("pulls/1/reviews/"):
@@ -105,7 +110,12 @@ class GitHubStub:
             self.merge_calls.append(data)
             assert data["sha"] == self.head()
             self.merged = True
-            return {"merged": True}
+            return {"merged": True, "sha": self.merge_sha}
+        if endpoint == "actions/workflows/deploy-worker.yml/runs":
+            assert f"head_sha={self.merge_sha}" in url and "event=push" in url
+            return {"workflow_runs": self.deploy_runs}
+        if endpoint == "actions/runs/12/jobs":
+            return {"jobs": self.deploy_jobs}
         raise AssertionError(f"Unexpected GitHub call: {method} {endpoint}")
 
 
@@ -165,7 +175,8 @@ def test_queue_restarts_uses_fixes_and_merges_only_reviewed_head(tmp_path, monke
 
     def worker(settings, archive):
         instance = GitHubDoctorWorker(settings, archive, validation_image="test-image",
-                                      validation_command="python -m tests.check", required_checks={"tests"})
+                                      validation_command="python -m tests.check", required_checks={"tests"},
+                                      deploy_workflow="deploy-worker.yml")
         original_validator = instance.repair.validator
         instance.repair.validator = validation
         validation.command = original_validator.command
@@ -205,12 +216,35 @@ def test_queue_restarts_uses_fixes_and_merges_only_reviewed_head(tmp_path, monke
     assert parse_cli(capsys, "--process-once")["status"] == "pr_opened_waiting_review"
     assert not github.merge_calls
 
-    github.reviews.append({"id": 3, "user": BOT, "state": "APPROVED", "commit_id": second_head})
+    summary = {"code_review": {"commit_sha": second_head, "status": "running",
+                              "has_any_findings": None, "has_unresolved_findings": None}}
+    github.issue_comments = [{"user": BOT, "body": f"<!-- codex-review-state:v1 {json.dumps(summary)} -->"}]
     assert parse_cli(capsys, "--process-once")["status"] == "pr_opened_waiting_review"
     assert not github.merge_calls
+    summary["code_review"].update(status="completed", has_any_findings=False, has_unresolved_findings=False)
+    github.issue_comments[0]["body"] = f"<!-- codex-review-state:v1 {json.dumps(summary)} -->"
+    assert parse_cli(capsys, "--process-once")["status"] == "pr_opened_waiting_review"
+    assert not github.merge_calls
+    github.reviews.extend([
+        {"id": 4, "user": BOT, "state": "APPROVED", "commit_id": second_head, "submitted_at": "2026-11-26T22:00:02Z"},
+        {"id": 3, "user": BOT, "state": "CHANGES_REQUESTED", "commit_id": second_head, "submitted_at": "2026-11-26T22:00:01Z"},
+    ])
+    summary["code_review"].update(has_any_findings=True, has_unresolved_findings=True)
+    github.issue_comments[0].update(body=f"<!-- codex-review-state:v1 {json.dumps(summary)} -->", updated_at="2026-11-26T22:00:01Z")
     github.ci_success = True
     assert parse_cli(capsys, "--process-once")["status"] == "merged"
     assert [item["sha"] for item in github.merge_calls] == [second_head]
+    github.deploy_runs = [
+        {"id": 10, "head_sha": second_head, "event": "push", "head_branch": "main", "status": "completed", "conclusion": "success"},
+        {"id": 11, "head_sha": github.merge_sha, "event": "pull_request", "head_branch": "main", "status": "completed", "conclusion": "success"},
+    ]
+    assert parse_cli(capsys, "--process-once")["deployment_status"] == "pending"
+    github.deploy_runs.append({"id": 12, "head_sha": github.merge_sha, "event": "push", "head_branch": "main",
+                               "status": "completed", "conclusion": "success"})
+    github.deploy_jobs = [{"name": "Cloudflare deploy", "conclusion": "success"}]
+    deployed = parse_cli(capsys, "--process-once")
+    assert deployed["deployment_status"] == "deployed"
+    assert deployed["deployment_url"].endswith("/actions/runs/12")
     archived = JsonDoctorArchive(path).recent_requests()[0]
     assert archived.review_cycles == 1
     assert [edit.new for edit in archived.learned_edits] == ["answer = 1", "answer = 2"]
@@ -242,3 +276,19 @@ def test_workspace_validates_scope_and_anchors_before_writing(tmp_path, local_re
     with pytest.raises(ValueError, match="match exactly once"):
         workspace.apply(request, [DoctorEdit(path="src/example.py", old="answer = 3", new="answer = 2")])
     assert not workspace.diff()
+
+
+def test_candidate_file_limit_applies_across_batches_and_replays(tmp_path, local_repo):
+    settings = Settings(github_repo=REPO)
+    request = DoctorRequest(problem_summary="Fix answer", repo_target=REPO, source="daddy", allowed_paths=["src/"])
+    workspace = DoctorWorkspace(local_repo, settings)
+    first = [DoctorEdit(path=f"src/part_{i}.py", old="", new="value = 1\n") for i in range(3)]
+    second = [DoctorEdit(path=f"src/part_{i}.py", old="", new="value = 2\n") for i in range(3, 6)]
+    workspace.apply(request, first)
+    with pytest.raises(ValueError, match="too many files"):
+        workspace.apply(request, second)
+    workspace.apply(request, second[:2])
+    original_diff = workspace.diff()
+    workspace.reset()
+    workspace.apply(request, [*first, *second[:2]])
+    assert workspace.diff() == original_diff
