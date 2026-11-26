@@ -67,6 +67,7 @@ class OpenAIJSONClient:
                 }
             },
             timeout=self.settings.openai_timeout_seconds,
+            store=False,
         )
         return self._parse_json_output(response.output_text)
 
@@ -87,6 +88,7 @@ class OpenAIJSONClient:
                 },
             ],
             timeout=self.settings.openai_timeout_seconds,
+            store=False,
         )
         return self._parse_json_output(response.output_text)
 

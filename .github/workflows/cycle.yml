@@ -1,8 +1,6 @@
-name: daddy-cycle v2
+name: Daddy legacy diagnostic cycle
 
 on:
-  schedule:
-    - cron: "0 0 */14 * *"
   workflow_dispatch:
 
 permissions:

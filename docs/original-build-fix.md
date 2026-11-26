@@ -1,5 +1,7 @@
 ORIGINAL BUILD FIX PACK
 
+Historical design notes. For current queue behavior, see the [Doctor runbook](SWARMSY_DOCTOR_NO_MIDDLEMAN.md).
+
 This pack removes the speculative Level 3-9 additions and restores the last clean, stable build set.
 
 Included files:

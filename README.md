@@ -1,63 +1,30 @@
 # THEY CALL ME THE DADDY
 
-**Self-repairing autonomous development agent for SWARMSY swarm coordination.**
+Doctor repairs ordinary software failures in an allowlisted GitHub repository. It keeps a local repair archive, reuses verified fixes, tests proposed edits, and asks Codex to review each published commit.
 
-`the_daddy` is an experimental, failure-driven, multi-agent system designed to diagnose, repair, and evolve its own codebase (and eventually the full swarm). Built with strict safety guards, decision contracts, and phased stability checks.
+## Run Doctor
 
-## Philosophy & Core Features
-- Failure-driven evolution instead of traditional dev cycles
-- Multi-agent architecture (Planner, Reviewer, Diagnoser, Doctor takeover, Depth Learner)
-- Bounded self-patching with risk classification and upgrade gates
-- GitHub auto-PR + merge workflows
-- R2 / Cloudflare memory layer
-- CLI + FastAPI dashboard
-- Phase-based stability (see `phase2_stability_checklist.json` & `decision_contract.json`)
+Install Python 3.11+ and the project on a Linux host with Docker. Copy [.env.example](.env.example) to `.env` and configure the API credentials, GitHub repository, validation image and test command.
 
-## Safety & Target Repo Configuration
-Daddy has strong built-in safety guards:
-- `DADDY_ALLOWED_TARGET_REPOS` controls which repositories Daddy can push/PR/merge to (defaults to self-repair on this repo only)
-- `DADDY_SWARMSY_AUTO_MERGE` controls auto-merge behavior in SWARMSY external mode (defaults to `false` — opens PRs only)
-- See [`docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md`](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) for the full no-middleman queue flow and doctor mode details.
+```bash
+python -m pip install -e .
+python -m the_daddy.swarmsy_doctor_queue --enqueue 'Fix the upload regression' --allow-path src/ --allow-path tests/
+python -m the_daddy.swarmsy_doctor_queue --watch
+```
 
-## Quick Start
-1. Clone & install
-   ```bash
-   git clone https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY.git
-   cd THEY-CALL-ME-THE-DADDY
-   # Recommended: uv sync or pip install -e .
-   ```
-2. Setup environment
-   ```bash
-   cp .env.example .env
-   # Fill your OpenAI key, GitHub token, R2 credentials, etc.
-   ```
-3. Run self-repair
-   ```bash
-   python attempt_real_repair.py
-   ```
-4. Start CLI / dashboard (see `src/the_daddy/cli.py`)
+Use `--process-once` to process one queue entry or check one pending PR. Use `--show-recent` to see repair status, PR links and the reason for any block. The [Doctor runbook](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) has the full setup and recovery details.
 
-## Architecture
-See [`docs/architecture.md`](docs/architecture.md) for full lanes, commit gating, engine details, and agent flow.
+## Target repositories and merging
 
-## Failure-Driven Repair Layers
-See [`docs/failure-driven-repair-layer.md`](docs/failure-driven-repair-layer.md) — the core self-healing mechanism.
+- `DADDY_ALLOWED_TARGET_REPOS` defaults to `HODLKONG64/THEY-CALL-ME-THE-DADDY`. Set `GITHUB_REPO` to the target and explicitly allowlist SWARMSY to repair it.
+- Doctor can merge its PR after a completed Codex review of the current commit, all configured CI checks pass, and GitHub permits the merge. Changes to protected files require a manual merge.
+- `DADDY_SWARMSY_AUTO_MERGE` defaults to `false`. SWARMSY requests still get tested, published and reviewed in this mode.
+- The legacy `the_daddy.cli` engine remains available for diagnostics and manual PR review. The queue worker handles automatic review follow-up and merge.
 
-## OpenAI Upgrade Gate & Safety
-See [`docs/openai-upgrade-gate.md`](docs/openai-upgrade-gate.md) — how the system protects itself during model/LLM changes.
+## Develop
 
-## Additional Documentation
-- [`docs/final-agent-direction.md`](docs/final-agent-direction.md)
-- [`docs/level2-safe.md`](docs/level2-safe.md) (legacy safety notes)
-- [`docs/original-build-fix.md`](docs/original-build-fix.md) (historical context)
-- `system_rules.json`, `decision_contract.json`, `phase2_stability_checklist.json`
+```bash
+python -m pytest -q
+```
 
-## Current Status
-Unfinished hookups (LLM client, R2 memory, full SWARMSY integration) are being prioritized next. Some "wants" are still placeholders/fake — we will replace them systematically.
-
-## Development / Self-Repair
-The system is designed to help *you* improve it. Run `attempt_real_repair.py` or let Daddy take over.
-
----
-
-**Built with ❤️ for SWARMSY** — they call me the Daddy.
+[Architecture](docs/ARCHITECTURE.md) · [Doctor runbook](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) · [SWARMSY integration direction](docs/SWARMSY_APP_DIRECTION.md) · [Historical repair and upgrade notes](docs/final-agent-direction.md)

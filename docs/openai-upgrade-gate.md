@@ -1,5 +1,7 @@
 # OpenAI Upgrade Gate Pack
 
+Historical design notes. For current queue behavior, see the [Doctor runbook](SWARMSY_DOCTOR_NO_MIDDLEMAN.md).
+
 This pack adds a hard workflow gate.
 
 The workflow must not move forward until OpenAI gives upgrade advice.

@@ -13,6 +13,17 @@ It is designed to:
 
 ## Operational lanes
 
+### Doctor request queue
+
+The [Doctor runbook](SWARMSY_DOCTOR_NO_MIDDLEMAN.md) defines the active repair
+and PR lifecycle. The queue worker persists repair evidence and delivery
+checkpoints, asks the API for edits and a verdict on the tested diff, then
+follows Codex review on the published SHA. GitHub CI and branch protections
+remain merge requirements.
+
+The lanes below describe the legacy engine. Its PR delivery ends at manual
+review.
+
 ### 1. Wake review lane
 The wake cycle inspects repo structure, recent memory, and key files before runtime debugging.
 Its job is to detect architectural gaps, stale patterns, and missing safeguards.

@@ -49,7 +49,7 @@ def _looks_high_entropy_secret(token: str) -> bool:
     return _shannon_entropy(candidate) >= 3.6
 
 
-def sanitize_text(value: str) -> str:
+def sanitize_text(value: str, *, redact_entropy: bool = True) -> str:
     out = str(value or "")
     for pattern, replacement in _SIMPLE_PATTERNS:
         out = pattern.sub(replacement, out)
@@ -86,7 +86,8 @@ def sanitize_text(value: str) -> str:
             return "[REDACTED_TOKEN]"
         return token
 
-    out = re.sub(r"[A-Za-z0-9._\-+/=]{28,}", _entropy_replacer, out)
+    if redact_entropy:
+        out = re.sub(r"[A-Za-z0-9._\-+/=]{28,}", _entropy_replacer, out)
     return out
 
 
