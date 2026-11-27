@@ -204,3 +204,40 @@ def test_r2_destination_change_reexports_and_isolates_cached_lessons(tmp_path, m
     # Switching back must recover only the first destination's cache.
     monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
     assert len(shared_search(index, settings, request(), (REPO,))) == 2
+
+def test_r2_destination_change_does_not_inherit_import_cursor(tmp_path, monkeypatch):
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "test-access")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "test-secret")
+    settings = Settings(r2_bucket="legacy", r2_endpoint_url="https://account.r2.cloudflarestorage.com")
+    index = HistoryIndex(tmp_path / "history.sqlite3", settings)
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+
+    class PagedR2(R2Stub):
+        def __init__(self):
+            super().__init__()
+            self.starts = []
+
+        def list_objects_v2(self, **kwargs):
+            self.starts.append(kwargs.get("StartAfter", ""))
+            return super().list_objects_v2(**kwargs)
+
+    first = PagedR2()
+    from the_daddy.doctor_shared_lessons import PREFIX
+    # Oversized objects are skipped, but still advance the import cursor.
+    for i in range(30):
+        first.objects[f"{PREFIX}{REPO}/{i:02d}.json"] = b"x" * 17000
+    one = SharedLessons(index, settings, client=first)
+    one.sync(archive, REPO, (REPO,))
+    one.sync(archive, REPO, (REPO,))
+    assert first.starts == ["", f"{PREFIX}{REPO}/24.json"]
+
+    # Leave a nonempty cursor on the original destination.
+    one.sync(archive, REPO, (REPO,))
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-second")
+    second = PagedR2()
+    SharedLessons(index, settings, client=second).sync(archive, REPO, (REPO,))
+    assert second.starts == [""]
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    one.sync(archive, REPO, (REPO,))
+    assert first.starts[-1] == f"{PREFIX}{REPO}/24.json"
