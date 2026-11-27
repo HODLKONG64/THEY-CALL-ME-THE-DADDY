@@ -299,3 +299,92 @@ def test_history_enriches_merged_pr_without_replay(tmp_path):
     assert result["inline_review_notes"][0]["body"] == "Handle timeout"
     assert "ghp_abcdefghijklmnopqrst" not in json.dumps(result)
     assert "learned_edits" not in result
+
+
+def test_distillation_filters_noise_preserves_claims_and_is_incremental(tmp_path):
+    from the_daddy.doctor_distillation import distill_pending, retrieve, coverage
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    row = {"number": 19, "title": "Fix Worker upload timeout", "state": "closed",
+           "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z",
+           "body": "Thanks!\n@codex review\nRoot cause: Worker upload timeout\n"
+                   "Fix: Retry API request\nFix: Retry API request\n"
+                   "Verification: Tests pass\n<!-- internal template -->"}
+    calls = []
+    def api(repo, endpoint):
+        calls.append(endpoint)
+        if endpoint.startswith("issues?"):
+            return [row]
+        if endpoint == "pulls/19":
+            return {"merged": True, "merge_commit_sha": "a"*40, "head": {"sha": "b"*40}}
+        if endpoint.startswith("pulls/19/files"):
+            return [{"filename": "src/example.py", "patch": "+do_not_send_raw_patch"}]
+        if endpoint.startswith("pulls/19/comments"):
+            return [{"body": "Useful?\nHandle API timeout\nHandle API timeout"}]
+        if endpoint.startswith("commits/"):
+            return {"check_runs": [{"head_sha": "a"*40, "name": "tests", "conclusion": "success"},
+                                   {"head_sha": "c"*40, "name": "wrong head", "conclusion": "success"}]}
+        return [{"body": "Thanks!\n@codex review"}]
+    index.sync_page(REPO, api)
+    result = distill_pending(index, REPO, api)
+    assert result["processed"] == 1
+    assert result["evidence_retry"] == 0
+    before = len(calls)
+    assert distill_pending(index, REPO, api)["processed"] == 0
+    records = retrieve(index, request(problem_summary="Worker upload timeout"), (REPO,))
+    assert len(calls) == before
+    item = records[0]
+    assert item["reported_root_cause"] == ["Worker upload timeout"]
+    assert item["reported_solution"] == ["Retry API request"]
+    assert item["status"] == "merged_not_production_verified"
+    assert item["observed_merge_checks"] == [{"name": "tests", "conclusion": "success"}]
+    assert item["affected_paths"] == ["src/example.py"]
+    assert item["review_findings_unverified"] == ["Handle API timeout"]
+    assert "do_not_send_raw_patch" not in json.dumps(item)
+    assert "@codex review" not in json.dumps(item)
+    assert coverage(index, (REPO,))[0]["distilled_current"] == 1
+    # Source changes invalidate prior conclusions until the next successful enrichment.
+    row["body"] = "Problem: Worker upload timeout\nFailure: Retry did not work"
+    row["updated_at"] = "2026-11-02T00:00:00Z"
+    index.sync_page(REPO, api)
+    item = retrieve(index, request(problem_summary="Worker upload timeout"), (REPO,))[0]
+    assert item["status"] == "closed_unverified"
+    assert "merge_sha" not in item
+    assert coverage(index, (REPO,))[0]["stale_revision"] == 1
+    assert distill_pending(index, REPO, api)["processed"] == 1
+
+
+def test_distillation_retries_without_claiming_success_and_keeps_art_metadata(tmp_path):
+    from the_daddy.doctor_distillation import distill_pending, retrieve, coverage
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    records = [
+        {"number": 1, "title": "New graffiti artwork", "body": "Thanks!", "state": "closed",
+         "updated_at": "2026-11-01T00:00:00Z"},
+        {"number": 2, "title": "Fix API failure", "body": "", "state": "closed", "pull_request": {},
+         "updated_at": "2026-11-01T00:00:00Z"},
+    ]
+    index.sync_page(REPO, lambda repo, endpoint: records)
+    calls = []
+    def failing_api(repo, endpoint):
+        calls.append(endpoint)
+        raise RuntimeError("temporary failure")
+    result = distill_pending(index, REPO, failing_api)
+    assert result == {"processed": 2, "cached": 0, "evidence_retry": 1}
+    assert calls == ["pulls/2"]
+    assert retrieve(index, request(problem_summary="API failure"), (REPO,))[0]["status"] == "closed_unverified"
+    assert distill_pending(index, REPO, failing_api)["processed"] == 0
+    assert coverage(index, (REPO,))[0]["distilled_current"] == 1
+
+
+def test_distillation_context_budget_and_duplicate_provenance():
+    from the_daddy.doctor_distillation import budget_evidence
+    records = [{"repo": REPO, "number": n, "title": "Worker upload timeout",
+                "similarity": 0.8, "status": "closed_unverified",
+                "technical_notes": ["API timeout " * 300], "patch_excerpts": ["raw patch"]}
+               for n in range(1, 10)]
+    records.insert(0, dict(records[0]))
+    result = budget_evidence(records, Settings(), max_bytes=2000)
+    assert result
+    assert len(result) <= 5
+    assert len(json.dumps(result, ensure_ascii=True).encode()) <= 2000
+    assert len({r["number"] for r in result}) == len(result)
+    assert all("patch_excerpts" not in r for r in result)
