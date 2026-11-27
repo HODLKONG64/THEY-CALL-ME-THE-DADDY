@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .config import _normalize_repo_slug
 from .runtime.redaction import sanitize_text
@@ -44,6 +44,24 @@ def moonboys_repair_path(path: str) -> bool:
         path in _MOONBOYS_ART_FILES
         or bool(_MOONBOYS_GAME_FILE.fullmatch(path) and not _MOONBOYS_PROTECTED.search(path))
     )
+
+_WIKI_PAGE = re.compile(r"wiki/[A-Za-z0-9][A-Za-z0-9_-]{0,119}\.html")
+
+
+class WikiLinkRepair(BaseModel, extra="forbid"):
+    page: str
+    old: str
+    new: str
+
+    @model_validator(mode="after")
+    def check_scope(self) -> WikiLinkRepair:
+        if not _WIKI_PAGE.fullmatch(self.page) or not all(
+            url.startswith("/") and _WIKI_PAGE.fullmatch(url[1:]) for url in (self.old, self.new)
+        ):
+            raise ValueError("Expected exact Wiki page and link paths.")
+        if self.old == self.new or self.old.lower().replace("_", "-") != self.new.lower().replace("_", "-"):
+            raise ValueError("Wiki link fixes can only normalize the spelling of an existing target.")
+        return self
 
 _SECRET_PATH_MARKERS = (
     ".env",
@@ -160,6 +178,7 @@ class DoctorRequest(BaseModel):
     screenshots: list[str] = Field(default_factory=list)
     failing_command: str = ""
     allowed_paths: list[str] = Field(default_factory=list)
+    wiki_link: WikiLinkRepair | None = None
     priority: Literal["low", "normal", "high", "urgent"] = "normal"
     status: Literal[
         "queued",
@@ -472,11 +491,16 @@ class DoctorQueueConsumer:
             return False, "SWARMSY Doctor mode can target only HODLKONG64/SWARMSY."
         if not request.allowed_paths:
             return False, "No allowed paths provided."
+        if request.wiki_link and (not is_moonboys_repo(request.repo_target) or request.source != "daddy"):
+            return False, "Wiki link cases must use the Brain website queue."
+        frontend_scope = (
+            request.allowed_paths == [request.wiki_link.page] if request.wiki_link
+            else 1 <= len(request.allowed_paths) <= 5 and all(map(moonboys_repair_path, request.allowed_paths))
+        )
         if is_moonboys_repo(request.repo_target) and (
             not re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id)
             or not re.fullmatch(r"[a-f0-9]{40}", request.expected_base_sha)
-            or not 1 <= len(request.allowed_paths) <= 5
-            or not all(moonboys_repair_path(path) for path in request.allowed_paths)
+            or not frontend_scope
         ):
             return False, "Website repairs require a Brain-approved case, exact frontend files, and a reviewed Git commit."
         for path in request.allowed_paths:

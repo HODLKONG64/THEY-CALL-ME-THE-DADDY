@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from .runtime.redaction import sanitize_text
 from .swarmsy_doctor import (
     DoctorEdit,
     DoctorRequest,
+    WikiLinkRepair,
     _is_secret_path,
     _normalize_path,
     _path_within_allowlist,
@@ -82,6 +84,8 @@ def path_allowed(path: str, request: DoctorRequest) -> bool:
     if not safe_path:
         return False
     if is_moonboys_repo(request.repo_target):
+        if request.wiki_link:
+            return request.allowed_paths == [path] and path == request.wiki_link.page
         return moonboys_repair_path(path) and path in request.allowed_paths
     return (
         _path_within_allowlist(path, default_allowed_paths_for_repo(request.repo_target))
@@ -157,6 +161,15 @@ class DoctorWorkspace:
             except (ValueError, PermissionError, UnicodeError):
                 continue
         return context
+
+    def wiki_link_edits(self, repair: WikiLinkRepair) -> list[DoctorEdit]:
+        tracked = {
+            name for name in self.git("--literal-pathspecs", "ls-files", "-z", "--",
+                                      repair.page, repair.old[1:], repair.new[1:]).split("\0") if name
+        }
+        if tracked != {repair.page, repair.new[1:]} or not self._file(repair.new[1:]).is_file():
+            raise ValueError("Wiki source or replacement target has changed since The Brain scanned it.")
+        return WikiAnchors(self._read(repair.page), repair).edits
 
     def apply(self, request: DoctorRequest, edits: list[DoctorEdit]) -> None:
         if not edits or len(edits) > 20:
@@ -249,6 +262,51 @@ class ContainerValidator:
             return result.returncode == 0, tail
 
 
+class WikiAnchors(HTMLParser):
+    # Consume entire quoted attributes so href-like text inside another attribute is ignored.
+    attributes = re.compile(r"""([^\s=/>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?""")
+
+    def __init__(self, source: str, repair: WikiLinkRepair) -> None:
+        super().__init__()
+        self.repair = repair
+        self.source = source
+        self.line_starts = [0, *(match.end() for match in re.finditer(r"\n", source))]
+        self.spans: list[tuple[int, int]] = []
+        self.feed(source)
+        self.close()
+
+    @property
+    def edits(self) -> list[DoctorEdit]:
+        if not self.spans:
+            return []
+        start, end = self.spans[0][0], self.spans[-1][1]
+        if self.source.count(self.source[start:end]) != 1:
+            start, end = 0, len(self.source)
+        remainder = start
+        parts = []
+        for left, right in self.spans:
+            parts.extend((self.source[remainder:left], self.repair.new))
+            remainder = right
+        parts.append(self.source[remainder:end])
+        return [DoctorEdit(path=self.repair.page, old=self.source[start:end], new="".join(parts))]
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "a" or [value for name, value in attrs if name == "href"] != [self.repair.old]:
+            return
+        raw = self.get_starttag_text()
+        for match in self.attributes.finditer(raw, 2):
+            value = match.group(2)
+            if match.group(1).lower() != "href" or value not in (
+                f'"{self.repair.old}"', f"'{self.repair.old}'",
+            ):
+                continue
+            start, end = match.span(2)
+            line, column = self.getpos()
+            offset = self.line_starts[line - 1] + column
+            self.spans.append((offset + start + 1, offset + end - 1))
+            return
+
+
 class RepairDecision(BaseModel, extra="forbid"):
     verdict: Literal["patch", "approved", "blocked"]
     candidate_digest: str
@@ -288,6 +346,11 @@ class RepairLoop:
         baseline_valid, baseline_output = self.validator(workspace.root)
         feedback = ("Baseline validation passed.\n" if baseline_valid else "Baseline validation failed.\n") + baseline_output
         log(request, self.settings, "baseline_validation", feedback, self.checkpoint)
+        if request.wiki_link:
+            if findings:
+                raise PermissionError("Wiki link repair has review findings that require owner review.")
+            edits = workspace.wiki_link_edits(request.wiki_link)
+            workspace.apply(request, edits)
         budget = max(1, min(8, self.settings.max_attempts))
         for attempt in range(budget + 1):
             diff = workspace.diff()
@@ -298,7 +361,7 @@ class RepairLoop:
                 log(request, self.settings, "validation", feedback, self.checkpoint)
             else:
                 valid = False
-            if attempt == 0 and remembered:
+            if attempt == 0 and remembered and not request.wiki_link:
                 decision = RepairDecision(verdict="patch", candidate_digest="", reason="Reuse a merged fix.", edits=remembered)
             else:
                 prompt = {
@@ -339,6 +402,8 @@ class RepairLoop:
                 log(request, self.settings, "api_approval_rejected", feedback, self.checkpoint)
                 continue
             log(request, self.settings, f"api_{decision.verdict}", decision.reason or "No reason supplied.", self.checkpoint)
+            if request.wiki_link:
+                raise RuntimeError("The exact Wiki link change did not receive API approval.")
             if decision.verdict != "patch" or not decision.edits:
                 feedback = "A tested repair or a concrete patch is required. " + decision.reason
                 continue

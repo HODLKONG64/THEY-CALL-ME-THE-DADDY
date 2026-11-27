@@ -6,6 +6,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 
 from .config import Settings, _normalize_repo_slug
@@ -399,6 +400,37 @@ class GitHubDoctorWorker:
             return False
         self._record_merge(request, outcome["sha"], request.base_branch)
         return True
+
+    def merge_approved_website_pr(
+        self, request: DoctorRequest, approved_head: str, pr: dict,
+    ) -> tuple[str, str]:
+        """Merge a validated website commit after the support bridge verifies owner approval."""
+        self._verify_target(request)
+        if (not is_moonboys_repo(request.repo_target) or request.source != "daddy"
+                or not re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id)
+                or request.head_sha != sha(approved_head)
+                or request.pending_head_sha or not request.review_request_id):
+            raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
+        self._verify_pr(request, pr, approved_head, "main")
+        if pr.get("state") != "open" or pr.get("draft") is not False or pr["base"]["sha"] != request.base_sha:
+            return "merge_blocked", "The website pull request changed after validation."
+        passed, failures = self._ci_review(approved_head)
+        if failures:
+            return "merge_blocked", "A required GitHub check failed. Review the checks on the pull request."
+        if not passed or pr.get("mergeable") is None:
+            return "", ""
+        if pr.get("mergeable") is not True or pr.get("mergeable_state") != "clean":
+            return "merge_blocked", "GitHub reports a merge conflict, missing review, or branch rule. Check the pull request."
+        try:
+            result = self._api("PUT", f"pulls/{request.pr_number}/merge",
+                               {"sha": approved_head, "merge_method": "squash"})
+        except RuntimeError as exc:
+            if isinstance(exc.__cause__, HTTPError) and exc.__cause__.code in {403, 405, 409, 422}:
+                return "merge_blocked", "GitHub blocked the merge. Check the token permissions and branch rules on the pull request."
+            raise
+        if not isinstance(result, dict) or result.get("merged") is not True:
+            return "merge_blocked", "GitHub did not confirm the merge. Check the pull request."
+        return "merged", "GitHub merged the commit you approved in Telegram."
 
     def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:
         request.merge_sha = sha(commit)
