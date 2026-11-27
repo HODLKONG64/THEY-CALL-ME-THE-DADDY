@@ -32,6 +32,10 @@ Website support approval records the exact PR head. If the website base advanced
 
 Worker and D1 releases use the [website's protected Cloudflare workflow](https://github.com/Crypto-Moonboys/Crypto-Moonboys.github.io/blob/main/.github/workflows/cloudflare-pr-release.yml). Its release credentials live in the website repository's `cloudflare-production` environment. Doctor's WSL watcher needs its website GitHub credentials and local validation runtime. SAM editorial approvals run through the separate Brain bridge.
 
+## Repair intelligence
+
+Doctor can search all local repairs, rank related successful and failed repairs, and optionally maintain a resumable GitHub issue/PR index and private R2 terminal lesson library. Run the sync commands separately from the repair watcher. Shared lessons do not grant permission to repair or merge and are not a cross-host queue. See the [repair intelligence runbook](docs/DOCTOR_REPAIR_INTELLIGENCE.md) for setup, verification and remaining failover gates.
+
 ## Develop
 
 ```bash
