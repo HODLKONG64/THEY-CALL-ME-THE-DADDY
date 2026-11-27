@@ -65,6 +65,49 @@ Run `--watch` under a service supervisor for restart recovery. The GitHub Action
 
 The archive includes a status timeline, API verdicts, validation output, PR and commit identifiers, and replayable edits. Existing archive records without an attested PR head require manual review. The focused worker uses this archive for repair memory, while the legacy wake engine keeps its separate R2/local memory.
 
+## Scan PRs and verify the merge
+
+Set `DADDY_DOCTOR_WATCH_CI=true` for the existing queue worker and give its
+GitHub token Actions read access. The website uses **Full Linux Test Suite**
+and Daddy uses **Doctor CI**. Configure the target's required GitHub checks as
+before. Keep the website worker's existing Telegram approval path for cases
+opened by Brain.
+
+```sh
+python -m the_daddy.swarmsy_doctor_queue --scan-prs
+```
+
+This reports the latest 25 open PRs into the target's default branch, with
+exact-head CI, draft and pause states. The watcher checks periodically and
+picks up a same-repository PR when it has the `doctor:repair-ci` label, a
+failed functional test step, and one to five eligible changed source files.
+The isolated validation command must reproduce a failure before Doctor proposes a
+patch. Changes are confined to the selected files. Drafts and PRs labelled
+`doctor:paused` stay untouched while paused. Forks, protected paths,
+test-only changes, conflicts, and CI infrastructure failures stay with
+the operator. Create the labels in the target repository before using them.
+
+An adopted or post-merge follow-up PR needs the separate
+`doctor:merge-ci` label for Doctor to merge it. The exact new head must pass
+Codex review, the named CI suite, and configured required checks. GitHub
+still enforces its own branch rules. Reviewed website support PRs retain
+the existing commit-specific Telegram merge approval.
+
+After a tracked PR merges, `--show-recent` includes the CI status and link for
+the **merge commit**, separately from deployment. Turning off CI watching
+pauses pending CI records without blocking repairs or deployment tracking.
+Use the test workflow on
+that commit, or set `DADDY_DOCTOR_DISPATCH_CI=true` to let Doctor request a
+missing run on the current ref with Actions write permission. Doctor
+checks the returned run's SHA before using it. Start the first failing
+check on an untracked PR through GitHub so the scanner has evidence to adopt it.
+
+If the exact merge commit still heads the default branch and its functional
+test fails in repairable scope, Doctor queues one follow-up PR with the same
+file scope and validates it before publishing. An advanced branch, an
+unreproduced failure, or a failed follow-up needs review. This CI lane
+does not run Cloudflare deployments or migrations.
+
 ## Cloudflare Worker deployment
 
 For a target with a Cloudflare Worker and an existing deploy workflow triggered by a push to the production branch, set `DADDY_DOCTOR_CLOUDFLARE_WORKFLOW` to the workflow filename, such as `deploy-worker.yml`, and `DADDY_DOCTOR_CLOUDFLARE_JOB` to its actual deploy job name in GitHub. The Doctor token also needs Actions read access. The target workflow owns the Cloudflare credentials and production environment. Doctor records the merged commit, watches its push-triggered workflow run and shows the deployment result and link in `--show-recent`.

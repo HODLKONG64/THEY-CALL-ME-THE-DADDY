@@ -19,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 from .agents.openai_client import OpenAIJSONClient
 from .config import Settings
+from .merge_rules import PROTECTED_CORE_FILES
 from .runtime.redaction import sanitize_text
 from .swarmsy_doctor import (
     DoctorEdit,
@@ -83,6 +84,8 @@ def path_allowed(path: str, request: DoctorRequest) -> bool:
         return False
     if not safe_path:
         return False
+    if request.ci_branch or request.ci_follow_up:
+        return ci_repair_path(path, request.repo_target) and path in request.allowed_paths
     if is_moonboys_repo(request.repo_target):
         if request.wiki_link:
             return request.allowed_paths == [path] and path == request.wiki_link.page
@@ -91,6 +94,22 @@ def path_allowed(path: str, request: DoctorRequest) -> bool:
         _path_within_allowlist(path, default_allowed_paths_for_repo(request.repo_target))
         and _path_within_allowlist(path, request.allowed_paths)
     )
+
+
+def ci_repair_path(path: str, repo: str) -> bool:
+    # CI evidence cannot expand the edit scope into infrastructure, security, or tests.
+    if not re.fullmatch(r"(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:py|html|css|m?js|tsx?)", path):
+        return False
+    if _is_secret_path(path) or path in PROTECTED_CORE_FILES or re.search(
+        r"auth|admin|credential|security|vuln|exploit|session|signer|wallet|payment|payout|reward|"
+        r"leaderboard|score|anti[-_]?cheat|progression|login|deploy|worker|migrat|workflow|"
+        r"(^|/)(?:tests?|fixtures|config|infra|vendor|build)(?:/|[_.-])|\.(?:test|spec)\.",
+        path, re.I,
+    ):
+        return False
+    if is_moonboys_repo(repo):
+        return moonboys_repair_path(path)
+    return _path_within_allowlist(path, default_allowed_paths_for_repo(repo))
 
 
 class DoctorWorkspace:
@@ -339,6 +358,7 @@ class RepairLoop:
     def run(
         self, workspace: DoctorWorkspace, request: DoctorRequest,
         findings: list[str], remembered: list[DoctorEdit],
+        *, require_baseline_failure: bool = False,
     ) -> tuple[list[DoctorEdit], str]:
         edits: list[DoctorEdit] = []
         evidence = "\n".join([request.problem_summary, request.feature_hint, *request.allowed_paths,
@@ -346,6 +366,9 @@ class RepairLoop:
         baseline_valid, baseline_output = self.validator(workspace.root)
         feedback = ("Baseline validation passed.\n" if baseline_valid else "Baseline validation failed.\n") + baseline_output
         log(request, self.settings, "baseline_validation", feedback, self.checkpoint)
+        ci_repair = bool(request.ci_branch or request.ci_follow_up)
+        if require_baseline_failure and (baseline_valid or baseline_output == "Validation timed out."):
+            raise PermissionError("The configured local test did not reproduce a functional failure. Review the CI evidence.")
         if request.wiki_link:
             if findings:
                 raise PermissionError("Wiki link repair has review findings that require owner review.")
@@ -361,7 +384,7 @@ class RepairLoop:
                 log(request, self.settings, "validation", feedback, self.checkpoint)
             else:
                 valid = False
-            if attempt == 0 and remembered and not request.wiki_link:
+            if attempt == 0 and remembered and not (request.wiki_link or ci_repair):
                 decision = RepairDecision(verdict="patch", candidate_digest="", reason="Reuse a merged fix.", edits=remembered)
             else:
                 prompt = {
@@ -380,7 +403,12 @@ class RepairLoop:
                 try:
                     response = self.api.generate_json(
                         model=self.settings.openai_model_review if diff else self.settings.openai_model_main,
-                        system=REPAIR_INSTRUCTIONS, prompt=json.dumps(prompt), schema=RepairDecision.model_json_schema(),
+                        system=REPAIR_INSTRUCTIONS + (
+                            "\nFor functional CI repairs preserve test coverage, authorization, account boundaries,"
+                            " and deployment controls. Do not create exploit code or reproduce security attacks."
+                            if ci_repair or require_baseline_failure else ""
+                        ),
+                        prompt=json.dumps(prompt), schema=RepairDecision.model_json_schema(),
                     )
                     decision = RepairDecision.model_validate(response)
                 except (ValidationError, ValueError):
