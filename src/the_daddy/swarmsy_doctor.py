@@ -311,10 +311,22 @@ class JsonDoctorArchive:
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
             key=lambda item: item.updated_at,
         )
-        # Preserve polling fairness for in-flight PRs/deployments. Reorder only queued slots.
-        queued = iter(sorted((item for item in active if item.status == "queued"),
-                             key=lambda item: ({"urgent": 0, "high": 1, "normal": 2, "low": 3}[item.priority], item.updated_at)))
-        return [next(queued) if item.status == "queued" else item for item in active]
+        # Prioritize only within consecutive queued groups. An in-flight poll is
+        # a barrier: a newly queued urgent repair cannot inherit an older slot
+        # ahead of that poll. Chronological order across barriers preserves progress
+        # for both lanes even when new urgent requests arrive every cycle.
+        priority = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+        ordered: list[DoctorRequest] = []
+        queued: list[DoctorRequest] = []
+        for item in active:
+            if item.status == "queued":
+                queued.append(item)
+                continue
+            ordered.extend(sorted(queued, key=lambda job: (priority[job.priority], job.updated_at)))
+            queued.clear()
+            ordered.append(item)
+        ordered.extend(sorted(queued, key=lambda job: (priority[job.priority], job.updated_at)))
+        return ordered
 
     def upsert_request(self, request: DoctorRequest) -> None:
         with archive_lock(self.path.with_suffix(self.path.suffix + ".lock")):
