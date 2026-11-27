@@ -14,6 +14,8 @@ python -m the_daddy.swarmsy_doctor_queue --watch
 
 Use `--process-once` to process one queue entry or check one pending PR. Use `--show-recent` to see repair status, PR links and the reason for any block. The [Doctor runbook](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) has the full setup and recovery details.
 
+Recent repairs: run `python -m the_daddy.swarmsy_doctor_queue --show-recent`.
+
 ## Target repositories and merging
 
 - `DADDY_ALLOWED_TARGET_REPOS` defaults to `HODLKONG64/THEY-CALL-ME-THE-DADDY`. Set `GITHUB_REPO` to the target and explicitly allowlist SWARMSY to repair it.
