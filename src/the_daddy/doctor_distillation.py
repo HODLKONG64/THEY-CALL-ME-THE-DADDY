@@ -211,9 +211,17 @@ def retrieve(index, request, repos):
                 else:
                     record = metadata(raw, index.settings)
                     record["evidence_complete_for_bounded_sample"] = False
-                score = max(similarity(request.problem_summary, record["title"]),
-                            similarity(query, record["title"]),
-                            similarity(query, " ".join(record.get("technical_notes", []) + record.get("affected_paths", []))))
+                # Score each extracted claim independently so unrelated notes cannot
+                # dilute a precise symptom, cause, solution or verification match.
+                fields = ("reported_problem", "reported_root_cause", "reported_solution",
+                          "reported_verification", "reported_failure", "technical_notes",
+                          "affected_paths", "review_findings_unverified", "discussion_notes_unverified")
+                searchable = [record["title"]]
+                for field in fields:
+                    searchable.extend(record.get(field, []))
+                score = max((similarity(text, value)
+                             for value in searchable
+                             for text in (request.problem_summary, query)), default=0.0)
                 if score < (0.55 if record["classification"] != "technical" else 0.25):
                     continue
                 if record["status"] == "merged_not_production_verified":
