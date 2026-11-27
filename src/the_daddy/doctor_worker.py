@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
+import sqlite3
 import tempfile
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 
 from .config import Settings, _normalize_repo_slug
+from .doctor_history import HistoryIndex, local_lessons, repo_scope
+from .doctor_shared_lessons import shared_search
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
-from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, scrub, sha
+from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
 from .merge_rules import PROTECTED_CORE_FILES
 from .swarmsy_doctor import (
@@ -24,7 +28,7 @@ PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
     "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
-    "src/the_daddy/doctor_ci.py",
+    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py",
 }
 
 
@@ -70,6 +74,9 @@ class GitHubDoctorWorker:
         )
         validator = ContainerValidator(validation_image, validation_command, settings.run_timeout_seconds)
         self.repair = RepairLoop(self.settings, validator, self.archive.upsert_request)
+        self.history_repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), repo)
+        self.history_enabled = os.getenv("DADDY_DOCTOR_HISTORY_ENABLED", "").lower() == "true"
+        self.history = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), self.settings)
 
     def _api(self, method: str, endpoint: str, data: dict | None = None):
         url = f"https://api.github.com/repos/{self.git.github_repo}"
@@ -183,13 +190,43 @@ class GitHubDoctorWorker:
         matches = self._api("GET", f"git/matching-refs/heads/{self._branch(request)}")
         return next((sha(item["object"]["sha"]) for item in matches if item["ref"] == ref), "")
 
+    def _history_api(self, repo: str, endpoint: str):
+        if repo not in self.history_repos:
+            raise PermissionError("Repository is outside the history read scope.")
+        return self.git._api_request("GET", f"https://api.github.com/repos/{repo}/{endpoint}")
+
+    def sync_history(self) -> list[dict]:
+        return [self.history.sync_page(repo, self._history_api) for repo in self.history_repos]
+
+    def _historical_evidence(self, request: DoctorRequest) -> list[dict]:
+        evidence = local_lessons(request, self.archive, self.settings)
+        if self.history_enabled:
+            try:
+                evidence.extend(self.history.search(request, self.history_repos, self._history_api))
+            except (RuntimeError, OSError, ValueError, sqlite3.Error):
+                log(request, self.settings, "history_unavailable",
+                    "GitHub history index unavailable; proceeding with local evidence.",
+                    self.archive.upsert_request)
+        if os.getenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "").strip():
+            try:
+                evidence.extend(shared_search(self.history, self.settings, request, self.history_repos))
+            except (RuntimeError, OSError, ValueError, sqlite3.Error):
+                log(request, self.settings, "shared_history_unavailable",
+                    "Shared advisory cache unavailable; proceeding with local evidence.", self.archive.upsert_request)
+        return evidence
+
     def _memory(self, request: DoctorRequest) -> list[DoctorEdit]:
         summary = " ".join(request.problem_summary.casefold().split())
-        for past in self.archive.recent_requests(limit=100):
+        for past in sorted(self.archive.all_requests(), key=lambda item: item.updated_at, reverse=True):
             if (
                 past.request_id != request.request_id and past.status == "merged" and past.learned_edits
+                and re.fullmatch(r"[0-9a-f]{40}", past.head_sha)
+                and re.fullmatch(r"[0-9a-f]{40}", past.merge_sha)
+                and past.post_merge_ci in {"passed", "unconfigured"}
+                and past.deployment_status in {"deployed", "unconfigured"}
                 and _normalize_repo_slug(past.repo_target) == _normalize_repo_slug(request.repo_target)
                 and " ".join(past.problem_summary.casefold().split()) == summary
+                and all(path_allowed(edit.path, request) for edit in past.learned_edits)
             ):
                 return past.learned_edits
         return []
@@ -203,6 +240,10 @@ class GitHubDoctorWorker:
             remembered = self._memory(request) if not findings else []
             try:
                 options = {"require_baseline_failure": True} if require_ci_failure else {}
+                history = self._historical_evidence(request) if not request.wiki_link else []
+                if history:
+                    options["history"] = history
+                    log(request, self.settings, "history_retrieved", f"Retrieved {len(history)} advisory records.", self.archive.upsert_request)
                 edits, digest = self.repair.run(workspace, request, findings, remembered, **options)
             except RuntimeError as exc:
                 raise RuntimeError(scrub(str(exc), self.settings)) from exc

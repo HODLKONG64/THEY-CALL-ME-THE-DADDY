@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+import io
+import json
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+
+from the_daddy.config import Settings
+from the_daddy.doctor_history import HistoryIndex, local_lessons, repo_scope
+from the_daddy.doctor_shared_lessons import SharedLessons, shared_search
+from the_daddy.doctor_worker import GitHubDoctorWorker
+from the_daddy.swarmsy_doctor import DoctorRequest, DoctorEdit, JsonDoctorArchive
+
+REPO = "hodlkong64/they-call-me-the-daddy"
+OTHER = "crypto-moonboys/crypto-moonboys.github.io"
+
+
+def request(**kwargs):
+    return DoctorRequest(**({"problem_summary": "Worker upload timeout",
+                            "repo_target": REPO, "source": "daddy",
+                            "allowed_paths": ["src/"]} | kwargs))
+
+
+def test_history_scope_is_explicit_and_cannot_add_write_permission():
+    assert repo_scope(OTHER, REPO) == (OTHER, REPO)
+    with pytest.raises(ValueError):
+        repo_scope("https://evil.test/foo", REPO)
+
+
+def test_exact_replay_requires_attestation_and_scope_and_reads_all_records(tmp_path):
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    candidate = request(request_id="old", status="merged", head_sha="a"*40, merge_sha="b"*40,
+                        updated_at="2020-01-01T00:00:00Z",
+                        learned_edits=[DoctorEdit(path="src/example.py", old="a", new="b")])
+    archive._save([candidate, *[request(request_id=f"new-{i}", problem_summary="unrelated",
+                                      status="failed_with_reason") for i in range(110)]])
+    settings = Settings(github_repo=REPO, allowed_target_repos=frozenset({REPO}))
+    worker = GitHubDoctorWorker(settings, archive, validation_image="test",
+                               validation_command="python -m pytest", required_checks=set())
+    assert worker._memory(request()) == candidate.learned_edits
+    assert not worker._memory(request(allowed_paths=["tests/"]))
+    candidate.deployment_status = "failed"
+    archive.upsert_request(candidate)
+    assert not worker._memory(request())
+    candidate.deployment_status = "unconfigured"
+    candidate.head_sha = ""
+    archive.upsert_request(candidate)
+    assert not worker._memory(request())
+
+
+def test_related_failed_repairs_are_advisory_and_secrets_are_redacted(tmp_path):
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    secret = "sk-test-abcdefghijklmnop1234567890"
+    archive.upsert_request(request(status="failed_with_reason", problem_summary="Upload worker timeout again",
+                                   final_reason=f"OPENAI_API_KEY={secret}"))
+    archive.upsert_request(request(repo_target=OTHER, status="merged"))
+    lessons = local_lessons(request(), archive, Settings())
+    assert len(lessons) == 1 and lessons[0]["outcome"] == "failed_with_reason"
+    assert secret not in json.dumps(lessons)
+
+
+def test_history_resume_dedup_failure_and_merge_provenance(tmp_path):
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    seen = []
+    row = {"number": 3, "title": "Worker upload timeout", "body": "GITHUB_TOKEN=ghp_abcdefghijklmnopqrst",
+           "state": "closed", "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z"}
+    def api(repo, endpoint):
+        seen.append(endpoint)
+        if endpoint.startswith("issues?"):
+            page = parse_qs(urlsplit(endpoint).query)["page"][0]
+            if page == "1":
+                return [dict(row, number=n) for n in range(1, 101)]
+            return [row]
+        if endpoint.startswith("pulls/") and endpoint.count("/") == 1:
+            return {"merged": False}
+        return []
+    assert index.sync_page(REPO, api)["next_page"] == 2
+    with pytest.raises(RuntimeError):
+        index.sync_page(REPO, lambda *_: (_ for _ in ()).throw(RuntimeError("offline")))
+    assert index.sync_page(REPO, api)["cycle_complete"]
+    assert "page=2" in seen[1]
+    db = index.connect()
+    try:
+        assert db.execute("select count(*) from history").fetchone()[0] == 100
+    finally:
+        db.close()
+    records = index.search(request(), (REPO,), api)
+    assert records and all(row["outcome"] == "closed_not_verified" for row in records)
+    assert "ghp_abcdefghijklmnopqrst" not in json.dumps(records)
+    assert index.path.stat().st_mode & 0o777 == 0o600
+
+
+def test_priority_does_not_starve_existing_review(tmp_path):
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    archive._save([
+        request(request_id="review", status="pr_opened_waiting_review", updated_at="2020-01-01T00:00:00Z"),
+        request(request_id="normal", updated_at="2020-01-02T00:00:00Z"),
+        request(request_id="urgent", priority="urgent", updated_at="2020-01-03T00:00:00Z"),
+    ])
+    assert [item.request_id for item in archive.active_requests(REPO)] == ["review", "urgent", "normal"]
+
+
+
+def test_urgent_arrivals_cannot_inherit_old_slot_ahead_of_review(tmp_path):
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    archive._save([
+        request(request_id="old-normal", updated_at="2020-01-01T00:00:00Z"),
+        request(request_id="review", status="pr_opened_waiting_review", updated_at="2020-01-02T00:00:00Z"),
+        request(request_id="deploy", status="merged", deployment_status="pending",
+                updated_at="2020-01-03T00:00:00Z"),
+    ])
+    # Model the one-request-per-pass consumer, with a fresh urgent repair
+    # before every pass. None may jump over a waiting in-flight poll.
+    processed = []
+    for i in range(3):
+        archive.upsert_request(request(request_id=f"urgent-{i}", priority="urgent",
+                                       updated_at=f"2020-02-0{i+1}T00:00:00Z"))
+        selected = archive.active_requests(REPO)[0]
+        processed.append(selected.request_id)
+        if selected.status == "merged":
+            selected.deployment_status = "deployed"
+        else:
+            selected.status = "failed_with_reason"
+        archive.upsert_request(selected)
+    assert processed == ["old-normal", "review", "deploy"]
+    assert all(item.priority == "urgent" for item in archive.active_requests(REPO))
+
+
+class R2Stub:
+    def __init__(self):
+        self.objects = {}
+    def put_object(self, *, Bucket, Key, Body, ContentType):
+        self.objects[Key] = Body
+    def list_objects_v2(self, *, Bucket, Prefix, MaxKeys, StartAfter=""):
+        keys = sorted(k for k in self.objects if k.startswith(Prefix) and k > StartAfter)
+        return {"Contents": [{"Key": key, "Size": len(self.objects[key])} for key in keys[:MaxKeys]],
+                "IsTruncated": len(keys) > MaxKeys}
+    def get_object(self, *, Bucket, Key):
+        return {"Body": io.BytesIO(self.objects[Key])}
+
+
+def test_shared_memory_two_hosts_is_idempotent_and_never_transfers_edits(tmp_path, monkeypatch):
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "private-doctor-intelligence")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "test-access")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "test-secret")
+    settings = Settings(r2_bucket="legacy", r2_endpoint_url="https://account.r2.cloudflarestorage.com")
+    r2 = R2Stub()
+    archive = JsonDoctorArchive(tmp_path / "a.json")
+    past = request(status="merged", learned_edits=[DoctorEdit(path="src/example.py", old="private", new="code")],
+                   logs=["private raw log"], final_reason="Fixed worker upload timeout")
+    archive.upsert_request(past)
+    a = HistoryIndex(tmp_path / "a.sqlite3", settings)
+    b = HistoryIndex(tmp_path / "b.sqlite3", settings)
+    one, two = SharedLessons(a, settings, client=r2), SharedLessons(b, settings, client=r2)
+    assert one.sync(archive, REPO, (REPO,))["uploaded"] == 1
+    assert one.sync(archive, REPO, (REPO,))["uploaded"] == 0
+    assert two.sync(JsonDoctorArchive(tmp_path / "b.json"), REPO, (REPO,))["downloaded"] == 1
+    assert two.sync(JsonDoctorArchive(tmp_path / "b.json"), REPO, (REPO,))["downloaded"] == 0
+    raw = b"".join(r2.objects.values())
+    assert b"learned_edits" not in raw and b"private raw log" not in raw and b"private" not in raw
+    matches = shared_search(b, settings, request(), (REPO,))
+    assert len(matches) == 1 and matches[0]["outcome"] == "merged"
+    assert not shared_search(b, settings, request(), (OTHER,))
+
+def test_r2_destination_change_reexports_and_isolates_cached_lessons(tmp_path, monkeypatch):
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "test-access")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "test-secret")
+    settings = Settings(r2_bucket="legacy", r2_endpoint_url="https://account.r2.cloudflarestorage.com")
+    index = HistoryIndex(tmp_path / "history.sqlite3", settings)
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    archive.upsert_request(request(request_id="local", status="merged"))
+    remote_archive = JsonDoctorArchive(tmp_path / "remote.json")
+    remote_archive.upsert_request(request(request_id="remote-only", status="failed_with_reason"))
+    remote_index = HistoryIndex(tmp_path / "remote.sqlite3", settings)
+    first = R2Stub()
+    SharedLessons(remote_index, settings, client=first).sync(remote_archive, REPO, (REPO,))
+    assert SharedLessons(index, settings, client=first).sync(archive, REPO, (REPO,)) == {
+        "uploaded": 1, "downloaded": 1}
+    assert len(shared_search(index, settings, request(), (REPO,))) == 2
+
+    # Preserve the local index but switch to an empty bucket.
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-second")
+    second = R2Stub()
+    assert shared_search(index, settings, request(), (REPO,)) == []
+    assert SharedLessons(index, settings, client=second).sync(archive, REPO, (REPO,))["uploaded"] == 1
+    assert len(second.objects) == 1
+    assert len(shared_search(index, settings, request(), (REPO,))) == 1
+    assert SharedLessons(index, settings, client=second).sync(archive, REPO, (REPO,))["uploaded"] == 0
+
+    # The same bucket name under a different account is a different destination.
+    other_settings = settings.model_copy(update={"r2_endpoint_url": "https://other.r2.cloudflarestorage.com"})
+    third = R2Stub()
+    assert shared_search(index, other_settings, request(), (REPO,)) == []
+    assert SharedLessons(index, other_settings, client=third).sync(archive, REPO, (REPO,))["uploaded"] == 1
+    assert len(third.objects) == 1
+
+    # Equivalent endpoint spelling and credential rotation preserve checkpoints.
+    equivalent = settings.model_copy(update={"r2_endpoint_url": "https://account.r2.cloudflarestorage.com:443/"})
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "rotated-secret")
+    assert SharedLessons(index, equivalent, client=second).sync(archive, REPO, (REPO,))["uploaded"] == 0
+
+    # Switching back must recover only the first destination's cache.
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    assert len(shared_search(index, settings, request(), (REPO,))) == 2
+
+def test_r2_destination_change_does_not_inherit_import_cursor(tmp_path, monkeypatch):
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "test-access")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "test-secret")
+    settings = Settings(r2_bucket="legacy", r2_endpoint_url="https://account.r2.cloudflarestorage.com")
+    index = HistoryIndex(tmp_path / "history.sqlite3", settings)
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+
+    class PagedR2(R2Stub):
+        def __init__(self):
+            super().__init__()
+            self.starts = []
+
+        def list_objects_v2(self, **kwargs):
+            self.starts.append(kwargs.get("StartAfter", ""))
+            return super().list_objects_v2(**kwargs)
+
+    first = PagedR2()
+    from the_daddy.doctor_shared_lessons import PREFIX
+    # Oversized objects are skipped, but still advance the import cursor.
+    for i in range(30):
+        first.objects[f"{PREFIX}{REPO}/{i:02d}.json"] = b"x" * 17000
+    one = SharedLessons(index, settings, client=first)
+    one.sync(archive, REPO, (REPO,))
+    one.sync(archive, REPO, (REPO,))
+    assert first.starts == ["", f"{PREFIX}{REPO}/24.json"]
+
+    # Leave a nonempty cursor on the original destination.
+    one.sync(archive, REPO, (REPO,))
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-second")
+    second = PagedR2()
+    SharedLessons(index, settings, client=second).sync(archive, REPO, (REPO,))
+    assert second.starts == [""]
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    one.sync(archive, REPO, (REPO,))
+    assert first.starts[-1] == f"{PREFIX}{REPO}/24.json"

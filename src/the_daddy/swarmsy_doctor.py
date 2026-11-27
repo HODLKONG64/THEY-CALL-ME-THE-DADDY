@@ -303,7 +303,7 @@ class JsonDoctorArchive:
         return [item for item in self._load() if item.status == "queued"]
 
     def active_requests(self, repo: str = "", *, include_post_merge_ci: bool = True) -> list[DoctorRequest]:
-        return sorted(
+        active = sorted(
             (item for item in self._load(strict=True)
              if (item.status not in FINAL_STATUSES or item.status == "merged"
                  and (item.deployment_status == "pending"
@@ -311,6 +311,22 @@ class JsonDoctorArchive:
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
             key=lambda item: item.updated_at,
         )
+        # Prioritize only within consecutive queued groups. An in-flight poll is
+        # a barrier: a newly queued urgent repair cannot inherit an older slot
+        # ahead of that poll. Chronological order across barriers preserves progress
+        # for both lanes even when new urgent requests arrive every cycle.
+        priority = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+        ordered: list[DoctorRequest] = []
+        queued: list[DoctorRequest] = []
+        for item in active:
+            if item.status == "queued":
+                queued.append(item)
+                continue
+            ordered.extend(sorted(queued, key=lambda job: (priority[job.priority], job.updated_at)))
+            queued.clear()
+            ordered.append(item)
+        ordered.extend(sorted(queued, key=lambda job: (priority[job.priority], job.updated_at)))
+        return ordered
 
     def upsert_request(self, request: DoctorRequest) -> None:
         with archive_lock(self.path.with_suffix(self.path.suffix + ".lock")):
@@ -329,6 +345,9 @@ class JsonDoctorArchive:
                 return existing
             self._save([*items, request])
             return request
+
+    def all_requests(self) -> list[DoctorRequest]:
+        return self._load(strict=True)
 
     def recent_requests(self, limit: int = 10) -> list[DoctorRequest]:
         items = self._load()
