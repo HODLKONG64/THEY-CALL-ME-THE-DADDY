@@ -13,6 +13,7 @@ from .doctor_repair import scrub
 from .doctor_worker import GitHubDoctorWorker
 from .doctor_history import HistoryIndex, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import sync_shared
+from .doctor_diagnostics import report
 from .git_tools import GitBranchExecutor
 from .swarmsy_doctor import (
     SWARMSY_REPO,
