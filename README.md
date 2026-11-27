@@ -28,7 +28,9 @@ The Brain sends approved website repair cases to the website-scoped Doctor servi
 
 Use `--scan-prs` for a read-only CI inventory. `DADDY_DOCTOR_WATCH_CI=true` enables ongoing tracking. `DADDY_DOCTOR_DISPATCH_CI=true` lets Doctor request missing checks for tracked commits with a website-scoped token that has Actions write access. Doctor can adopt an eligible functional failure tagged `doctor:repair-ci` after reproducing it. `doctor:merge-ci` enables the separate CI merge path after Codex and required GitHub checks pass. Doctor records post-merge checks against the merge SHA and can queue one scoped follow-up while that commit is still current. [CI scanning and merge verification](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md#scan-prs-and-verify-the-merge)
 
-Worker and D1 releases use the [website's protected Cloudflare workflow](https://github.com/Crypto-Moonboys/Crypto-Moonboys.github.io/blob/main/.github/workflows/cloudflare-pr-release.yml). SAM editorial approvals run through the separate Brain bridge.
+Website support approval records the exact PR head. If the website base advanced after validation, return the case to review so Doctor can produce a current repair. [Case #2](https://github.com/Crypto-Moonboys/Crypto-Moonboys.github.io/pull/2270) verified the Telegram-approved GitHub merge. Merge status and live verification are separate checks.
+
+Worker and D1 releases use the [website's protected Cloudflare workflow](https://github.com/Crypto-Moonboys/Crypto-Moonboys.github.io/blob/main/.github/workflows/cloudflare-pr-release.yml). Its release credentials live in the website repository's `cloudflare-production` environment. Doctor's WSL watcher needs its website GitHub credentials and local validation runtime. SAM editorial approvals run through the separate Brain bridge.
 
 ## Develop
 
