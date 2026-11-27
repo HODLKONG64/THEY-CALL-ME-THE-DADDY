@@ -411,3 +411,40 @@ def test_distilled_claims_are_searchable_outside_title_and_keyword_notes(tmp_pat
     assert retrieve(index, query, (REPO,))[0]["number"] == 21
     assert distill_pending(index, REPO, api)["processed"] == 1
     assert retrieve(index, query, (REPO,))[0]["number"] == 21
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_distillation_duplicate_preserves_local_failure_before_ranking(reverse):
+    from the_daddy.doctor_distillation import budget_evidence
+    historical = {"source": "distilled_github_history", "repo": REPO, "number": 42,
+                  "similarity": 1.0, "title": "Fix API timeout",
+                  "status": "merged_not_production_verified"}
+    local = {"source": "local_doctor_archive", "repo": REPO, "pr": 42,
+             "similarity": 0.8, "problem": "API timeout",
+             "outcome": "merged", "deployment_job": "failed",
+             "post_merge_ci": "needs_review", "reference": "https://github.com/" + REPO + "/pull/42"}
+    shared = {"source": "shared_doctor_advisory", "repo": REPO, "pr": 42,
+              "similarity": 0.95, "problem": "API timeout", "outcome": "merged",
+              "deployment_job": "deployed"}
+    records = [historical, local, shared]
+    if reverse:
+        records.reverse()
+    result = budget_evidence(records, Settings())
+    assert len(result) == 1
+    assert result[0]["source"] == "local_doctor_archive"
+    assert result[0]["deployment_job"] == "failed"
+    assert result[0]["post_merge_ci"] == "needs_review"
+    assert result[0]["similarity"] == 1.0
+
+
+def test_distillation_duplicate_preserves_shared_outcome_without_local():
+    from the_daddy.doctor_distillation import budget_evidence
+    result = budget_evidence([
+        {"source": "distilled_github_history", "repo": REPO, "number": 42,
+         "similarity": 1.0, "title": "Fix API timeout", "status": "merged_not_production_verified"},
+        {"source": "shared_doctor_advisory", "repo": REPO, "pr": 42,
+         "similarity": 0.6, "problem": "API timeout", "outcome": "merged", "deployment_job": "failed"},
+    ], Settings())
+    assert len(result) == 1
+    assert result[0]["deployment_job"] == "failed"
+    assert result[0]["similarity"] == 1.0
