@@ -26,6 +26,8 @@ from .swarmsy_doctor import (
     _normalize_path,
     _path_within_allowlist,
     default_allowed_paths_for_repo,
+    is_moonboys_repo,
+    moonboys_repair_path,
     utc_now_iso,
 )
 
@@ -68,17 +70,23 @@ def log(
 
 def path_allowed(path: str, request: DoctorRequest) -> bool:
     try:
-        return (
+        safe_path = (
             path == _normalize_path(path)
             and Path(path).suffix in SOURCE_SUFFIXES
             and not _is_secret_path(path)
             and not any(part.startswith(".") or part in {"node_modules", "vendor", "dist", "build"}
                         for part in path.split("/"))
-            and _path_within_allowlist(path, default_allowed_paths_for_repo(request.repo_target))
-            and _path_within_allowlist(path, request.allowed_paths)
         )
     except ValueError:
         return False
+    if not safe_path:
+        return False
+    if is_moonboys_repo(request.repo_target):
+        return moonboys_repair_path(path) and path in request.allowed_paths
+    return (
+        _path_within_allowlist(path, default_allowed_paths_for_repo(request.repo_target))
+        and _path_within_allowlist(path, request.allowed_paths)
+    )
 
 
 class DoctorWorkspace:

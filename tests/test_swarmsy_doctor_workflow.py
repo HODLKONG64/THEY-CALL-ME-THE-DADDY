@@ -361,3 +361,28 @@ def test_queue_cli_leaves_request_queued_when_only_noop_worker(monkeypatch, tmp_
     assert exit_code == 0
     assert payload["status"] == "worker_unavailable"
     assert stored.status == "queued"
+
+
+def test_website_cases_are_commit_bound_exact_scope_and_wait_for_manual_merge(tmp_path):
+    from the_daddy.doctor_repair import path_allowed
+    from the_daddy.swarmsy_doctor import MOONBOYS_REPO
+
+    path = "games/dead-run/styles.css"
+    archive = JsonDoctorArchive(tmp_path / "website-repairs.json")
+    worker = FakeWorker(DoctorRepairAttempt(
+        validation_passed=True, review_verdict="approved", merge_ready=True,
+        changed_paths=[path], pr_url=f"https://github.com/{MOONBOYS_REPO}/pull/123",
+    ), merge_result=True)
+    consumer = DoctorQueueConsumer(archive=archive, worker=worker, allowed_target_repos={MOONBOYS_REPO})
+    request = DoctorRequest(request_id="support-42-3", source="daddy", problem_summary="Fix control layout",
+                            repo_target=MOONBOYS_REPO, allowed_paths=[path])
+    assert not consumer._request_is_safe(request)[0]
+    request.expected_base_sha = "a" * 40
+    assert consumer._request_is_safe(request)[0]
+    assert path_allowed(path, request)
+    assert not path_allowed("games/dead-run/app.js", request)
+    assert not consumer._request_is_safe(request.model_copy(update={"allowed_paths": ["games/dead-run/"]}))[0]
+    assert not consumer._request_is_safe(request.model_copy(update={"allowed_paths": ["games/dead-run/login.js"]}))[0]
+    assert archive.enqueue_once(request).status == "queued"
+    assert consumer.process_request(request).status == "pr_opened_waiting_review"
+    assert archive.enqueue_once(request.model_copy(update={"status": "queued"})).status == "pr_opened_waiting_review"
