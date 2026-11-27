@@ -211,6 +211,13 @@ class DoctorRequest(BaseModel):
     delivery_retries: int = 0
     review_cycles: int = 0
     review_request_id: int = 0
+    ci_branch: str = ""
+    ci_origin_pr: int = 0
+    ci_follow_up: bool = False
+    ci_dispatched_ref: str = ""
+    post_merge_ci: Literal["unconfigured", "pending", "passed", "follow_up_queued", "needs_review"] = "unconfigured"
+    post_merge_ci_url: str = ""
+    post_merge_ci_reason: str = ""
     repair_log: list[dict[str, str]] = Field(default_factory=list)
     learned_edits: list[DoctorEdit] = Field(default_factory=list)
     pending_edits: list[DoctorEdit] = Field(default_factory=list)
@@ -298,7 +305,8 @@ class JsonDoctorArchive:
     def active_requests(self, repo: str = "") -> list[DoctorRequest]:
         return sorted(
             (item for item in self._load(strict=True)
-             if (item.status not in FINAL_STATUSES or item.status == "merged" and item.deployment_status == "pending")
+             if (item.status not in FINAL_STATUSES or item.status == "merged"
+                 and (item.deployment_status == "pending" or item.post_merge_ci == "pending"))
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
             key=lambda item: item.updated_at,
         )
@@ -449,6 +457,9 @@ def show_recent_daddy_repairs(archive: DoctorArchive, *, limit: int = 10) -> lis
             "deployment_status": item.deployment_status,
             "deployment_url": item.deployment_url,
             "deployment_reason": item.deployment_reason,
+            "post_merge_ci": item.post_merge_ci,
+            "post_merge_ci_url": item.post_merge_ci_url,
+            "post_merge_ci_reason": item.post_merge_ci_reason,
         }
         for item in repairs
     ]
@@ -497,8 +508,10 @@ class DoctorQueueConsumer:
             request.allowed_paths == [request.wiki_link.page] if request.wiki_link
             else 1 <= len(request.allowed_paths) <= 5 and all(map(moonboys_repair_path, request.allowed_paths))
         )
+        ci_repair = (request.source == "daddy" and request.ci_origin_pr > 0
+                     and bool(request.ci_branch or request.ci_follow_up))
         if is_moonboys_repo(request.repo_target) and (
-            not re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id)
+            not (re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id) or ci_repair)
             or not re.fullmatch(r"[a-f0-9]{40}", request.expected_base_sha)
             or not frontend_scope
         ):
@@ -620,7 +633,7 @@ class DoctorQueueConsumer:
             )
 
         should_try_merge = (
-            not is_moonboys_repo(request.repo_target)
+            (not is_moonboys_repo(request.repo_target) or bool(request.ci_branch or request.ci_follow_up))
             and (_normalize_repo_slug(request.repo_target) != _normalize_repo_slug(SWARMSY_REPO) or self.swarmsy_auto_merge)
             and attempt.review_verdict == "approved"
             and attempt.merge_ready

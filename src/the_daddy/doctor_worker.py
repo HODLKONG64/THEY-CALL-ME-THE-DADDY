@@ -10,7 +10,8 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 
 from .config import Settings, _normalize_repo_slug
-from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, log, scrub, sha
+from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
+from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
 from .merge_rules import PROTECTED_CORE_FILES
 from .swarmsy_doctor import (
@@ -23,6 +24,7 @@ PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
     "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
+    "src/the_daddy/doctor_ci.py",
 }
 
 
@@ -49,6 +51,7 @@ class GitHubDoctorWorker:
         self, settings: Settings, archive: JsonDoctorArchive, *,
         validation_image: str, validation_command: str, required_checks: set[str],
         deploy_workflow: str = "", deploy_job: str = "Cloudflare deploy",
+        watch_ci: bool = False, dispatch_ci: bool = False,
     ) -> None:
         repo = settings.github_repo.strip()
         if not GITHUB_REPO_SLUG.fullmatch(repo) or repo.split("/")[1] in {".", ".."}:
@@ -60,6 +63,8 @@ class GitHubDoctorWorker:
             raise ValueError("Configure Cloudflare tracking with the target workflow file name.")
         self.deploy_workflow = deploy_workflow
         self.deploy_job = deploy_job
+        self.ci_workflow = audit_workflow(repo) if watch_ci else ""
+        self.dispatch_ci = dispatch_ci
         self.git = GitBranchExecutor(
             github_token=settings.github_token, github_repo=repo, allowed_target_repos=settings.allowed_target_repos,
         )
@@ -88,12 +93,75 @@ class GitHubDoctorWorker:
         return hashlib.sha256(request.request_id.encode()).hexdigest()[:20]
 
     def _branch(self, request: DoctorRequest) -> str:
-        return f"doctor/repair-{self._reference(request)}"
+        return request.ci_branch or f"doctor/repair-{self._reference(request)}"
 
     def _verify_target(self, request: DoctorRequest) -> None:
         self.git._ensure_target_repo_allowed("Doctor queue processing")
         if _normalize_repo_slug(self.git.github_repo) != _normalize_repo_slug(request.repo_target):
             raise PermissionError("Doctor request does not match the configured GitHub target.")
+        if (request.ci_branch or request.ci_follow_up) and not (
+            self.ci_workflow and request.source == "daddy" and request.ci_origin_pr > 0
+            and 1 <= len(request.allowed_paths) <= 5
+            and all(ci_repair_path(path, request.repo_target) and path not in PROTECTED_FILES
+                    for path in request.allowed_paths)
+        ):
+            raise PermissionError("The CI repair is outside the configured functional repair scope.")
+
+    def discover_ci_repairs(self, *, enqueue: bool = False) -> list[dict]:
+        """Inspect recent open PRs for the configured target and its known CI workflow."""
+        self.git._ensure_target_repo_allowed("Doctor CI scan")
+        if not self.ci_workflow:
+            raise ValueError("No supported CI workflow is configured for this repository.")
+        base_branch, base = self._repo()
+        repo = self.git.github_repo
+        normalized_repo = _normalize_repo_slug(repo)
+        query = urlencode({"state": "open", "base": base_branch, "per_page": 25, "sort": "updated"})
+        rows = []
+        for pr in self._api("GET", f"pulls?{query}"):
+            head = pr.get("head") or {}
+            number = int(pr["number"])
+            status, url = "unavailable", ""
+            if _normalize_repo_slug((head.get("repo") or {}).get("full_name", "")) == normalized_repo:
+                status, url, failures = exact_ci(self, sha(head["sha"]), head["ref"])
+                if enqueue and status == "failed" and not paused(pr) and REPAIR_LABEL in labels(pr):
+                    status = self._adopt_ci_pr(pr, base, base_branch, failures)
+            rows.append({"pr": number, "url": f"https://github.com/{repo}/pull/{number}",
+                         "ci": status, "ci_url": url, "paused": paused(pr),
+                         "repair_selected": REPAIR_LABEL in labels(pr)})
+        return rows
+
+    def _adopt_ci_pr(self, pr, base, base_branch, failures) -> str:
+        number = int(pr["number"])
+        head = sha(pr["head"]["sha"])
+        branch = pr["head"]["ref"]
+        if branch == base_branch or branch.startswith("doctor/"):
+            return "tracked_by_existing_flow"
+        # One adoption per PR. Broad or protected diffs stay with the operator.
+        request_id = f"ci-pr-{number}"
+        if self.archive.get_request(request_id):
+            return "tracked"
+        if pr["base"]["sha"] != base:
+            return "waiting_for_current_base"
+        comparison = self._api("GET", f"compare/{base}...{head}?per_page=1")
+        if comparison.get("merge_base_commit", {}).get("sha") != base:
+            return "waiting_for_current_base"
+        files = self._api("GET", f"pulls/{number}/files?per_page=6")
+        if not 1 <= len(files) <= 5 or any(
+            item["status"] not in ("added", "modified") or item["filename"] in PROTECTED_FILES
+            or not ci_repair_path(item["filename"], self.git.github_repo) for item in files
+        ):
+            return "needs_manual_scope"
+        req = DoctorRequest(
+            request_id=request_id, source="daddy", repo_target=self.git.github_repo,
+            problem_summary=f"Repair the reproduced functional test failure on PR #{number}.",
+            logs=[scrub(comment.body, self.settings) for comment in failures],
+            allowed_paths=[item["filename"] for item in files], ci_branch=branch, ci_origin_pr=number,
+            pr_number=number, head_sha=head, base_branch=base_branch, base_sha=base, expected_base_sha=base,
+            swarmsy_pr_url=f"https://github.com/{self.git.github_repo}/pull/{number}",
+        )
+        self._verify_target(req)
+        self.archive.enqueue_once(req)
+        return "queued"
 
     def _redact_request(self, request: DoctorRequest) -> None:
         for field in ("problem_summary", "feature_hint", "failing_command", "user_intent"):
@@ -127,16 +195,22 @@ class GitHubDoctorWorker:
         return []
 
     def _stage(
-        self, request: DoctorRequest, *, base: str, parent: str, findings: list[str],
+        self, request: DoctorRequest, *, base: str, parent: str, findings: list[str], require_ci_failure: bool = False,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="doctor-repair-") as root:
             workspace = DoctorWorkspace(Path(root), self.settings)
             workspace.checkout(parent)
             remembered = self._memory(request) if not findings else []
             try:
-                edits, digest = self.repair.run(workspace, request, findings, remembered)
+                options = {"require_baseline_failure": True} if require_ci_failure else {}
+                edits, digest = self.repair.run(workspace, request, findings, remembered, **options)
             except RuntimeError as exc:
                 raise RuntimeError(scrub(str(exc), self.settings)) from exc
+            # Recheck the PR before pushing, including an owner pause while validation ran.
+            if request.pr_number:
+                self._verify_open_pr(request, parent)
+            if request.ci_follow_up and self._repo()[1] != base:
+                raise PermissionError("The default branch advanced while validating the CI follow-up.")
             request.pending_head_sha = workspace.commit(self._reference(request))
             request.pending_base_sha = base
             request.pending_diff_digest = digest
@@ -148,9 +222,11 @@ class GitHubDoctorWorker:
 
     def _publish(self, request: DoctorRequest, base_branch: str) -> DoctorRepairAttempt:
         website = is_moonboys_repo(request.repo_target)
-        if website and request.pending_base_sha != self._repo()[1]:
+        if (website or request.ci_follow_up) and request.pending_base_sha != self._repo()[1]:
             raise PermissionError("The website advanced during validation. Request a fresh review of the case.")
         remote = self._head(request)
+        if request.pr_number:
+            self._verify_open_pr(request, remote)
         if remote != request.pending_head_sha:
             if remote != request.head_sha:
                 raise PermissionError("Doctor repair branch changed outside the validated delivery.")
@@ -208,6 +284,15 @@ class GitHubDoctorWorker:
         self._request_review(request)
         return self._attempt(request, reason="Waiting for Codex to review the validated commit.")
 
+    def _verify_open_pr(self, request: DoctorRequest, expected_head: str) -> dict:
+        pr = self._api("GET", f"pulls/{request.pr_number}")
+        self._verify_pr(request, pr, expected_head, request.base_branch)
+        if pr.get("state") != "open":
+            raise PermissionError("PR closed during validation.")
+        if paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
+            raise RuntimeError("PR is paused, draft, or no longer selected for CI repair.")
+        return pr
+
     def _verify_pr(self, request: DoctorRequest, pr: dict, expected_head: str, base_branch: str) -> None:
         head = pr["head"]
         base = pr["base"]
@@ -247,11 +332,14 @@ class GitHubDoctorWorker:
         self._verify_target(request)
         self._redact_request(request)
         base_branch, base = self._repo()
-        if is_moonboys_repo(request.repo_target) and base != request.expected_base_sha:
+        if (is_moonboys_repo(request.repo_target) or request.ci_follow_up) and base != request.expected_base_sha:
             raise PermissionError("The website advanced since the reviewed commit. Request a fresh review of the case.")
         if self._head(request):
             raise PermissionError("A branch already exists without a validated Doctor delivery record.")
-        self._stage(request, base=base, parent=base, findings=[])
+        if request.ci_follow_up:
+            self._stage(request, base=base, parent=base, findings=request.logs, require_ci_failure=True)
+        else:
+            self._stage(request, base=base, parent=base, findings=[])
         return self._publish(request, base_branch)
 
     def apply_review_comment_fixes(
@@ -263,11 +351,14 @@ class GitHubDoctorWorker:
             raise PermissionError("Base advanced; the existing Doctor PR needs a fresh repair against the current base.")
         pr = self._api("GET", f"pulls/{request.pr_number}")
         self._verify_pr(request, pr, request.head_sha, base_branch)
-        if pr["state"] != "open" or pr["draft"]:
+        if pr["state"] != "open" or paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
             raise PermissionError("The Doctor pull request must be open and ready for review.")
         findings = [comment.body for comment in actionable_comments]
         log(request, self.settings, f"codex_fix_cycle_{cycle}", "\n".join(findings), self.archive.upsert_request)
-        self._stage(request, base=base, parent=request.head_sha, findings=findings)
+        if self.ci_workflow and any(comment.author == "GitHub CI" for comment in actionable_comments):
+            self._stage(request, base=base, parent=request.head_sha, findings=findings, require_ci_failure=True)
+        else:
+            self._stage(request, base=base, parent=request.head_sha, findings=findings)
         return self._publish(request, base_branch)
 
     def _codex_review(self, request: DoctorRequest) -> tuple[str, list[DoctorReviewComment]]:
@@ -366,16 +457,33 @@ class GitHubDoctorWorker:
         if pr.get("merged") is True:
             self._record_merge(request, pr["merge_commit_sha"], base_branch)
             return self._attempt(request, merged=True)
-        if pr["state"] != "open" or pr["draft"]:
-            raise PermissionError("The Doctor pull request is closed or draft.")
+        if pr["state"] != "open":
+            raise PermissionError("The Doctor pull request is closed.")
+        if paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
+            return self._attempt(request, reason="PR is paused, draft, or no longer selected for CI repair.")
+        if request.base_sha != base or pr["base"]["sha"] != base:
+            raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
+        if request.ci_branch and not request.learned_edits:
+            status, _, findings = exact_ci(self, request.head_sha, request.ci_branch)
+            return self._attempt(request, review_comments=findings,
+                                 reason=f"Selected PR is waiting on its exact-head functional CI failure ({status}).")
         self._request_review(request)
         verdict, comments = self._codex_review(request)
         if verdict != "approved":
             return self._attempt(request, review_verdict=verdict, review_comments=comments,
                                  reason="Waiting for a completed Codex review of this exact commit.")
-        if request.base_sha != base or pr["base"]["sha"] != base:
-            raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
-        if is_moonboys_repo(request.repo_target):
+        if self.ci_workflow:
+            status, _, findings = self._request_ci(request, request.head_sha, self._branch(request))
+            if findings and (request.wiki_link or any(
+                    not ci_repair_path(path, request.repo_target) or path in PROTECTED_FILES
+                    for path in request.allowed_paths)):
+                return self._attempt(request, reason="The failed CI check requires manual investigation.")
+            if findings:
+                return self._attempt(request, review_verdict="changes_requested", review_comments=findings,
+                                     reason="The exact-head CI suite found a functional failure.")
+            if status != "passed":
+                return self._attempt(request, reason=f"Waiting for exact-head CI ({status}).")
+        if is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up):
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Website merge and release require GK approval.")
         passed, failures = self._ci_review(request.head_sha)
         if failures:
@@ -383,7 +491,8 @@ class GitHubDoctorWorker:
                                  reason="Required GitHub CI checks requested follow-up.")
         if not request.learned_edits or any(edit.path in PROTECTED_FILES for edit in request.learned_edits):
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Protected files require a manual merge.")
-        ready = pr.get("mergeable") is True and pr.get("mergeable_state") == "clean" and passed
+        label_ok = not (request.ci_branch or request.ci_follow_up) or MERGE_LABEL in labels(pr)
+        ready = pr.get("mergeable") is True and pr.get("mergeable_state") == "clean" and passed and label_ok
         return self._attempt(request, review_verdict="approved", merge_ready=ready,
                              reason="Codex approved. Waiting for required checks or repository merge policy.")
 
@@ -391,7 +500,7 @@ class GitHubDoctorWorker:
         ready = self.poll_review(request)
         if ready.merged:
             return True
-        if is_moonboys_repo(request.repo_target):
+        if is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up):
             return False
         if ready.review_verdict != "approved" or not ready.merge_ready:
             return False
@@ -412,12 +521,14 @@ class GitHubDoctorWorker:
                 or request.pending_head_sha or not request.review_request_id):
             raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
         self._verify_pr(request, pr, approved_head, "main")
-        if pr.get("state") != "open" or pr.get("draft") is not False or pr["base"]["sha"] != request.base_sha:
+        if pr.get("state") != "open" or paused(pr) or pr["base"]["sha"] != request.base_sha:
             return "merge_blocked", "The website pull request changed after validation."
         passed, failures = self._ci_review(approved_head)
         if failures:
             return "merge_blocked", "A required GitHub check failed. Review the checks on the pull request."
         if not passed or pr.get("mergeable") is None:
+            return "", ""
+        if self.ci_workflow and exact_ci(self, approved_head, self._branch(request))[0] != "passed":
             return "", ""
         if pr.get("mergeable") is not True or pr.get("mergeable_state") != "clean":
             return "merge_blocked", "GitHub reports a merge conflict, missing review, or branch rule. Check the pull request."
@@ -435,11 +546,71 @@ class GitHubDoctorWorker:
     def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:
         request.merge_sha = sha(commit)
         request.base_branch = branch
+        if self.ci_workflow:
+            request.post_merge_ci = "pending"
+            request.post_merge_ci_reason = "Waiting for CI on the exact merge commit."
         if self.deploy_workflow:
             request.deployment_workflow = self.deploy_workflow
             request.deployment_job = self.deploy_job
             request.deployment_status = "pending"
             request.deployment_reason = "Waiting for the target's Cloudflare deployment workflow."
+
+    def _request_ci(self, request: DoctorRequest, commit: str, branch: str, *, merged: bool = False):
+        result = exact_ci(self, commit, branch, merged=merged)
+        if result[0] != "missing" or not self.dispatch_ci or request.ci_dispatched_ref == commit:
+            return result
+        current = self._api("GET", f"branches/{quote(branch, safe='')}")["commit"]["sha"]
+        if current != commit:
+            return "ref_advanced", "", []
+        # Record dispatch intent before the API write so retries never spam CI after a timeout.
+        request.ci_dispatched_ref = commit
+        self.archive.upsert_request(request)
+        try:
+            self._api("POST", f"actions/workflows/{self.ci_workflow}/dispatches", {"ref": branch})
+        except RuntimeError as exc:
+            if isinstance(exc.__cause__, HTTPError):
+                return "dispatch_failed", "", []
+            raise
+        return "pending", "", []
+
+    def poll_merged_ci(self, request: DoctorRequest) -> None:
+        if not self.ci_workflow:
+            return
+        self._verify_target(request)
+        commit = sha(request.merge_sha)
+        status, url, findings = self._request_ci(request, commit, request.base_branch, merged=True)
+        if status == "missing" and request.ci_dispatched_ref != commit:
+            if self._repo() != (request.base_branch, commit):
+                status = "ref_advanced"
+        request.post_merge_ci_url = url
+        if status == "passed":
+            request.post_merge_ci = "passed"
+            request.post_merge_ci_reason = "CI passed on the exact merge commit."
+        elif status in ("interrupted", "blocked", "ref_advanced", "dispatch_failed"):
+            request.post_merge_ci = "needs_review"
+            request.post_merge_ci_reason = f"Post-merge CI needs operator review ({status})."
+        elif status == "failed":
+            base_branch, base = self._repo()
+            if (base == commit and base_branch == request.base_branch and not (request.wiki_link or request.ci_follow_up)
+                    and 1 <= len(request.allowed_paths) <= 5 and all(
+                        ci_repair_path(path, request.repo_target) and path not in PROTECTED_FILES
+                        for path in request.allowed_paths)):
+                follow_up = self.archive.enqueue_once(DoctorRequest(
+                    request_id=f"ci-follow-up-{commit}", repo_target=request.repo_target,
+                    source="daddy", ci_follow_up=True, ci_origin_pr=request.pr_number,
+                    expected_base_sha=commit, allowed_paths=request.allowed_paths,
+                    problem_summary=f"Investigate the functional CI failure after merging PR #{request.pr_number}.",
+                    logs=[scrub(comment.body, self.settings) for comment in findings],
+                ))
+                request.post_merge_ci = "follow_up_queued"
+                request.post_merge_ci_reason = f"Follow-up recorded as {follow_up.request_id}."
+            else:
+                request.post_merge_ci = "needs_review"
+                request.post_merge_ci_reason = "CI failed. The branch advanced, the scope is protected, or a follow-up was already tried."
+        else:
+            request.post_merge_ci_reason = f"Waiting for CI on the exact merge commit ({status})."
+        request.updated_at = utc_now_iso()
+        self.archive.upsert_request(request)
 
     def poll_deployment(self, request: DoctorRequest) -> None:
         try:
