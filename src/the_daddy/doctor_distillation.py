@@ -5,11 +5,12 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.error import HTTPError
 
 from .doctor_history import SHA, query_text, similarity, terms
 from .doctor_repair import scrub
 
-VERSION = 1
+VERSION = 2
 BATCH = 5
 MAX_CONTEXT_BYTES = 7200
 MAX_RECORD_BYTES = 1900
@@ -82,6 +83,10 @@ def connect(index):
             complete INTEGER NOT NULL, record TEXT NOT NULL, source_bytes INTEGER NOT NULL,
             PRIMARY KEY(repo,number)
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS distillation_backoff (
+            repo TEXT NOT NULL, family TEXT NOT NULL, retry_after TEXT NOT NULL,
+            reason TEXT NOT NULL, PRIMARY KEY(repo,family)
+        )""")
     return db
 
 
@@ -91,60 +96,180 @@ def checked_list(value):
     return value
 
 
-def enrich(record, api, settings):
-    repo, number, kind = record["repo"], record["number"], record["kind"]
-    # Art-only and uncertain entries remain searchable but do not spend enrichment calls.
+def error_reason(exc):
+    """Do not log response bodies, request headers or arbitrary exception text."""
+    cause = exc
+    while cause is not None:
+        if isinstance(cause, HTTPError):
+            status = cause.code
+            if status == 429 or (status == 403 and (
+                    (cause.headers or {}).get("X-RateLimit-Remaining") == "0"
+                    or (cause.headers or {}).get("Retry-After"))):
+                return "rate_limited", status
+            if status in (401, 403):
+                return "permission_or_authentication_denied", status
+            if status == 404:
+                return "not_found_or_inaccessible", status
+            return "http_error", status
+        cause = cause.__cause__
+    return ("invalid_response" if isinstance(exc, (ValueError, TypeError, AttributeError))
+            else "transport_or_api_error"), None
+
+
+class EvidenceReader:
+    """Keep per-repository capability cooldowns outside the repair execution path."""
+    def __init__(self, db, repo, api, now):
+        self.db, self.repo, self.api, self.now = db, repo, api, now
+        self.diagnostics = []
+        self.failures = 0
+        self.deferred = 0
+        self.suspended = False
+        self.retry_until = now
+
+    def fetch(self, family, endpoint, validate, unavailable):
+        stamp = self.now.isoformat(timespec="seconds")
+        cooldown = self.db.execute(
+            "SELECT retry_after,reason FROM distillation_backoff WHERE repo=? AND family=?",
+            (self.repo, family)).fetchone()
+        global_cooldown = self.db.execute(
+            "SELECT retry_after,reason FROM distillation_backoff WHERE repo=? AND family=?",
+            ("*", "rate_limit")).fetchone()
+        if global_cooldown and global_cooldown[0] > stamp:
+            cooldown = global_cooldown
+        if self.suspended or (cooldown and cooldown[0] > stamp):
+            if cooldown and cooldown[0] > stamp:
+                self.retry_until = max(self.retry_until, datetime.fromisoformat(cooldown[0]))
+            unavailable[family] = "unknown_deferred"
+            self.deferred += 1
+            return None
+        try:
+            value = validate(self.api(self.repo, endpoint))
+        except (RuntimeError, OSError, ValueError, TypeError, AttributeError) as exc:
+            reason, status = error_reason(exc)
+            self.failures += 1
+            unavailable[family] = "unknown_" + reason
+            self.diagnostics.append({"endpoint": f"GET /repos/{self.repo}/{endpoint}",
+                                     "http_status": status, "error": reason})
+            # 404 can be object-specific: never suppress an entire capability on it.
+            if reason in ("permission_or_authentication_denied", "rate_limited"):
+                retry = self.now + timedelta(hours=24 if reason.startswith("permission") else 1)
+                self.retry_until = max(self.retry_until, retry)
+                key = ("*", "rate_limit") if reason == "rate_limited" else (self.repo, family)
+                with self.db:
+                    self.db.execute("INSERT OR REPLACE INTO distillation_backoff VALUES(?,?,?,?)",
+                                    (*key, retry.isoformat(timespec="seconds"), reason))
+            if reason == "rate_limited":
+                self.suspended = True
+            if status == 404:
+                # Retry this record less often without suppressing other objects.
+                self.retry_until = max(self.retry_until, self.now + timedelta(hours=24))
+            return None
+        with self.db:
+            self.db.execute("DELETE FROM distillation_backoff WHERE repo=? AND family=? AND retry_after<=?",
+                            (self.repo, family, stamp))
+        return value
+
+
+def checked_pr(detail):
+    if not isinstance(detail, dict) or type(detail.get("merged")) is not bool:
+        raise ValueError("Missing PR merge evidence")
+    return detail
+
+
+def checked_checks(checks):
+    if not isinstance(checks, dict):
+        raise ValueError("Missing historical check response")
+    return checked_list(checks.get("check_runs"))
+
+
+def enrich(record, reader, settings, previous=None):
+    number, kind = record["number"], record["kind"]
+    unavailable = {}
+    previous = previous or {}
+    missing = previous.get("unavailable_evidence", {})
+    reuse = bool(previous) and isinstance(missing, dict)
     if record["classification"] != "technical":
-        return
+        return unavailable
     if kind == "pr":
-        detail = api(repo, f"pulls/{number}")
-        if not isinstance(detail, dict) or type(detail.get("merged")) is not bool:
-            raise ValueError("Missing PR merge evidence")
-        if detail["merged"]:
+        cached_status = previous.get("status")
+        cached_merge = previous.get("merge_sha")
+        reusable_detail = cached_status == "closed_unmerged" or (
+            cached_status == "merged_not_production_verified"
+            and isinstance(cached_merge, str) and SHA.fullmatch(cached_merge))
+        if reuse and "pr_detail" not in missing and reusable_detail:
+            detail = {"merged": previous["status"] == "merged_not_production_verified",
+                      "merge_commit_sha": previous.get("merge_sha"), "head": {"sha": previous.get("head_sha")}}
+        else:
+            detail = reader.fetch("pr_detail", f"pulls/{number}", checked_pr, unavailable)
+        if detail is not None and detail["merged"]:
             record["status"] = "merged_not_production_verified"
             for name, value in (("merge_sha", detail.get("merge_commit_sha")),
-                                ("head_sha", (detail.get("head") or {}).get("sha"))):
+                                ("head_sha", (detail.get("head") or {}).get("sha")
+                                 if isinstance(detail.get("head"), dict) else None)):
                 if isinstance(value, str) and SHA.fullmatch(value):
                     record[name] = value
-            files = checked_list(api(repo, f"pulls/{number}/files?per_page=20"))
-            paths = []
-            for item in files[:20]:
-                path = str(item.get("filename") or "")
-                if path and not SECRET_PATH.search(path):
-                    paths.append(scrub(path, settings)[:150])
-            record["affected_paths"] = list(dict.fromkeys(paths))[:8]
-            inline = checked_list(api(repo, f"pulls/{number}/comments?per_page=20"))
-            notes = []
-            for item in inline[:20]:
-                notes.extend(compact_lines(item.get("body"), settings, technical=True, limit=2))
-            record["review_findings_unverified"] = list(dict.fromkeys(notes))[:3]
+            same_merge = reuse and record.get("merge_sha") == previous.get("merge_sha") and record.get("head_sha") == previous.get("head_sha")
+            if same_merge and "affected_paths" in previous and "pr_files" not in missing:
+                record["affected_paths"] = previous["affected_paths"]
+                files = None
+            else:
+                files = reader.fetch("pr_files", f"pulls/{number}/files?per_page=20", checked_list, unavailable)
+            if files is not None:
+                paths = []
+                for item in files[:20]:
+                    path = str(item.get("filename") or "")
+                    if path and not SECRET_PATH.search(path):
+                        paths.append(scrub(path, settings)[:150])
+                record["affected_paths"] = list(dict.fromkeys(paths))[:8]
+            if same_merge and "review_findings_unverified" in previous and "pr_comments" not in missing:
+                record["review_findings_unverified"] = previous["review_findings_unverified"]
+                inline = None
+            else:
+                inline = reader.fetch("pr_comments", f"pulls/{number}/comments?per_page=20", checked_list, unavailable)
+            if inline is not None:
+                notes = []
+                for item in inline[:20]:
+                    notes.extend(compact_lines(item.get("body"), settings, technical=True, limit=2))
+                record["review_findings_unverified"] = list(dict.fromkeys(notes))[:3]
             if "merge_sha" in record:
-                checks = api(repo, f"commits/{record['merge_sha']}/check-runs?per_page=30")
-                if not isinstance(checks, dict):
-                    raise ValueError("Missing historical check response")
-                check_rows = checked_list(checks.get("check_runs"))
-                record["observed_merge_checks"] = [
-                    {"name": scrub(str(item.get("name") or ""), settings)[:100],
-                     "conclusion": str(item.get("conclusion") or "pending")[:30]}
-                    for item in check_rows[:30] if item.get("head_sha") == record["merge_sha"]
-                ][:6]
-        elif record["status"] == "closed_unverified":
+                if same_merge and "observed_merge_checks" in previous and "merge_checks" not in missing:
+                    record["observed_merge_checks"] = previous["observed_merge_checks"]
+                    check_rows = None
+                else:
+                    check_rows = reader.fetch("merge_checks", f"commits/{record['merge_sha']}/check-runs?per_page=30",
+                                              checked_checks, unavailable)
+                if check_rows is not None:
+                    record["observed_merge_checks"] = [
+                        {"name": scrub(str(item.get("name") or ""), settings)[:100],
+                         "conclusion": scrub(str(item.get("conclusion") or "pending"), settings)[:30]}
+                        for item in check_rows[:30] if item.get("head_sha") == record["merge_sha"]
+                    ][:6]
+            else:
+                unavailable["merge_checks"] = "unknown_missing_merge_sha"
+        elif detail is not None and record["status"] == "closed_unverified":
             record["status"] = "closed_unmerged"
-    comments = checked_list(api(repo, f"issues/{number}/comments?per_page=20"))
-    notes = []
-    for item in comments[:20]:
-        notes.extend(compact_lines(item.get("body"), settings, technical=True, limit=2))
-    record["discussion_notes_unverified"] = list(dict.fromkeys(notes))[:3]
+    if reuse and "discussion_notes_unverified" in previous and "issue_comments" not in missing:
+        record["discussion_notes_unverified"] = previous["discussion_notes_unverified"]
+        comments = None
+    else:
+        comments = reader.fetch("issue_comments", f"issues/{number}/comments?per_page=20", checked_list, unavailable)
+    if comments is not None:
+        notes = []
+        for item in comments[:20]:
+            notes.extend(compact_lines(item.get("body"), settings, technical=True, limit=2))
+        record["discussion_notes_unverified"] = list(dict.fromkeys(notes))[:3]
+    return unavailable
 
 
 def distill_pending(index, repo, api, *, limit=BATCH):
     now = datetime.now(timezone.utc)
     stamp = now.isoformat(timespec="seconds")
     db = connect(index)
-    processed = skipped = errors = 0
+    processed = skipped = errors = partial = 0
+    reader = EvidenceReader(db, repo, api, now)
     try:
         rows = db.execute("""SELECT h.repo,h.number,h.kind,h.state,h.updated,h.title,h.body,
-                                    d.revision,d.version,d.processed,d.retry_after,d.complete
+                                    d.revision,d.version,d.processed,d.retry_after,d.complete,d.record
                              FROM history h LEFT JOIN distilled_history d
                                ON h.repo=d.repo AND h.number=d.number WHERE h.repo=?
                              ORDER BY CASE WHEN d.number IS NULL THEN 0 ELSE 1 END,
@@ -153,7 +278,7 @@ def distill_pending(index, repo, api, *, limit=BATCH):
             if processed >= limit:
                 break
             raw = row[:7]
-            old_revision, version, when, retry, complete = row[7:]
+            old_revision, version, when, retry, complete, cached_record = row[7:]
             rev = revision(raw)
             if old_revision == rev and version == VERSION:
                 if retry and retry > stamp:
@@ -162,15 +287,22 @@ def distill_pending(index, repo, api, *, limit=BATCH):
                     skipped += 1
                     continue
             record = metadata(raw, index.settings)
-            successful = True
-            try:
-                enrich(record, api, index.settings)
-            except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
-                record = metadata(raw, index.settings)
-                successful = False
+            previous = None
+            if old_revision == rev and version == VERSION and not complete and cached_record:
+                candidate = json.loads(cached_record)
+                started = candidate.get("evidence_started_at", "")
+                if started > (now - timedelta(days=30)).isoformat(timespec="seconds"):
+                    previous = candidate
+            record["evidence_started_at"] = previous["evidence_started_at"] if previous else stamp
+            reader.retry_until = now
+            unavailable = enrich(record, reader, index.settings, previous)
+            successful = not unavailable
+            if unavailable:
+                partial += 1
                 errors += 1
+                record["unavailable_evidence"] = unavailable
             record["evidence_complete_for_bounded_sample"] = successful and record["classification"] == "technical"
-            retry_at = "" if successful else (now + timedelta(hours=1)).isoformat(timespec="seconds")
+            retry_at = "" if successful else max(reader.retry_until, now + timedelta(hours=1)).isoformat(timespec="seconds")
             payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             # Recheck source revision before committing a result computed outside the transaction.
             with db:
@@ -185,10 +317,9 @@ def distill_pending(index, repo, api, *, limit=BATCH):
                                (repo, raw[1], rev, VERSION, stamp, retry_at, int(successful), payload,
                                 len((raw[5] + "\n" + raw[6]).encode())))
             processed += 1
-            if not successful:
-                # Avoid multiplying API failures or hitting a rate limit repeatedly in one pass.
-                break
-        return {"processed": processed, "cached": skipped, "evidence_retry": errors}
+        return {"processed": processed, "cached": skipped, "evidence_retry": errors,
+                "partial": partial, "endpoint_failures": reader.failures,
+                "endpoint_deferred": reader.deferred, "diagnostics": reader.diagnostics}
     finally:
         db.close()
 
@@ -302,7 +433,7 @@ def coverage(index, repos):
     try:
         result = []
         for repo in repos:
-            total = current = source_bytes = distilled_bytes = stale = 0
+            total = current = source_bytes = distilled_bytes = stale = partial = 0
             counts = {}
             for row in db.execute("""SELECT h.repo,h.number,h.kind,h.state,h.updated,h.title,h.body,
                                            d.revision,d.version,d.record,d.source_bytes,d.complete
@@ -313,14 +444,15 @@ def coverage(index, repos):
                     stale += int(row[7] is not None)
                     continue
                 if not row[11]:
-                    continue
+                    partial += 1
                 current += 1
                 source_bytes += row[10]
                 distilled_bytes += len(row[9].encode())
                 classification = json.loads(row[9])["classification"]
                 counts[classification] = counts.get(classification, 0) + 1
             result.append({"repo": repo, "indexed": total, "distilled_current": current,
-                           "pending_or_retry": total-current, "stale_revision": stale,
+                           "pending_or_retry": total-current+partial, "pending_distillation": total-current,
+                           "partial_evidence": partial, "stale_revision": stale,
                            "classification": counts, "source_metadata_bytes": source_bytes,
                            "stored_knowledge_bytes": distilled_bytes})
         return result

@@ -368,11 +368,14 @@ def test_distillation_retries_without_claiming_success_and_keeps_art_metadata(tm
         calls.append(endpoint)
         raise RuntimeError("temporary failure")
     result = distill_pending(index, REPO, failing_api)
-    assert result == {"processed": 2, "cached": 0, "evidence_retry": 1}
-    assert calls == ["pulls/2"]
+    assert result["processed"] == 2
+    assert result["evidence_retry"] == 1
+    assert result["endpoint_failures"] == 2
+    assert calls == ["pulls/2", "issues/2/comments?per_page=20"]
     assert retrieve(index, request(problem_summary="API failure"), (REPO,))[0]["status"] == "closed_unverified"
     assert distill_pending(index, REPO, failing_api)["processed"] == 0
-    assert coverage(index, (REPO,))[0]["distilled_current"] == 1
+    assert coverage(index, (REPO,))[0]["distilled_current"] == 2
+    assert coverage(index, (REPO,))[0]["partial_evidence"] == 1
 
 
 def test_distillation_context_budget_and_duplicate_provenance():
@@ -448,3 +451,158 @@ def test_distillation_duplicate_preserves_shared_outcome_without_local():
     assert len(result) == 1
     assert result[0]["deployment_job"] == "failed"
     assert result[0]["similarity"] == 1.0
+
+
+def test_distillation_optional_checks_denied_does_not_block_batch(tmp_path):
+    from urllib.error import HTTPError
+    from the_daddy.doctor_distillation import distill_pending, retrieve, coverage, connect
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    rows = [{"number": n, "title": f"Fix API timeout {n}", "state": "closed",
+             "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z", "body": ""}
+            for n in range(1, 4)]
+    index.sync_page(REPO, lambda *_: rows)
+    calls = []
+    def api(repo, endpoint):
+        calls.append(endpoint)
+        if endpoint.startswith("commits/"):
+            try:
+                raise HTTPError("https://api.github.com/", 403, "Forbidden", {}, None)
+            except HTTPError as exc:
+                raise RuntimeError("secret-bearing response must never be logged") from exc
+        if endpoint.endswith("/files?per_page=20"):
+            return [{"filename": "src/example.py"}]
+        if "/comments?" in endpoint:
+            return [{"body": "Handle API timeout"}]
+        return {"merged": True, "merge_commit_sha": "a"*40, "head": {"sha": "b"*40}}
+    result = distill_pending(index, REPO, api)
+    assert result["processed"] == 3
+    assert result["partial"] == 3
+    assert result["endpoint_failures"] == 1
+    assert result["endpoint_deferred"] == 2
+    assert len([x for x in calls if x.startswith("commits/")]) == 1
+    assert result["diagnostics"][0]["http_status"] == 403
+    assert "check-runs" in result["diagnostics"][0]["endpoint"]
+    assert "secret-bearing" not in json.dumps(result)
+    records = retrieve(index, request(problem_summary="API timeout"), (REPO,))
+    assert len(records) == 3
+    for item in records:
+        assert item["status"] == "merged_not_production_verified"
+        assert item["affected_paths"] == ["src/example.py"]
+        assert item["discussion_notes_unverified"] == ["Handle API timeout"]
+        assert "merge_checks" in item["unavailable_evidence"]
+        assert "observed_merge_checks" not in item
+        assert item["evidence_complete_for_bounded_sample"] is False
+    stats = coverage(index, (REPO,))[0]
+    assert stats["distilled_current"] == 3
+    assert stats["pending_distillation"] == 0
+    assert stats["partial_evidence"] == 3
+    # A new process observes the persisted cooldown; no immediate repeated requests.
+    before = len(calls)
+    assert distill_pending(index, REPO, api)["processed"] == 0
+    assert len(calls) == before
+    # Simulate the cooldown expiring and permissions being repaired.
+    db = connect(index)
+    with db:
+        db.execute("UPDATE distillation_backoff SET retry_after='2000-01-01T00:00:00+00:00'")
+        db.execute("UPDATE distilled_history SET retry_after='2000-01-01T00:00:00+00:00'")
+    db.close()
+    recovered_calls = []
+    def recovered(repo, endpoint):
+        recovered_calls.append(endpoint)
+        return {"check_runs": [{"head_sha": "a"*40, "name": "tests", "conclusion": "success"}]}
+    result = distill_pending(index, REPO, recovered)
+    assert result["processed"] == 3
+    assert result["partial"] == 0
+    assert len(recovered_calls) == 3
+    assert all(x.startswith("commits/") for x in recovered_calls)
+    assert coverage(index, (REPO,))[0]["partial_evidence"] == 0
+
+
+def test_distillation_404_is_not_repository_wide_permission_failure(tmp_path):
+    from urllib.error import HTTPError
+    from the_daddy.doctor_distillation import distill_pending
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    rows = [{"number": n, "title": "Fix API timeout", "state": "closed",
+             "updated_at": "2026-11-01T00:00:00Z", "body": ""} for n in (1, 2)]
+    index.sync_page(REPO, lambda *_: rows)
+    calls = []
+    def api(repo, endpoint):
+        calls.append(endpoint)
+        if endpoint.startswith("issues/1/"):
+            raise HTTPError("https://api.github.com/", 404, "Not found", {}, None)
+        return []
+    result = distill_pending(index, REPO, api)
+    assert result["processed"] == 2
+    assert result["partial"] == 1
+    assert result["endpoint_deferred"] == 0
+    assert len(calls) == 2
+    assert result["diagnostics"][0]["http_status"] == 404
+
+
+def test_distillation_rate_limit_cooldown_survives_across_repositories(tmp_path):
+    from urllib.error import HTTPError
+    from the_daddy.doctor_distillation import distill_pending
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    rows = [{"number": 1, "title": "Fix API timeout", "state": "closed",
+             "updated_at": "2026-11-01T00:00:00Z", "body": ""}]
+    for repo in (REPO, OTHER):
+        index.sync_page(repo, lambda *_: rows)
+    def limited(repo, endpoint):
+        raise HTTPError("https://api.github.com/", 403, "Forbidden",
+                        {"X-RateLimit-Remaining": "0"}, None)
+    assert distill_pending(index, REPO, limited)["diagnostics"][0]["error"] == "rate_limited"
+    def forbidden_call(*args):
+        pytest.fail("rate-limited enrichment should be deferred")
+    result = distill_pending(index, OTHER, forbidden_call)
+    assert result["processed"] == 1
+    assert result["endpoint_failures"] == 0
+    assert result["endpoint_deferred"] == 1
+
+
+@pytest.mark.parametrize("missing_sha", [None, "", "invalid"])
+def test_distillation_refetches_merged_pr_when_merge_sha_recovers(tmp_path, missing_sha):
+    from the_daddy.doctor_distillation import distill_pending, retrieve, connect
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    row = {"number": 1, "title": "Fix API timeout", "state": "closed",
+           "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z", "body": ""}
+    index.sync_page(REPO, lambda *_: [row])
+    calls = []
+    merge_sha = missing_sha
+
+    def api(repo, endpoint):
+        calls.append(endpoint)
+        if endpoint == "pulls/1":
+            return {"merged": True, "merge_commit_sha": merge_sha,
+                    "head": {"sha": "b"*40}}
+        if endpoint.startswith("commits/"):
+            return {"check_runs": [{"head_sha": "a"*40, "name": "tests",
+                                    "conclusion": "success"}]}
+        if endpoint.startswith("pulls/1/files"):
+            return [{"filename": "src/example.py"}]
+        return []
+
+    first = distill_pending(index, REPO, api)
+    assert first["partial"] == 1
+    record = retrieve(index, request(problem_summary="API timeout"), (REPO,))[0]
+    assert record["unavailable_evidence"]["merge_checks"] == "unknown_missing_merge_sha"
+    assert "merge_sha" not in record
+    assert not any(endpoint.startswith("commits/") for endpoint in calls)
+
+    db = connect(index)
+    try:
+        with db:
+            db.execute("UPDATE distilled_history SET retry_after='2000-01-01T00:00:00+00:00'")
+    finally:
+        db.close()
+    merge_sha = "a"*40
+    calls.clear()
+    result = distill_pending(index, REPO, api)
+    assert result["processed"] == 1
+    assert result["partial"] == 0
+    assert "pulls/1" in calls
+    assert "commits/" + "a"*40 + "/check-runs?per_page=30" in calls
+    record = retrieve(index, request(problem_summary="API timeout"), (REPO,))[0]
+    assert record["merge_sha"] == "a"*40
+    assert record["observed_merge_checks"] == [{"name": "tests", "conclusion": "success"}]
+    assert record["evidence_complete_for_bounded_sample"] is True
+    assert "unavailable_evidence" not in record
