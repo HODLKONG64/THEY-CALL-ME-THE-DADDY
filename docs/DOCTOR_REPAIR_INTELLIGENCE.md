@@ -132,3 +132,57 @@ validation requirements remain unchanged.
 After reviewed CI passes, upgrade the two active Python installations and the pinned
 standby using the established rollout process; restart the active watchers so they
 read the new scope. No D1 migration or new R2 bucket is necessary.
+
+
+## Distilled repair knowledge (version 1)
+
+Doctor's historical repair context uses an additive local SQLite table, `distilled_history`.
+Existing archives, the raw history index, R2 terminal lessons and GitHub records remain intact.
+
+The existing `--sync-history` command processes up to five pending records per successfully
+indexed repository per run. Each record is keyed by repository, PR/issue number, source
+revision and distillation version. Unchanged records are cached for 30 days; a changed
+source revision invalidates the previous evidence immediately. Failed enrichment retains
+unverified metadata, waits one hour before retrying that revision and stops further
+enrichment for the repository during that run. The initial metadata index keeps progressing.
+
+Distillation is deterministic and extractive, with no additional OpenAI calls. It removes
+routine review requests, acknowledgement chatter, duplicate lines and markup; classifies
+technical, art-only-candidate and uncertain records; and extracts explicitly reported
+problem, cause, solution, failure and verification statements. Art-only candidates and
+uncertain records are not deleted. Only technical candidates trigger bounded GitHub
+enrichment: merge identity, changed paths, selected technical discussion/review excerpts,
+and observed check conclusions on the exact merge SHA. Missing data remains unknown.
+Reported root causes and fixes are claims, not independent verification. No raw patches
+are sent by the historical retrieval path.
+
+During repairs, Doctor ranks local distilled evidence, with metadata-only fallback when
+a record is new or stale. It does not refetch historical discussions. The combined
+local/archive, R2 terminal lessons and historical advisory context is deduplicated and
+limited to at most five records and 7,200 serialized JSON bytes. This cap is not a cap
+on the entire repair prompt or a token-count guarantee. Existing exact replay, scope,
+validation, Codex and merge requirements are unchanged.
+
+Run the report under the same protected environment as the existing sync service:
+
+```sh
+python -m the_daddy.swarmsy_doctor_queue --distillation-report
+```
+
+The report shows unique indexed records, current distilled records, stale revisions,
+pending/retry counts, classification counts and source/stored bytes. Byte counts
+compare bounded source metadata with stored enriched records, so enrichment can
+sometimes increase stored size; they are not an estimate of API billing or token savings.
+
+No D1 migrations, Worker releases, new credentials or bucket changes are required.
+After CI/review and merging, reinstall the active runtimes and restart the watchers.
+The existing timers automatically invoke the distillation stage. Keep the separately
+tested recovery pin until the updated primary is verified. Do not remove historical
+data or run a second repair watcher.
+
+Limitations: this version uses lexical matching and local per-worker distilled history.
+Existing R2 terminal lessons remain shared and are compacted when retrieved, but
+publication of distilled GitHub records to R2, semantic embeddings, cross-source
+contradiction analysis and automatic detection of superseded fixes across different
+PRs require further implementation. The sample of GitHub checks is not a complete CI
+attestation or production smoke test.
