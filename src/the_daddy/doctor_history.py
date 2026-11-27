@@ -1,7 +1,7 @@
 """Bounded, read-only repair intelligence. Historical material is never authority."""
 from __future__ import annotations
 
-import json
+import os
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -88,6 +88,12 @@ class HistoryIndex:
 
     def connect(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Create with owner-only permissions; the parent must be service-private.
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
         db = sqlite3.connect(self.path, timeout=10)
         try:
             db.execute("PRAGMA journal_mode=WAL")
