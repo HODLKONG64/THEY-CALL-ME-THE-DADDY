@@ -99,3 +99,36 @@ another machine. The existing Brain FIX approval remains mandatory.
   automatic issue creation/closure, SAM technical intake, full review/diff/CI evidence
   ingestion, semantic embeddings, live smoke probes, and cost/recurrence dashboards
   remain separate work. They must not bypass the current review/approval gates.
+
+
+## Independent sharing scope and diagnostics
+
+Set `DADDY_DOCTOR_SHARED_REPOS` to the comma-separated repositories explicitly
+approved for private advisory memory retrieval. If unset, the existing GitHub
+history scope is used. An explicitly empty value means only the configured target.
+The GitHub history scope and repair write allowlist remain independent.
+For the website worker, keep the GitHub read scope limited to its authorized
+repositories and configure the wider shared scope only if those lessons are
+approved for that service. A shared bucket credential is not an IAM restriction
+per repository; this setting controls application retrieval, not bucket permissions.
+
+Use the service's existing environment and archive to run:
+
+```sh
+python -m the_daddy.swarmsy_doctor_queue --intelligence-report
+```
+
+The report counts unique indexed records, reports scan checkpoints, repair outcomes,
+post-merge CI and deployment-job outcomes, repeated normalized problem groups and
+median case age at last update. It does not expose raw support reports or estimate API
+costs. Repeated groups are lexical indicators, not proven root causes. Merge fraction
+is not production success. Case age is not active compute time.
+
+Related merged PR retrieval now includes bounded redacted patch excerpts, inline
+review notes and available head/merge SHA provenance. This does not bulk ingest every
+diff, and no historical patch is automatically executed. Existing approval and
+validation requirements remain unchanged.
+
+After reviewed CI passes, upgrade the two active Python installations and the pinned
+standby using the established rollout process; restart the active watchers so they
+read the new scope. No D1 migration or new R2 bucket is necessary.
