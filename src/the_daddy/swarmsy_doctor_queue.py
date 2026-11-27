@@ -11,6 +11,8 @@ from .config import Settings, _DADDY_REPO, _normalize_repo_slug
 from .doctor_ci import audit_workflow
 from .doctor_repair import scrub
 from .doctor_worker import GitHubDoctorWorker
+from .doctor_history import HistoryIndex, repo_scope
+from .git_tools import GitBranchExecutor
 from .swarmsy_doctor import (
     SWARMSY_REPO,
     DoctorQueueConsumer,
@@ -116,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     operation.add_argument("--process-once", action="store_true", help="Process one request or review.")
     operation.add_argument("--watch", action="store_true", help="Continuously process requests and pending reviews.")
     operation.add_argument("--show-recent", action="store_true", help="Show recent archived repairs.")
+    operation.add_argument("--sync-history", action="store_true", help="Index one historical GitHub page per approved read repository.")
     operation.add_argument("--scan-prs", action="store_true", help="Report recent open PRs and exact CI state without queuing repairs.")
     parser.add_argument("--allow-path", action="append", help="Narrow the request to a file or directory prefix ending in /.")
     parser.add_argument("--log-file", type=Path, help="Include the tail of a local diagnostic log.")
@@ -126,6 +129,29 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     archive = JsonDoctorArchive(Path(os.getenv("DADDY_DOCTOR_ARCHIVE_FILE", DEFAULT_ARCHIVE_FILE)).resolve())
     watch_ci = _watch_ci()
+    if args.sync_history:
+        if os.getenv("DADDY_DOCTOR_HISTORY_ENABLED", "").lower() != "true":
+            parser.error("Enable DADDY_DOCTOR_HISTORY_ENABLED before indexing GitHub history.")
+        if not settings.has_github:
+            parser.error("Configure read access to GitHub and GITHUB_REPO.")
+        if _normalize_repo_slug(settings.github_repo) not in settings.allowed_target_repos:
+            parser.error("The configured target is outside DADDY_ALLOWED_TARGET_REPOS.")
+        repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), settings.github_repo)
+        git = GitBranchExecutor(github_token=settings.github_token, github_repo=settings.github_repo,
+                                allowed_target_repos=settings.allowed_target_repos)
+        index = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), settings)
+        def read_history(repo, endpoint):
+            if repo not in repos:
+                raise PermissionError("Repository is outside the history read scope.")
+            return git._api_request("GET", f"https://api.github.com/repos/{repo}/{endpoint}")
+        outcomes = []
+        for repo in repos:
+            try:
+                outcomes.append(index.sync_page(repo, read_history))
+            except (RuntimeError, OSError, ValueError) as exc:
+                outcomes.append({"repo": repo, "error": scrub(str(exc), settings)[-500:]})
+        print(json.dumps(outcomes, indent=2))
+        return int(any("error" in outcome for outcome in outcomes))
     if args.scan_prs:
         worker = _worker(settings, archive)
         if worker is None or not worker.ci_workflow:
