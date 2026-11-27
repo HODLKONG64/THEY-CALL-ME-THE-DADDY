@@ -197,3 +197,17 @@ publication of distilled GitHub records to R2, semantic embeddings, cross-source
 contradiction analysis and automatic detection of superseded fixes across different
 PRs require further implementation. The sample of GitHub checks is not a complete CI
 attestation or production smoke test.
+
+
+### Alternative historical CI evidence
+
+When the historical Checks API cannot be read, Doctor collects bounded Actions
+workflow runs filtered by the exact merge SHA (push or workflow dispatch),
+jobs from the specific run attempt, and the newest commit status per context.
+Results are individually labelled passed, failed, pending or unknown. An empty
+sample is not a pass. Checks remain explicitly unavailable; alternative evidence
+does not satisfy mandatory CI, Codex or merge requirements. Existing partial
+records can collect fallback evidence without waiting for the Checks cooldown.
+The existing endpoint cooldowns apply separately to Actions and commit statuses.
+Completed fallback samples may be reused on same-revision retries, subject to
+the existing evidence revalidation window. No new cloud resources are required.
