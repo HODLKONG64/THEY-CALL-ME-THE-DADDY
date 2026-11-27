@@ -641,7 +641,9 @@ def test_historical_ci_fallback_uses_exact_merge_and_preserves_unknown_checks(tm
             assert endpoint.startswith("commits/" + "a"*40)
             return [{"context": "build", "state": "pending"},
                     {"context": "build", "state": "success"},
-                    {"context": "lint", "state": "success"}]
+                    {"context": "lint", "state": "success"},
+                    {"context": "x"*100 + "one", "state": "success"},
+                    {"context": "x"*100 + "two", "state": "failure"}]
         return []
     result = distill_pending(index, REPO, api)
     assert result["processed"] == 1 and result["partial"] == 1
@@ -652,8 +654,58 @@ def test_historical_ci_fallback_uses_exact_merge_and_preserves_unknown_checks(tm
         {"id": 7, "attempt": 2, "name": "CI", "state": "passed",
          "jobs": [{"name": "tests", "state": "failed"}]}]
     assert record["alternative_ci"]["commit_statuses"] == [
-        {"context": "build", "state": "pending"}, {"context": "lint", "state": "passed"}]
+        {"context": "build", "state": "pending"}, {"context": "lint", "state": "passed"},
+        {"context": "x"*100, "state": "passed"}, {"context": "x"*100, "state": "failed"}]
     assert record["status"] == "merged_not_production_verified"
     before = len(calls)
     assert distill_pending(index, REPO, api)["processed"] == 0
     assert len(calls) == before
+
+
+def test_historical_ci_refresh_preserves_failed_jobs_only_for_same_attempt(tmp_path):
+    from urllib.error import HTTPError
+    from the_daddy.doctor_distillation import distill_pending, retrieve, connect
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    row = {"number": 1, "title": "Fix API timeout", "state": "closed",
+           "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z", "body": ""}
+    index.sync_page(REPO, lambda *_: [row])
+    phase = 0
+
+    def api(repo, endpoint):
+        if endpoint == "pulls/1":
+            return {"merged": True, "merge_commit_sha": "a"*40, "head": {"sha": "b"*40}}
+        if "/check-runs?" in endpoint:
+            raise HTTPError("https://api.github.com/", 403, "Forbidden", {}, None)
+        if endpoint.startswith("actions/runs?"):
+            base = {"run_attempt": 1, "head_sha": "a"*40, "event": "push",
+                    "status": "completed", "conclusion": "failure", "name": "CI"}
+            return {"workflow_runs": [
+                dict(base, id=7),
+                dict(base, id=8, status="in_progress", conclusion=None),
+                dict(base, id=9, run_attempt=2 if phase else 1)]}
+        if endpoint.startswith("actions/runs/"):
+            if phase:
+                raise HTTPError("https://api.github.com/", 403, "Forbidden", {}, None)
+            return {"jobs": [{"name": "test", "head_sha": "a"*40,
+                              "status": "completed", "conclusion": "failure"}]}
+        return []
+
+    assert distill_pending(index, REPO, api)["processed"] == 1
+    db = connect(index)
+    try:
+        with db:
+            db.execute("UPDATE distilled_history SET retry_after='2000-01-01T00:00:00+00:00'")
+    finally:
+        db.close()
+    phase = 1
+    assert distill_pending(index, REPO, api)["processed"] == 1
+    item = retrieve(index, request(problem_summary="API timeout"), (REPO,))[0]
+    runs = {run["id"]: run for run in item["alternative_ci"]["workflow_runs"]}
+    assert runs[7]["jobs_unavailable"] is True
+    assert runs[7]["jobs"] == [{"name": "test", "state": "failed"}]
+    assert runs[8]["jobs_unavailable"] is True
+    assert runs[8]["jobs"] == [{"name": "test", "state": "failed"}]
+    assert runs[9]["attempt"] == 2
+    assert runs[9]["jobs_unavailable"] is True
+    assert "jobs" not in runs[9]
+    assert "workflow_jobs" in item["unavailable_evidence"]
