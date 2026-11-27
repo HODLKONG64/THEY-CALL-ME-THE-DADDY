@@ -210,6 +210,7 @@ def alternative_ci(record, reader, settings, unavailable, previous):
     evidence = {}
     prior = previous.get("alternative_ci", {}) if previous.get("merge_sha") == sha else {}
     runs = prior.get("workflow_runs")
+    cached_runs = {(item["id"], item["attempt"]): item for item in runs or []}
     if not runs or any(item.get("state") in ("pending", "unknown") or item.get("jobs_unavailable")
                        or any(job.get("state") in ("pending", "unknown") for job in item.get("jobs", []))
                        for item in runs):
@@ -230,6 +231,9 @@ def alternative_ci(record, reader, settings, unavailable, previous):
                                     checked_jobs, unavailable)
                 if jobs is None:
                     item["jobs_unavailable"] = True
+                    cached = cached_runs.get((run_id, attempt), {})
+                    if "jobs" in cached:
+                        item["jobs"] = cached["jobs"]
                 else:
                     item["jobs"] = [{"name": scrub(str(job.get("name") or ""), settings)[:100],
                                      "state": observed_state(job.get("status"), job.get("conclusion"))}
@@ -247,10 +251,11 @@ def alternative_ci(record, reader, settings, unavailable, previous):
             statuses = []
             seen = set()
             for row in rows[:30]:
-                context = scrub(str(row.get("context") or ""), settings)[:100]
-                if not context or context in seen:
+                identity = row.get("context")
+                if not isinstance(identity, str) or not identity or identity in seen:
                     continue
-                seen.add(context)
+                seen.add(identity)
+                context = scrub(identity, settings)[:100]
                 state = {"success": "passed", "failure": "failed", "error": "failed",
                          "pending": "pending"}.get(str(row.get("state")), "unknown")
                 statuses.append({"context": context, "state": state})
