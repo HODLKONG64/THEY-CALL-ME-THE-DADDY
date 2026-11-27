@@ -303,17 +303,18 @@ class JsonDoctorArchive:
         return [item for item in self._load() if item.status == "queued"]
 
     def active_requests(self, repo: str = "", *, include_post_merge_ci: bool = True) -> list[DoctorRequest]:
-        return sorted(
+        active = sorted(
             (item for item in self._load(strict=True)
              if (item.status not in FINAL_STATUSES or item.status == "merged"
                  and (item.deployment_status == "pending"
                       or include_post_merge_ci and item.post_merge_ci == "pending"))
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
-            # Finish in-flight delivery first; then prioritize urgent queued repairs.
-            key=lambda item: (item.status == "queued", 
-                              {"urgent": 0, "high": 1, "normal": 2, "low": 3}[item.priority]
-                              if item.status == "queued" else 0, item.updated_at),
+            key=lambda item: item.updated_at,
         )
+        # Preserve polling fairness for in-flight PRs/deployments. Reorder only queued slots.
+        queued = iter(sorted((item for item in active if item.status == "queued"),
+                             key=lambda item: ({"urgent": 0, "high": 1, "normal": 2, "low": 3}[item.priority], item.updated_at)))
+        return [next(queued) if item.status == "queued" else item for item in active]
 
     def upsert_request(self, request: DoctorRequest) -> None:
         with archive_lock(self.path.with_suffix(self.path.suffix + ".lock")):
