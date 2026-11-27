@@ -388,3 +388,26 @@ def test_distillation_context_budget_and_duplicate_provenance():
     assert len(json.dumps(result, ensure_ascii=True).encode()) <= 2000
     assert len({r["number"] for r in result}) == len(result)
     assert all("patch_excerpts" not in r for r in result)
+
+
+@pytest.mark.parametrize("section, phrase", [
+    ("Problem", "Content-Length omitted"),
+    ("Root cause", "Header normalization"),
+    ("Solution", "Preserve original casing"),
+    ("Failure", "Chunked transfer rejected"),
+    ("Verification", "Origin received payload"),
+])
+def test_distilled_claims_are_searchable_outside_title_and_keyword_notes(tmp_path, section, phrase):
+    from the_daddy.doctor_distillation import distill_pending, retrieve
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    row = {"number": 21, "title": "Fix upload", "state": "closed",
+           "updated_at": "2026-11-01T00:00:00Z",
+           "body": "API timeout\nWorker failure\nDatabase error\n" + section + ": " + phrase}
+    def api(repo, endpoint):
+        return [row] if endpoint.startswith("issues?") else []
+    index.sync_page(REPO, api)
+    query = request(problem_summary=phrase)
+    # Both metadata-only fallback and persisted distillation must find the claim.
+    assert retrieve(index, query, (REPO,))[0]["number"] == 21
+    assert distill_pending(index, REPO, api)["processed"] == 1
+    assert retrieve(index, query, (REPO,))[0]["number"] == 21
