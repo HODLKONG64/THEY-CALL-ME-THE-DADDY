@@ -39,6 +39,14 @@ def repo_scope(value: str, target: str) -> tuple[str, ...]:
     return tuple(sorted(repos))
 
 
+def shared_repo_scope(target: str) -> tuple[str, ...]:
+    """Separate advisory sharing from GitHub API access; legacy default is unchanged."""
+    configured = os.getenv("DADDY_DOCTOR_SHARED_REPOS")
+    if configured is None:
+        configured = os.getenv("DADDY_DOCTOR_HISTORY_REPOS", "")
+    return repo_scope(configured, target)
+
+
 def query_text(request: DoctorRequest, settings) -> str:
     return scrub(" ".join([request.problem_summary, request.feature_hint, *request.allowed_paths,
                            *request.logs[-3:]]), settings)[:12000]
@@ -196,10 +204,30 @@ class HistoryIndex:
                         if isinstance(files, list):
                             evidence["files"] = [scrub(str(f.get("filename") or ""), self.settings)[:180]
                                                  for f in files[:20] if isinstance(f, dict)]
+                        # Historical patches are advisory snippets only, never replayed.
+                        if isinstance(files, list):
+                            evidence["patch_excerpts"] = [
+                                {"path": scrub(str(item.get("filename") or ""), self.settings)[:180],
+                                 "patch": scrub(str(item.get("patch") or ""), self.settings)[:600]}
+                                for item in files[:5] if isinstance(item, dict) and item.get("patch")
+                            ][:3]
+                        merge = detail.get("merge_commit_sha")
+                        if isinstance(merge, str) and SHA.fullmatch(merge):
+                            evidence["merge_sha"] = merge
+                        head = (detail.get("head") or {}).get("sha")
+                        if isinstance(head, str) and SHA.fullmatch(head):
+                            evidence["head_sha"] = head
                         reviews = api(repo, f"pulls/{number}/reviews?per_page=10")
                         if isinstance(reviews, list):
                             evidence["review_notes"] = [scrub(str(f.get("body") or ""), self.settings)[:400]
                                                         for f in reviews[:10] if isinstance(f, dict) and f.get("body")][:3]
+                        inline = api(repo, f"pulls/{number}/comments?per_page=10")
+                        if isinstance(inline, list):
+                            evidence["inline_review_notes"] = [
+                                {"path": scrub(str(item.get("path") or ""), self.settings)[:180],
+                                 "body": scrub(str(item.get("body") or ""), self.settings)[:400]}
+                                for item in inline[:10] if isinstance(item, dict) and item.get("body")
+                            ][:3]
                 comments = api(repo, f"issues/{number}/comments?per_page=10")
                 if isinstance(comments, list):
                     evidence["comments"] = [scrub(str(f.get("body") or ""), self.settings)[:400]

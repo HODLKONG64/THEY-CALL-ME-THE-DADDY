@@ -241,3 +241,61 @@ def test_r2_destination_change_does_not_inherit_import_cursor(tmp_path, monkeypa
     monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
     one.sync(archive, REPO, (REPO,))
     assert first.starts[-1] == f"{PREFIX}{REPO}/24.json"
+
+
+def test_shared_scope_independent_of_history(monkeypatch):
+    from the_daddy.doctor_history import shared_repo_scope
+    monkeypatch.setenv("DADDY_DOCTOR_HISTORY_REPOS", REPO)
+    monkeypatch.delenv("DADDY_DOCTOR_SHARED_REPOS", raising=False)
+    assert shared_repo_scope(REPO) == (REPO,)
+    monkeypatch.setenv("DADDY_DOCTOR_SHARED_REPOS", OTHER)
+    assert shared_repo_scope(REPO) == (OTHER, REPO)
+    assert repo_scope(REPO, REPO) == (REPO,)
+    monkeypatch.setenv("DADDY_DOCTOR_SHARED_REPOS", "")
+    assert shared_repo_scope(REPO) == (REPO,)
+    monkeypatch.setenv("DADDY_DOCTOR_SHARED_REPOS", "https://invalid.test/repo")
+    with pytest.raises(ValueError):
+        shared_repo_scope(REPO)
+
+
+def test_intelligence_report_is_aggregate_and_deduplicated(tmp_path):
+    from the_daddy.doctor_diagnostics import report
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    archive._save([
+        request(request_id="one", status="merged", problem_summary="Private worker timeout",
+                post_merge_ci="passed", deployment_status="failed"),
+        request(request_id="two", status="failed_with_reason", problem_summary="Worker timeout private"),
+        request(request_id="other", repo_target=OTHER, status="merged"),
+    ])
+    data = report(archive, index, REPO, (REPO,))
+    assert data["requests"] == 2
+    assert data["merge_fraction_of_terminal_cases"] == 0.5
+    assert data["deployment_jobs"] == {"failed": 1}
+    assert data["repeated_normalized_problem_groups"] == 1
+    assert data["cases_per_repeated_group"] == [2]
+    assert data["history_coverage"][0]["initial_scan_checkpointed"] is False
+    assert "Private worker timeout" not in json.dumps(data)
+
+
+def test_history_enriches_merged_pr_without_replay(tmp_path):
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    row = {"number": 9, "title": "Worker upload timeout", "body": "", "state": "closed",
+           "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z"}
+    def api(repo, endpoint):
+        if endpoint.startswith("issues?"):
+            return [row]
+        if endpoint == "pulls/9":
+            return {"merged": True, "merge_commit_sha": "a"*40, "head": {"sha": "b"*40}}
+        if endpoint.startswith("pulls/9/files"):
+            return [{"filename": "src/example.py", "patch": "+GITHUB_TOKEN=ghp_abcdefghijklmnopqrst"}]
+        if endpoint.startswith("pulls/9/comments"):
+            return [{"path": "src/example.py", "body": "Handle timeout"}]
+        return []
+    index.sync_page(REPO, api)
+    result = index.search(request(), (REPO,), api)[0]
+    assert result["merge_sha"] == "a"*40
+    assert result["outcome"] == "merged_not_production_verified"
+    assert result["inline_review_notes"][0]["body"] == "Handle timeout"
+    assert "ghp_abcdefghijklmnopqrst" not in json.dumps(result)
+    assert "learned_edits" not in result
