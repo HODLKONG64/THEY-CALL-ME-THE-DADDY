@@ -363,7 +363,12 @@ def distill_pending(index, repo, api, *, limit=BATCH):
             old_revision, version, when, retry, complete, cached_record = row[7:]
             rev = revision(raw)
             if old_revision == rev and version == VERSION:
-                if retry and retry > stamp:
+                needs_fallback = False
+                if not complete and cached_record:
+                    cached = json.loads(cached_record)
+                    needs_fallback = (bool(cached.get("merge_sha")) and "merge_checks" in cached.get("unavailable_evidence", {})
+                                      and "alternative_ci" not in cached)
+                if retry and retry > stamp and not needs_fallback:
                     continue
                 if complete and when > (now - timedelta(days=30)).isoformat(timespec="seconds"):
                     skipped += 1
@@ -496,7 +501,8 @@ def budget_evidence(records, settings, *, max_bytes=MAX_CONTEXT_BYTES):
             record["lessons"] = list(dict.fromkeys(lines))[:2]
         for field in ("discussion_notes_unverified", "review_findings_unverified", "technical_notes",
                       "lessons", "affected_paths", "observed_merge_checks", "reported_verification",
-                      "reported_solution", "reported_root_cause", "reported_problem", "reported_failure"):
+                      "reported_solution", "reported_root_cause", "reported_problem", "reported_failure",
+                      "alternative_ci"):
             if _serialized_size(record) <= MAX_RECORD_BYTES:
                 break
             record.pop(field, None)
