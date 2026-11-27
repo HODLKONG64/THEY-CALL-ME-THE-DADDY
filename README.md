@@ -22,6 +22,14 @@ Use `--process-once` to process one queue entry or check one pending PR. Use `--
 - For configured Cloudflare Workers, the [deployment workflow and tracking setup](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md#cloudflare-worker-deployment) can ship and verify a reviewed merge.
 - The legacy `the_daddy.cli` engine remains available for diagnostics and manual PR review. The queue worker handles automatic review follow-up and merge.
 
+## Website support and CI tracking
+
+The Brain sends approved website repair cases to the website-scoped Doctor service. Doctor reproduces the failure, tests the repair in isolation and requests Codex review. The owner can approve the exact reviewed commit in `@WIKICOMSBOT`. [Website support setup](https://github.com/HODLKONG64/the-brain/blob/main/support-ops/README.md)
+
+Use `--scan-prs` for a read-only CI inventory. `DADDY_DOCTOR_WATCH_CI=true` enables ongoing tracking. `DADDY_DOCTOR_DISPATCH_CI=true` lets Doctor request missing checks for tracked commits with a website-scoped token that has Actions write access. Doctor can adopt an eligible functional failure tagged `doctor:repair-ci` after reproducing it. `doctor:merge-ci` enables the separate CI merge path after Codex and required GitHub checks pass. Doctor records post-merge checks against the merge SHA and can queue one scoped follow-up while that commit is still current. [CI scanning and merge verification](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md#scan-prs-and-verify-the-merge)
+
+Worker and D1 releases use the [website's protected Cloudflare workflow](https://github.com/Crypto-Moonboys/Crypto-Moonboys.github.io/blob/main/.github/workflows/cloudflare-pr-release.yml). SAM editorial approvals run through the separate Brain bridge.
+
 ## Develop
 
 ```bash
