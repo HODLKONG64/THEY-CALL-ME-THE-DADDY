@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 
 from .config import Settings, _normalize_repo_slug
-from .doctor_history import HistoryIndex, local_lessons, repo_scope
+from .doctor_history import HistoryIndex, local_lessons, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import shared_search
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
 from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
@@ -75,6 +75,7 @@ class GitHubDoctorWorker:
         validator = ContainerValidator(validation_image, validation_command, settings.run_timeout_seconds)
         self.repair = RepairLoop(self.settings, validator, self.archive.upsert_request)
         self.history_repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), repo)
+        self.shared_repos = shared_repo_scope(repo)
         self.history_enabled = os.getenv("DADDY_DOCTOR_HISTORY_ENABLED", "").lower() == "true"
         self.history = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), self.settings)
 
@@ -209,7 +210,7 @@ class GitHubDoctorWorker:
                     self.archive.upsert_request)
         if os.getenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "").strip():
             try:
-                evidence.extend(shared_search(self.history, self.settings, request, self.history_repos))
+                evidence.extend(shared_search(self.history, self.settings, request, self.shared_repos))
             except (RuntimeError, OSError, ValueError, sqlite3.Error):
                 log(request, self.settings, "shared_history_unavailable",
                     "Shared advisory cache unavailable; proceeding with local evidence.", self.archive.upsert_request)
