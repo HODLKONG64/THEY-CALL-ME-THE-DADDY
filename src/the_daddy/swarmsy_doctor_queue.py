@@ -124,12 +124,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(_process_once(archive, settings), indent=2))
         return 0
     previous = None
-    while True:
-        result = _process_once(archive, settings)
-        if result != previous:
-            print(json.dumps(result), flush=True)
-            previous = result
-        time.sleep(max(15, args.interval))
+    try:
+        while True:
+            result = _process_once(archive, settings)
+            if result != previous:
+                print(json.dumps(result), flush=True)
+                previous = result
+            time.sleep(max(15, args.interval))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":
