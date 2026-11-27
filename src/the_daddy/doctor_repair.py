@@ -54,6 +54,8 @@ def scrub(text: str, settings: Settings, *, code: bool = False) -> str:
     for value in (
         settings.openai_api_key, settings.github_token, settings.r2_access_key_id,
         settings.r2_secret_access_key,
+        os.getenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", ""),
+        os.getenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", ""),
     ):
         if len(value) >= 8:
             text = text.replace(value, "[REDACTED_SECRET]")
