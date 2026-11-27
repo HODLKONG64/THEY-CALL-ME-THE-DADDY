@@ -11,7 +11,7 @@ from .config import Settings, _DADDY_REPO, _normalize_repo_slug
 from .doctor_ci import audit_workflow
 from .doctor_repair import scrub
 from .doctor_worker import GitHubDoctorWorker
-from .doctor_history import HistoryIndex, repo_scope
+from .doctor_history import HistoryIndex, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import sync_shared
 from .git_tools import GitBranchExecutor
 from .swarmsy_doctor import (
@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("The configured target is outside DADDY_ALLOWED_TARGET_REPOS.")
         if not archive.path.is_file():
             parser.error("The persistent Doctor archive must exist.")
-        repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), settings.github_repo)
+        repos = shared_repo_scope(settings.github_repo)
         index = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), settings)
         try:
             with archive_lock(archive.path.with_suffix(".intelligence.lock"), blocking=False):
