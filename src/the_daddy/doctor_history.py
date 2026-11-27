@@ -68,6 +68,10 @@ def local_lessons(request: DoctorRequest, archive, settings) -> list[dict]:
     for score, _, past in sorted(ranked, key=lambda item: (item[0], item[1]), reverse=True)[:5]:
         results.append({
             "source": "local_doctor_archive",
+            "repo": past.repo_target.casefold(),
+            "pr": past.pr_number,
+            "updated": past.updated_at,
+            "case": past.request_id,
             "reference": scrub(past.swarmsy_pr_url, settings)[:250],
             "similarity": round(score, 3),
             "problem": scrub(past.problem_summary, settings)[:500],
