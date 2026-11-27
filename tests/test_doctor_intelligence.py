@@ -101,6 +101,32 @@ def test_priority_does_not_starve_existing_review(tmp_path):
     assert [item.request_id for item in archive.active_requests(REPO)] == ["review", "urgent", "normal"]
 
 
+
+def test_urgent_arrivals_cannot_inherit_old_slot_ahead_of_review(tmp_path):
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    archive._save([
+        request(request_id="old-normal", updated_at="2020-01-01T00:00:00Z"),
+        request(request_id="review", status="pr_opened_waiting_review", updated_at="2020-01-02T00:00:00Z"),
+        request(request_id="deploy", status="merged", deployment_status="pending",
+                updated_at="2020-01-03T00:00:00Z"),
+    ])
+    # Model the one-request-per-pass consumer, with a fresh urgent repair
+    # before every pass. None may jump over a waiting in-flight poll.
+    processed = []
+    for i in range(3):
+        archive.upsert_request(request(request_id=f"urgent-{i}", priority="urgent",
+                                       updated_at=f"2020-02-0{i+1}T00:00:00Z"))
+        selected = archive.active_requests(REPO)[0]
+        processed.append(selected.request_id)
+        if selected.status == "merged":
+            selected.deployment_status = "deployed"
+        else:
+            selected.status = "failed_with_reason"
+        archive.upsert_request(selected)
+    assert processed == ["old-normal", "review", "deploy"]
+    assert all(item.priority == "urgent" for item in archive.active_requests(REPO))
+
+
 class R2Stub:
     def __init__(self):
         self.objects = {}
@@ -136,3 +162,45 @@ def test_shared_memory_two_hosts_is_idempotent_and_never_transfers_edits(tmp_pat
     matches = shared_search(b, settings, request(), (REPO,))
     assert len(matches) == 1 and matches[0]["outcome"] == "merged"
     assert not shared_search(b, settings, request(), (OTHER,))
+
+def test_r2_destination_change_reexports_and_isolates_cached_lessons(tmp_path, monkeypatch):
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "test-access")
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "test-secret")
+    settings = Settings(r2_bucket="legacy", r2_endpoint_url="https://account.r2.cloudflarestorage.com")
+    index = HistoryIndex(tmp_path / "history.sqlite3", settings)
+    archive = JsonDoctorArchive(tmp_path / "queue.json")
+    archive.upsert_request(request(request_id="local", status="merged"))
+    remote_archive = JsonDoctorArchive(tmp_path / "remote.json")
+    remote_archive.upsert_request(request(request_id="remote-only", status="failed_with_reason"))
+    remote_index = HistoryIndex(tmp_path / "remote.sqlite3", settings)
+    first = R2Stub()
+    SharedLessons(remote_index, settings, client=first).sync(remote_archive, REPO, (REPO,))
+    assert SharedLessons(index, settings, client=first).sync(archive, REPO, (REPO,)) == {
+        "uploaded": 1, "downloaded": 1}
+    assert len(shared_search(index, settings, request(), (REPO,))) == 2
+
+    # Preserve the local index but switch to an empty bucket.
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-second")
+    second = R2Stub()
+    assert shared_search(index, settings, request(), (REPO,)) == []
+    assert SharedLessons(index, settings, client=second).sync(archive, REPO, (REPO,))["uploaded"] == 1
+    assert len(second.objects) == 1
+    assert len(shared_search(index, settings, request(), (REPO,))) == 1
+    assert SharedLessons(index, settings, client=second).sync(archive, REPO, (REPO,))["uploaded"] == 0
+
+    # The same bucket name under a different account is a different destination.
+    other_settings = settings.model_copy(update={"r2_endpoint_url": "https://other.r2.cloudflarestorage.com"})
+    third = R2Stub()
+    assert shared_search(index, other_settings, request(), (REPO,)) == []
+    assert SharedLessons(index, other_settings, client=third).sync(archive, REPO, (REPO,))["uploaded"] == 1
+    assert len(third.objects) == 1
+
+    # Equivalent endpoint spelling and credential rotation preserve checkpoints.
+    equivalent = settings.model_copy(update={"r2_endpoint_url": "https://account.r2.cloudflarestorage.com:443/"})
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "rotated-secret")
+    assert SharedLessons(index, equivalent, client=second).sync(archive, REPO, (REPO,))["uploaded"] == 0
+
+    # Switching back must recover only the first destination's cache.
+    monkeypatch.setenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "doctor-first")
+    assert len(shared_search(index, settings, request(), (REPO,))) == 2
