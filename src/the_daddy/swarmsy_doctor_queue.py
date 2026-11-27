@@ -121,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     operation.add_argument("--watch", action="store_true", help="Continuously process requests and pending reviews.")
     operation.add_argument("--show-recent", action="store_true", help="Show recent archived repairs.")
     operation.add_argument("--sync-shared-memory", action="store_true", help="Synchronize terminal advisory lessons with private R2.")
+    operation.add_argument("--intelligence-report", action="store_true", help="Report local repair outcomes and historical coverage without diagnostic text.")
     operation.add_argument("--sync-history", action="store_true", help="Index one historical GitHub page per approved read repository.")
     operation.add_argument("--scan-prs", action="store_true", help="Report recent open PRs and exact CI state without queuing repairs.")
     parser.add_argument("--allow-path", action="append", help="Narrow the request to a file or directory prefix ending in /.")
