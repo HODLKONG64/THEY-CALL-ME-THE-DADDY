@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 from .config import Settings, _normalize_repo_slug
 from .doctor_history import HistoryIndex, local_lessons, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import shared_search
+from .doctor_distillation import retrieve, budget_evidence
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
 from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
@@ -28,7 +29,7 @@ PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
     "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
-    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py",
+    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py", "src/the_daddy/doctor_distillation.py",
 }
 
 
@@ -203,7 +204,7 @@ class GitHubDoctorWorker:
         evidence = local_lessons(request, self.archive, self.settings)
         if self.history_enabled:
             try:
-                evidence.extend(self.history.search(request, self.history_repos, self._history_api))
+                evidence.extend(retrieve(self.history, request, self.history_repos))
             except (RuntimeError, OSError, ValueError, sqlite3.Error):
                 log(request, self.settings, "history_unavailable",
                     "GitHub history index unavailable; proceeding with local evidence.",
@@ -214,7 +215,7 @@ class GitHubDoctorWorker:
             except (RuntimeError, OSError, ValueError, sqlite3.Error):
                 log(request, self.settings, "shared_history_unavailable",
                     "Shared advisory cache unavailable; proceeding with local evidence.", self.archive.upsert_request)
-        return evidence
+        return budget_evidence(evidence, self.settings)
 
     def _memory(self, request: DoctorRequest) -> list[DoctorEdit]:
         summary = " ".join(request.problem_summary.casefold().split())
