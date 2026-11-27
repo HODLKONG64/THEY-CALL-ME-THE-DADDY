@@ -43,3 +43,7 @@ python -m pytest -q
 ```
 
 [Architecture](docs/ARCHITECTURE.md) · [Doctor runbook](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md) · [SWARMSY integration direction](docs/SWARMSY_APP_DIRECTION.md) · [Historical repair and upgrade notes](docs/final-agent-direction.md)
+
+### Distilled historical repair knowledge
+
+The existing history sync now incrementally produces compact, source-linked local knowledge and filters routine review chatter. Use `--distillation-report` to inspect coverage and byte counts. Repair retrieval uses bounded cached advisory context rather than fetching historical discussions on demand. See the [repair intelligence runbook](docs/DOCTOR_REPAIR_INTELLIGENCE.md) for limitations and rollout.
