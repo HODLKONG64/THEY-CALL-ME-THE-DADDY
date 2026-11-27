@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import tempfile
 from pathlib import Path
 from urllib.error import HTTPError
@@ -201,7 +202,7 @@ class GitHubDoctorWorker:
         if self.history_enabled:
             try:
                 evidence.extend(self.history.search(request, self.history_repos, self._history_api))
-            except (RuntimeError, OSError, ValueError, __import__("sqlite3").Error):
+            except (RuntimeError, OSError, ValueError, sqlite3.Error):
                 log(request, self.settings, "history_unavailable",
                     "GitHub history index unavailable; proceeding with local evidence.",
                     self.archive.upsert_request)
