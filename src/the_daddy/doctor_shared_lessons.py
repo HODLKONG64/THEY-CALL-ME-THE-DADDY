@@ -32,7 +32,7 @@ def digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def encode(record: dict) -> bytes:
+def encode(record: dict | list) -> bytes:
     return json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
 
 
@@ -90,17 +90,25 @@ def parse_lesson(key: str, raw: bytes, repo: str, settings) -> dict:
     return record
 
 
+def shared_destination(settings) -> tuple[str, str]:
+    """Bucket and stable cache namespace for the configured R2 account/bucket."""
+    bucket = os.getenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "").strip()
+    if not bucket or bucket == settings.r2_bucket:
+        raise ValueError("Configure a dedicated private Doctor intelligence bucket, separate from legacy R2 memory.")
+    endpoint = urlsplit(settings.r2_endpoint_url)
+    if (endpoint.scheme != "https" or not (endpoint.hostname or "").endswith(".r2.cloudflarestorage.com")
+            or endpoint.username or endpoint.password or endpoint.path not in ("", "/")
+            or endpoint.query or endpoint.fragment or endpoint.port not in (None, 443)):
+        raise ValueError("Doctor intelligence requires the account's HTTPS R2 S3 endpoint.")
+    # Credential rotation, trailing slash and explicit default HTTPS port do
+    # not change the destination. Different accounts or buckets always do.
+    return bucket, digest(encode([endpoint.hostname, bucket]))
+
+
 class SharedLessons:
     def __init__(self, index, settings, client=None) -> None:
         self.index, self.settings = index, settings
-        self.bucket = os.getenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "").strip()
-        if not self.bucket or self.bucket == settings.r2_bucket:
-            raise ValueError("Configure a dedicated private Doctor intelligence bucket, separate from legacy R2 memory.")
-        endpoint = urlsplit(settings.r2_endpoint_url)
-        if (endpoint.scheme != "https" or not (endpoint.hostname or "").endswith(".r2.cloudflarestorage.com")
-                or endpoint.username or endpoint.password or endpoint.path not in ("", "/")
-                or endpoint.query or endpoint.fragment or endpoint.port not in (None, 443)):
-            raise ValueError("Doctor intelligence requires the account's HTTPS R2 S3 endpoint.")
+        self.bucket, self.destination = shared_destination(settings)
         access_key = os.getenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "")
         secret_key = os.getenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "")
         if not access_key or not secret_key:
@@ -115,23 +123,33 @@ class SharedLessons:
         db = self.index.connect()
         with db:
             db.executescript("""
-                CREATE TABLE IF NOT EXISTS shared_seen (key TEXT PRIMARY KEY);
-                CREATE TABLE IF NOT EXISTS shared_cursor (repo TEXT PRIMARY KEY, last_key TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS shared_latest (
-                    repo TEXT NOT NULL, case_id TEXT NOT NULL, updated TEXT NOT NULL,
-                    key TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(repo,case_id)
+                -- Do not trust any legacy unscoped synchronization checkpoints.
+                -- Leave old tables untouched; a fresh scoped sync rebuilds from
+                -- the local archive and the currently configured private bucket.
+                CREATE TABLE IF NOT EXISTS shared_seen_by_destination (
+                    destination TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(destination,key)
+                );
+                CREATE TABLE IF NOT EXISTS shared_cursor_by_destination (
+                    destination TEXT NOT NULL, repo TEXT NOT NULL, last_key TEXT NOT NULL,
+                    PRIMARY KEY(destination,repo)
+                );
+                CREATE TABLE IF NOT EXISTS shared_latest_by_destination (
+                    destination TEXT NOT NULL, repo TEXT NOT NULL, case_id TEXT NOT NULL,
+                    updated TEXT NOT NULL, key TEXT NOT NULL, record TEXT NOT NULL,
+                    PRIMARY KEY(destination,repo,case_id)
                 );
             """)
         return db
 
-    @staticmethod
-    def _remember(db, key, record):
-        db.execute("INSERT OR IGNORE INTO shared_seen VALUES(?)", (key,))
-        db.execute("""INSERT INTO shared_latest VALUES(?,?,?,?,?)
-                      ON CONFLICT(repo,case_id) DO UPDATE SET updated=excluded.updated,
+    def _remember(self, db, key, record):
+        db.execute("INSERT OR IGNORE INTO shared_seen_by_destination VALUES(?,?)",
+                   (self.destination, key))
+        db.execute("""INSERT INTO shared_latest_by_destination VALUES(?,?,?,?,?,?)
+                      ON CONFLICT(destination,repo,case_id) DO UPDATE SET updated=excluded.updated,
                       key=excluded.key,record=excluded.record
-                      WHERE (excluded.updated,excluded.key) > (shared_latest.updated,shared_latest.key)""",
-                   (record["repo"], record["case"], record["updated"], key, json.dumps(record)))
+                      WHERE (excluded.updated,excluded.key) >
+                            (shared_latest_by_destination.updated,shared_latest_by_destination.key)""",
+                   (self.destination, record["repo"], record["case"], record["updated"], key, json.dumps(record)))
 
     def sync(self, archive, target: str, repos: tuple[str, ...]) -> dict:
         db = self._db()
@@ -144,7 +162,8 @@ class SharedLessons:
                 record = terminal_lesson(past, self.settings)
                 raw = encode(record)
                 key = object_key(record, raw)
-                if db.execute("SELECT 1 FROM shared_seen WHERE key=?", (key,)).fetchone():
+                if db.execute("SELECT 1 FROM shared_seen_by_destination WHERE destination=? AND key=?",
+                              (self.destination, key)).fetchone():
                     continue
                 record = parse_lesson(key, raw, target.casefold(), self.settings)
                 self.client.put_object(Bucket=self.bucket, Key=key, Body=raw, ContentType="application/json")
@@ -156,7 +175,8 @@ class SharedLessons:
             # A bounded page per repository; cursor loops so late inserts are discovered.
             for repo in repos:
                 prefix = PREFIX + repo + "/"
-                cursor = db.execute("SELECT last_key FROM shared_cursor WHERE repo=?", (repo,)).fetchone()
+                cursor = db.execute("SELECT last_key FROM shared_cursor_by_destination WHERE destination=? AND repo=?",
+                                    (self.destination, repo)).fetchone()
                 args = {"Bucket": self.bucket, "Prefix": prefix, "MaxKeys": LIMIT}
                 if cursor and cursor[0]:
                     args["StartAfter"] = cursor[0]
@@ -170,7 +190,8 @@ class SharedLessons:
                     if not key.startswith(prefix):
                         raise ValueError("Unexpected shared lesson prefix.")
                     last = key
-                    if db.execute("SELECT 1 FROM shared_seen WHERE key=?", (key,)).fetchone():
+                    if db.execute("SELECT 1 FROM shared_seen_by_destination WHERE destination=? AND key=?",
+                              (self.destination, key)).fetchone():
                         continue
                     if not 0 < item.get("Size", 0) <= MAX_BYTES:
                         continue
@@ -187,22 +208,24 @@ class SharedLessons:
                         self._remember(db, key, record)
                     downloaded += 1
                 with db:
-                    db.execute("INSERT OR REPLACE INTO shared_cursor VALUES(?,?)",
-                               (repo, last if page.get("IsTruncated") else ""))
+                    db.execute("INSERT OR REPLACE INTO shared_cursor_by_destination VALUES(?,?,?)",
+                               (self.destination, repo, last if page.get("IsTruncated") else ""))
             return {"uploaded": uploaded, "downloaded": downloaded}
         finally:
             db.close()
 
 
 def shared_search(index, settings, request, repos: tuple[str, ...]) -> list[dict]:
+    _, destination = shared_destination(settings)
     db = index.connect()
     try:
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shared_latest'").fetchone():
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shared_latest_by_destination'").fetchone():
             return []
         query = query_text(request, settings)
         ranked = []
         for repo in repos:
-            for (raw,) in db.execute("SELECT record FROM shared_latest WHERE repo=?", (repo,)):
+            for (raw,) in db.execute("SELECT record FROM shared_latest_by_destination WHERE destination=? AND repo=?",
+                                     (destination, repo)):
                 record = json.loads(raw)
                 if record["case"] == digest(request.request_id.encode()):
                     continue
