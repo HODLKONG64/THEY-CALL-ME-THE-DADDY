@@ -149,7 +149,7 @@ failures defer the affected repository/endpoint family for 24 hours. Rate limiti
 (definite 429 or 403 with rate-limit indicators) defers enrichment across repositories
 sharing the same local index for one hour. This cooldown does not govern the initial
 metadata indexing request or other Doctor API clients. A 404 is not treated as a
-repository-wide permission denial. Retry attempts reuse successful evidence from the same
+repository-wide permission denial; the affected record retries after 24 hours. Retry attempts reuse successful evidence from the same
 revision for up to 30 days. The sync report emits the exact attempted endpoint, HTTP
 status where available, and a safe error category rather than raw response content.
 Cooldowns are persistent across process restarts. A changed token or permission grant
