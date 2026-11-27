@@ -464,6 +464,10 @@ def test_distillation_optional_checks_denied_does_not_block_batch(tmp_path):
     calls = []
     def api(repo, endpoint):
         calls.append(endpoint)
+        if endpoint.endswith("/statuses?per_page=30"):
+            return []
+        if endpoint.startswith("actions/runs?"):
+            return {"workflow_runs": []}
         if endpoint.startswith("commits/"):
             try:
                 raise HTTPError("https://api.github.com/", 403, "Forbidden", {}, None)
@@ -479,7 +483,7 @@ def test_distillation_optional_checks_denied_does_not_block_batch(tmp_path):
     assert result["partial"] == 3
     assert result["endpoint_failures"] == 1
     assert result["endpoint_deferred"] == 2
-    assert len([x for x in calls if x.startswith("commits/")]) == 1
+    assert len([x for x in calls if "/check-runs?" in x]) == 1
     assert result["diagnostics"][0]["http_status"] == 403
     assert "check-runs" in result["diagnostics"][0]["endpoint"]
     assert "secret-bearing" not in json.dumps(result)
@@ -606,3 +610,50 @@ def test_distillation_refetches_merged_pr_when_merge_sha_recovers(tmp_path, miss
     assert record["observed_merge_checks"] == [{"name": "tests", "conclusion": "success"}]
     assert record["evidence_complete_for_bounded_sample"] is True
     assert "unavailable_evidence" not in record
+
+
+def test_historical_ci_fallback_uses_exact_merge_and_preserves_unknown_checks(tmp_path):
+    from urllib.error import HTTPError
+    from the_daddy.doctor_distillation import distill_pending, retrieve
+    index = HistoryIndex(tmp_path / "history.sqlite3", Settings())
+    row = {"number": 1, "title": "Fix API timeout", "state": "closed",
+           "pull_request": {}, "updated_at": "2026-11-01T00:00:00Z", "body": ""}
+    index.sync_page(REPO, lambda *_: [row])
+    calls = []
+    def api(repo, endpoint):
+        calls.append(endpoint)
+        if endpoint == "pulls/1":
+            return {"merged": True, "merge_commit_sha": "a"*40, "head": {"sha": "b"*40}}
+        if "/check-runs?" in endpoint:
+            raise HTTPError("https://api.github.com/", 403, "Forbidden", {}, None)
+        if endpoint.startswith("actions/runs?"):
+            assert "head_sha=" + "a"*40 in endpoint
+            run = {"id": 7, "run_attempt": 2, "name": "CI", "head_sha": "a"*40,
+                   "event": "push", "status": "completed", "conclusion": "success"}
+            return {"workflow_runs": [dict(run, id=8, head_sha="b"*40),
+                                      dict(run, id=9, event="pull_request"), run]}
+        if endpoint.startswith("actions/runs/"):
+            assert endpoint == "actions/runs/7/attempts/2/jobs?per_page=20"
+            job = {"name": "tests", "head_sha": "a"*40,
+                   "status": "completed", "conclusion": "failure"}
+            return {"jobs": [dict(job, name="wrong SHA", head_sha="b"*40), job]}
+        if "/statuses?" in endpoint:
+            assert endpoint.startswith("commits/" + "a"*40)
+            return [{"context": "build", "state": "pending"},
+                    {"context": "build", "state": "success"},
+                    {"context": "lint", "state": "success"}]
+        return []
+    result = distill_pending(index, REPO, api)
+    assert result["processed"] == 1 and result["partial"] == 1
+    record = retrieve(index, request(problem_summary="API timeout"), (REPO,))[0]
+    assert record["unavailable_evidence"]["merge_checks"].startswith("unknown")
+    assert record["evidence_complete_for_bounded_sample"] is False
+    assert record["alternative_ci"]["workflow_runs"] == [
+        {"id": 7, "attempt": 2, "name": "CI", "state": "passed",
+         "jobs": [{"name": "tests", "state": "failed"}]}]
+    assert record["alternative_ci"]["commit_statuses"] == [
+        {"context": "build", "state": "pending"}, {"context": "lint", "state": "passed"}]
+    assert record["status"] == "merged_not_production_verified"
+    before = len(calls)
+    assert distill_pending(index, REPO, api)["processed"] == 0
+    assert len(calls) == before
