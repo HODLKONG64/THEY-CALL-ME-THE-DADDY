@@ -133,6 +133,15 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     archive = JsonDoctorArchive(Path(os.getenv("DADDY_DOCTOR_ARCHIVE_FILE", DEFAULT_ARCHIVE_FILE)).resolve())
     watch_ci = _watch_ci()
+    if args.intelligence_report:
+        if not archive.path.is_file():
+            parser.error("The persistent Doctor archive must exist.")
+        if _normalize_repo_slug(settings.github_repo) not in settings.allowed_target_repos:
+            parser.error("The configured target is outside DADDY_ALLOWED_TARGET_REPOS.")
+        repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), settings.github_repo)
+        index = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), settings)
+        print(json.dumps(report(archive, index, settings.github_repo, repos), indent=2))
+        return 0
     if args.sync_shared_memory:
         if _normalize_repo_slug(settings.github_repo) not in settings.allowed_target_repos:
             parser.error("The configured target is outside DADDY_ALLOWED_TARGET_REPOS.")
