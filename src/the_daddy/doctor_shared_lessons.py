@@ -21,7 +21,7 @@ from .doctor_repair import scrub
 from .swarmsy_doctor import FINAL_STATUSES
 
 PREFIX = "doctor-intelligence/v1/"
-MAX_BYTES = 8192
+MAX_BYTES = 16384
 LIMIT = 25
 HEX = re.compile(r"[0-9a-f]{64}")
 STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)")
@@ -33,7 +33,7 @@ def digest(raw: bytes) -> str:
 
 
 def encode(record: dict) -> bytes:
-    return json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
+    return json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def terminal_lesson(past, settings) -> dict:
@@ -48,6 +48,8 @@ def terminal_lesson(past, settings) -> dict:
         "post_merge_ci": past.post_merge_ci,
         "deployment_job": past.deployment_status,
         "pr": past.pr_number,
+        "head_sha": past.head_sha if re.fullmatch(r"[0-9a-f]{40}", past.head_sha) else "",
+        "merge_sha": past.merge_sha if re.fullmatch(r"[0-9a-f]{40}", past.merge_sha) else "",
         "lessons": [
             scrub(row.get("detail", ""), settings)[:300]
             for row in past.repair_log[-8:]
@@ -66,7 +68,7 @@ def parse_lesson(key: str, raw: bytes, repo: str, settings) -> dict:
     record = json.loads(raw)
     if not isinstance(record, dict) or set(record) != {
         "version", "repo", "case", "updated", "problem", "outcome", "reason",
-        "post_merge_ci", "deployment_job", "pr", "lessons"
+        "post_merge_ci", "deployment_job", "pr", "head_sha", "merge_sha", "lessons"
     }:
         raise ValueError("Invalid shared lesson schema.")
     if (record["version"] != 1 or record["repo"] != repo
@@ -76,6 +78,8 @@ def parse_lesson(key: str, raw: bytes, repo: str, settings) -> dict:
             or record["post_merge_ci"] not in {"unconfigured", "pending", "passed", "follow_up_queued", "needs_review"}
             or record["deployment_job"] not in {"unconfigured", "pending", "deployed", "failed"}
             or type(record["pr"]) is not int or record["pr"] < 0
+            or any(not isinstance(record[field], str) or (record[field] and not re.fullmatch(r"[0-9a-f]{40}", record[field]))
+                   for field in ("head_sha", "merge_sha"))
             or not isinstance(record["lessons"], list) or len(record["lessons"]) > 3
             or not all(isinstance(x, str) for x in [record["problem"], record["reason"], *record["lessons"]])
             or object_key(record, raw) != key):
