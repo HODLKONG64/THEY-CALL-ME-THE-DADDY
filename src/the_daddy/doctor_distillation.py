@@ -103,8 +103,8 @@ def error_reason(exc):
         if isinstance(cause, HTTPError):
             status = cause.code
             if status == 429 or (status == 403 and (
-                    cause.headers.get("X-RateLimit-Remaining") == "0"
-                    or cause.headers.get("Retry-After"))):
+                    (cause.headers or {}).get("X-RateLimit-Remaining") == "0"
+                    or (cause.headers or {}).get("Retry-After"))):
                 return "rate_limited", status
             if status in (401, 403):
                 return "permission_or_authentication_denied", status
@@ -404,7 +404,8 @@ def coverage(index, repos):
                 classification = json.loads(row[9])["classification"]
                 counts[classification] = counts.get(classification, 0) + 1
             result.append({"repo": repo, "indexed": total, "distilled_current": current,
-                           "pending_or_retry": total-current+partial, "partial_evidence": partial, "stale_revision": stale,
+                           "pending_or_retry": total-current+partial, "pending_distillation": total-current,
+                           "partial_evidence": partial, "stale_revision": stale,
                            "classification": counts, "source_metadata_bytes": source_bytes,
                            "stored_knowledge_bytes": distilled_bytes})
         return result
