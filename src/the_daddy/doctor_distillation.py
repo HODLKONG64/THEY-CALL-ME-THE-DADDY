@@ -124,13 +124,21 @@ class EvidenceReader:
         self.failures = 0
         self.deferred = 0
         self.suspended = False
+        self.retry_until = now
 
     def fetch(self, family, endpoint, validate, unavailable):
         stamp = self.now.isoformat(timespec="seconds")
         cooldown = self.db.execute(
             "SELECT retry_after,reason FROM distillation_backoff WHERE repo=? AND family=?",
             (self.repo, family)).fetchone()
+        global_cooldown = self.db.execute(
+            "SELECT retry_after,reason FROM distillation_backoff WHERE repo=? AND family=?",
+            ("*", "rate_limit")).fetchone()
+        if global_cooldown and global_cooldown[0] > stamp:
+            cooldown = global_cooldown
         if self.suspended or (cooldown and cooldown[0] > stamp):
+            if cooldown and cooldown[0] > stamp:
+                self.retry_until = max(self.retry_until, datetime.fromisoformat(cooldown[0]))
             unavailable[family] = "unknown_deferred"
             self.deferred += 1
             return None
@@ -145,16 +153,17 @@ class EvidenceReader:
             # 404 can be object-specific: never suppress an entire capability on it.
             if reason in ("permission_or_authentication_denied", "rate_limited"):
                 retry = self.now + timedelta(hours=24 if reason.startswith("permission") else 1)
+                self.retry_until = max(self.retry_until, retry)
+                key = ("*", "rate_limit") if reason == "rate_limited" else (self.repo, family)
                 with self.db:
                     self.db.execute("INSERT OR REPLACE INTO distillation_backoff VALUES(?,?,?,?)",
-                                    (self.repo, family, retry.isoformat(timespec="seconds"), reason))
+                                    (*key, retry.isoformat(timespec="seconds"), reason))
             if reason == "rate_limited":
                 self.suspended = True
             return None
-        if cooldown:
-            with self.db:
-                self.db.execute("DELETE FROM distillation_backoff WHERE repo=? AND family=?",
-                                (self.repo, family))
+        with self.db:
+            self.db.execute("DELETE FROM distillation_backoff WHERE repo=? AND family=? AND retry_after<=?",
+                            (self.repo, family, stamp))
         return value
 
 
@@ -246,6 +255,7 @@ def distill_pending(index, repo, api, *, limit=BATCH):
                     skipped += 1
                     continue
             record = metadata(raw, index.settings)
+            reader.retry_until = now
             unavailable = enrich(record, reader, index.settings)
             successful = not unavailable
             if unavailable:
@@ -253,9 +263,7 @@ def distill_pending(index, repo, api, *, limit=BATCH):
                 errors += 1
                 record["unavailable_evidence"] = unavailable
             record["evidence_complete_for_bounded_sample"] = successful and record["classification"] == "technical"
-            retry_at = "" if successful else (now + timedelta(hours=24 if any(
-                reason in ("unknown_permission_or_authentication_denied", "unknown_deferred")
-                for reason in unavailable.values()) else 1)).isoformat(timespec="seconds")
+            retry_at = "" if successful else max(reader.retry_until, now + timedelta(hours=1)).isoformat(timespec="seconds")
             payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             # Recheck source revision before committing a result computed outside the transaction.
             with db:
