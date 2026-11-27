@@ -309,7 +309,10 @@ class JsonDoctorArchive:
                  and (item.deployment_status == "pending"
                       or include_post_merge_ci and item.post_merge_ci == "pending"))
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
-            key=lambda item: item.updated_at,
+            # Finish in-flight delivery first; then prioritize urgent queued repairs.
+            key=lambda item: (item.status == "queued", 
+                              {"urgent": 0, "high": 1, "normal": 2, "low": 3}[item.priority]
+                              if item.status == "queued" else 0, item.updated_at),
         )
 
     def upsert_request(self, request: DoctorRequest) -> None:
@@ -329,6 +332,9 @@ class JsonDoctorArchive:
                 return existing
             self._save([*items, request])
             return request
+
+    def all_requests(self) -> list[DoctorRequest]:
+        return self._load(strict=True)
 
     def recent_requests(self, limit: int = 10) -> list[DoctorRequest]:
         items = self._load()
