@@ -28,7 +28,7 @@ PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
     "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
-    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py",
+    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py",
 }
 
 
