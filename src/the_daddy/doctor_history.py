@@ -39,6 +39,14 @@ def repo_scope(value: str, target: str) -> tuple[str, ...]:
     return tuple(sorted(repos))
 
 
+def shared_repo_scope(target: str) -> tuple[str, ...]:
+    """Separate advisory sharing from GitHub API access; legacy default is unchanged."""
+    configured = os.getenv("DADDY_DOCTOR_SHARED_REPOS")
+    if configured is None:
+        configured = os.getenv("DADDY_DOCTOR_HISTORY_REPOS", "")
+    return repo_scope(configured, target)
+
+
 def query_text(request: DoctorRequest, settings) -> str:
     return scrub(" ".join([request.problem_summary, request.feature_hint, *request.allowed_paths,
                            *request.logs[-3:]]), settings)[:12000]
