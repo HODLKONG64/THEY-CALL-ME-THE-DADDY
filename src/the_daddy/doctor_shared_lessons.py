@@ -97,11 +97,13 @@ class SharedLessons:
                 or endpoint.username or endpoint.password or endpoint.path not in ("", "/")
                 or endpoint.query or endpoint.fragment or endpoint.port not in (None, 443)):
             raise ValueError("Doctor intelligence requires the account's HTTPS R2 S3 endpoint.")
-        if not settings.r2_access_key_id or not settings.r2_secret_access_key:
+        access_key = os.getenv("DADDY_DOCTOR_INTELLIGENCE_R2_ACCESS_KEY_ID", "")
+        secret_key = os.getenv("DADDY_DOCTOR_INTELLIGENCE_R2_SECRET_ACCESS_KEY", "")
+        if not access_key or not secret_key:
             raise ValueError("Configure bucket-scoped R2 credentials.")
         self.client = client if client is not None else boto3.client(
-            "s3", endpoint_url=settings.r2_endpoint_url, aws_access_key_id=settings.r2_access_key_id,
-            aws_secret_access_key=settings.r2_secret_access_key, region_name=settings.r2_region,
+            "s3", endpoint_url=settings.r2_endpoint_url, aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key, region_name=settings.r2_region,
             config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}),
         )
 
@@ -187,24 +189,27 @@ class SharedLessons:
         finally:
             db.close()
 
-    def search(self, request, repos: tuple[str, ...]) -> list[dict]:
-        db = self._db()
-        try:
-            query = query_text(request, self.settings)
-            ranked = []
-            for repo in repos:
-                for (raw,) in db.execute("SELECT record FROM shared_latest WHERE repo=?", (repo,)):
-                    record = json.loads(raw)
-                    if record["case"] == digest(request.request_id.encode()):
-                        continue
-                    score = max(similarity(query, record["problem"]), similarity(request.problem_summary, record["problem"]))
-                    if score >= 0.25:
-                        ranked.append((score, record["updated"], record["case"], record))
-            ranked.sort(key=lambda item: item[:3], reverse=True)
-            return [{"source": "shared_doctor_advisory", "similarity": round(score, 3), **record}
-                    for score, _, _, record in ranked[:5]]
-        finally:
-            db.close()
+
+def shared_search(index, settings, request, repos: tuple[str, ...]) -> list[dict]:
+    db = index.connect()
+    try:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shared_latest'").fetchone():
+            return []
+        query = query_text(request, settings)
+        ranked = []
+        for repo in repos:
+            for (raw,) in db.execute("SELECT record FROM shared_latest WHERE repo=?", (repo,)):
+                record = json.loads(raw)
+                if record["case"] == digest(request.request_id.encode()):
+                    continue
+                score = max(similarity(query, record["problem"]), similarity(request.problem_summary, record["problem"]))
+                if score >= 0.25:
+                    ranked.append((score, record["updated"], record["case"], record))
+        ranked.sort(key=lambda item: item[:3], reverse=True)
+        return [{"source": "shared_doctor_advisory", "similarity": round(score, 3), **record}
+                for score, _, _, record in ranked[:5]]
+    finally:
+        db.close()
 
 
 def sync_shared(index, settings, archive, target, repos):
