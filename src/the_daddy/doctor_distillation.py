@@ -160,6 +160,9 @@ class EvidenceReader:
                                     (*key, retry.isoformat(timespec="seconds"), reason))
             if reason == "rate_limited":
                 self.suspended = True
+            if status == 404:
+                # Retry this record less often without suppressing other objects.
+                self.retry_until = max(self.retry_until, self.now + timedelta(hours=24))
             return None
         with self.db:
             self.db.execute("DELETE FROM distillation_backoff WHERE repo=? AND family=? AND retry_after<=?",
