@@ -134,7 +134,7 @@ standby using the established rollout process; restart the active watchers so th
 read the new scope. No D1 migration or new R2 bucket is necessary.
 
 
-## Distilled repair knowledge (version 1)
+## Distilled repair knowledge (version 2)
 
 Doctor's historical repair context uses an additive local SQLite table, `distilled_history`.
 Existing archives, the raw history index, R2 terminal lessons and GitHub records remain intact.
@@ -142,9 +142,18 @@ Existing archives, the raw history index, R2 terminal lessons and GitHub records
 The existing `--sync-history` command processes up to five pending records per successfully
 indexed repository per run. Each record is keyed by repository, PR/issue number, source
 revision and distillation version. Unchanged records are cached for 30 days; a changed
-source revision invalidates the previous evidence immediately. Failed enrichment retains
-unverified metadata, waits one hour before retrying that revision and stops further
-enrichment for the repository during that run. The initial metadata index keeps progressing.
+source revision invalidates the previous evidence immediately. Optional endpoint failures
+preserve successfully collected evidence and mark unavailable fields as unknown. Other
+records continue processing. Transient failures retry after one hour; 401/403 permission
+failures defer the affected repository/endpoint family for 24 hours. Rate limiting
+(definite 429 or 403 with rate-limit indicators) defers enrichment across repositories
+sharing the same local index for one hour. This cooldown does not govern the initial
+metadata indexing request or other Doctor API clients. A 404 is not treated as a
+repository-wide permission denial. Retry attempts reuse successful evidence from the same
+revision for up to 30 days. The sync report emits the exact attempted endpoint, HTTP
+status where available, and a safe error category rather than raw response content.
+Cooldowns are persistent across process restarts. A changed token or permission grant
+may take up to the remaining cooldown to be observed.
 
 Distillation is deterministic and extractive, with no additional OpenAI calls. It removes
 routine review requests, acknowledgement chatter, duplicate lines and markup; classifies
@@ -170,7 +179,9 @@ python -m the_daddy.swarmsy_doctor_queue --distillation-report
 ```
 
 The report shows unique indexed records, current distilled records, stale revisions,
-pending/retry counts, classification counts and source/stored bytes. Byte counts
+pending/retry counts, partial-evidence counts, pending distillation, classification counts
+and source/stored bytes. Current distilled records include partial records; partial
+records remain eligible for evidence retry, so the retry count overlaps the current count. Byte counts
 compare bounded source metadata with stored enriched records, so enrichment can
 sometimes increase stored size; they are not an estimate of API billing or token savings.
 
