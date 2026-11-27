@@ -21,14 +21,15 @@ def test_wiki_request_changes_only_the_exact_anchor(tmp_path: Path):
     page = tmp_path / repair.page
     target = tmp_path / repair.new[1:]
     target.write_text("Evidence")
-    source = ('<!-- <a href="/wiki/Foo_Bar.html">comment</a> -->'
-              '<a title="href=\'/wiki/Foo_Bar.html\'" HREF = "/wiki/Foo_Bar.html">link</a>'
+    opening = '<a title="href=\'/wiki/Foo_Bar.html\'" HREF = "/wiki/Foo_Bar.html">'
+    source = ('<!-- <a href="/wiki/Foo_Bar.html">comment</a> -->\n'
+              f'{opening}first link</a>\n{opening}second link</a>'
               '<script>let text = \'<a href="/wiki/Foo_Bar.html">text</a>\';</script>')
-    page.write_text(source)
+    page.write_bytes(source.encode())
     work.git("add", "wiki")
     work.commit("wiki fixture")
     work.apply(request, work.wiki_link_edits(repair))
-    assert page.read_text() == source.replace('HREF = "/wiki/Foo_Bar.html"', 'HREF = "/wiki/foo-bar.html"')
+    assert page.read_bytes().decode() == source.replace('HREF = "/wiki/Foo_Bar.html"', 'HREF = "/wiki/foo-bar.html"')
     with pytest.raises(ValueError, match="changed since"):
         target.unlink()
         work.wiki_link_edits(repair)

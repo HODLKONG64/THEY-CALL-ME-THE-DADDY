@@ -269,9 +269,26 @@ class WikiAnchors(HTMLParser):
     def __init__(self, source: str, repair: WikiLinkRepair) -> None:
         super().__init__()
         self.repair = repair
-        self.edits: list[DoctorEdit] = []
+        self.source = source
+        self.line_starts = [0, *(match.end() for match in re.finditer(r"\n", source))]
+        self.spans: list[tuple[int, int]] = []
         self.feed(source)
         self.close()
+
+    @property
+    def edits(self) -> list[DoctorEdit]:
+        if not self.spans:
+            return []
+        start, end = self.spans[0][0], self.spans[-1][1]
+        if self.source.count(self.source[start:end]) != 1:
+            start, end = 0, len(self.source)
+        remainder = start
+        parts = []
+        for left, right in self.spans:
+            parts.extend((self.source[remainder:left], self.repair.new))
+            remainder = right
+        parts.append(self.source[remainder:end])
+        return [DoctorEdit(path=self.repair.page, old=self.source[start:end], new="".join(parts))]
 
     def handle_starttag(self, tag, attrs):
         if tag != "a" or [value for name, value in attrs if name == "href"] != [self.repair.old]:
@@ -284,9 +301,9 @@ class WikiAnchors(HTMLParser):
             ):
                 continue
             start, end = match.span(2)
-            self.edits.append(DoctorEdit(
-                path=self.repair.page, old=raw, new=raw[:start + 1] + self.repair.new + raw[end - 1:],
-            ))
+            line, column = self.getpos()
+            offset = self.line_starts[line - 1] + column
+            self.spans.append((offset + start + 1, offset + end - 1))
             return
 
 
