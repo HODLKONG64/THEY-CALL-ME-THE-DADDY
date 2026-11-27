@@ -13,7 +13,7 @@ from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, log,
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
 from .merge_rules import PROTECTED_CORE_FILES
 from .swarmsy_doctor import (
-    DoctorEdit, DoctorRepairAttempt, DoctorRequest, DoctorReviewComment, JsonDoctorArchive, utc_now_iso,
+    DoctorEdit, DoctorRepairAttempt, DoctorRequest, DoctorReviewComment, JsonDoctorArchive, is_moonboys_repo, utc_now_iso,
 )
 
 CODEX_BOT = "chatgpt-codex-connector[bot]"
@@ -146,6 +146,9 @@ class GitHubDoctorWorker:
             workspace.push(self._branch(request), request.pending_head_sha, request.head_sha)
 
     def _publish(self, request: DoctorRequest, base_branch: str) -> DoctorRepairAttempt:
+        website = is_moonboys_repo(request.repo_target)
+        if website and request.pending_base_sha != self._repo()[1]:
+            raise PermissionError("The website advanced during validation. Request a fresh review of the case.")
         remote = self._head(request)
         if remote != request.pending_head_sha:
             if remote != request.head_sha:
@@ -165,11 +168,23 @@ class GitHubDoctorWorker:
                 workspace.push(self._branch(request), request.pending_head_sha, request.head_sha)
         if not request.pr_number:
             ref = self._reference(request)
-            pr = self.git.create_pull_request(
-                self._branch(request), f"fix: Doctor repair {ref}",
+            body = (
                 "Doctor validated this repair locally and obtained an API review. "
-                "The pull request will receive a separate Codex review.",
-                base_branch=base_branch,
+                "The pull request will receive a separate Codex review."
+            )
+            if website:
+                files = ", ".join(f"`{path}`" for path in sorted({edit.path for edit in request.pending_edits}))
+                body = (
+                    f"Approved Telegram case #{request.request_id.split('-')[1]}. "
+                    f"Changed website frontend files: {files}.\n\n"
+                    f"Doctor ran the configured isolated website validation against `{request.pending_base_sha}` "
+                    "and obtained a separate API review of the candidate. Codex review is requested on the validated head. "
+                    "Live browser verification and release checks remain pending. "
+                    "The repair changes no Worker configuration or D1 schema.\n\n"
+                    "**Merge/deploy/migrate remains pending GK approval.**"
+                )
+            pr = self.git.create_pull_request(
+                self._branch(request), f"fix: Doctor repair {ref}", body, base_branch=base_branch,
             )
             if not pr or int(pr["number"]) <= 0:
                 raise RuntimeError("GitHub did not return a Doctor pull request.")
@@ -231,6 +246,8 @@ class GitHubDoctorWorker:
         self._verify_target(request)
         self._redact_request(request)
         base_branch, base = self._repo()
+        if is_moonboys_repo(request.repo_target) and base != request.expected_base_sha:
+            raise PermissionError("The website advanced since the reviewed commit. Request a fresh review of the case.")
         if self._head(request):
             raise PermissionError("A branch already exists without a validated Doctor delivery record.")
         self._stage(request, base=base, parent=base, findings=[])
@@ -357,6 +374,8 @@ class GitHubDoctorWorker:
                                  reason="Waiting for a completed Codex review of this exact commit.")
         if request.base_sha != base or pr["base"]["sha"] != base:
             raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
+        if is_moonboys_repo(request.repo_target):
+            return self._attempt(request, review_verdict="approved", reason="Codex approved. Website merge and release require GK approval.")
         passed, failures = self._ci_review(request.head_sha)
         if failures:
             return self._attempt(request, review_verdict="changes_requested", review_comments=failures,
@@ -371,6 +390,8 @@ class GitHubDoctorWorker:
         ready = self.poll_review(request)
         if ready.merged:
             return True
+        if is_moonboys_repo(request.repo_target):
+            return False
         if ready.review_verdict != "approved" or not ready.merge_ready:
             return False
         outcome = self.git.merge_pull_request(request.pr_number, head_sha=request.head_sha)

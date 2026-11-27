@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import uuid
@@ -22,6 +23,27 @@ FINAL_STATUSES = {
 }
 
 SWARMSY_REPO = "HODLKONG64/SWARMSY"
+MOONBOYS_REPO = "Crypto-Moonboys/Crypto-Moonboys.github.io"
+_MOONBOYS_GAME_FILE = re.compile(r"games/[a-z0-9-]+/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:html|css|m?js)")
+_MOONBOYS_PROTECTED = re.compile(
+    r"auth|admin|token|secret|leaderboard|reward|score|payment|wallet|anti[-_]?cheat|session|login|ranked|payout|progression"
+    r"|/(?:tests?|test-builds|vendor|node_modules|dist|build)/|\.(?:test|spec)\.m?js$",
+    re.IGNORECASE,
+)
+_MOONBOYS_ART_FILES = {
+    "moonboy-builder.html", "js/avatar-builder-core.mjs", "js/avatar-builder-test.js", "css/avatar-builder-test.css",
+}
+
+
+def is_moonboys_repo(repo: str) -> bool:
+    return _normalize_repo_slug(repo) == _normalize_repo_slug(MOONBOYS_REPO)
+
+
+def moonboys_repair_path(path: str) -> bool:
+    return len(path) <= 180 and (
+        path in _MOONBOYS_ART_FILES
+        or bool(_MOONBOYS_GAME_FILE.fullmatch(path) and not _MOONBOYS_PROTECTED.search(path))
+    )
 
 _SECRET_PATH_MARKERS = (
     ".env",
@@ -71,6 +93,8 @@ def _normalize_path(path: str) -> str:
 
 
 def default_allowed_paths_for_repo(target_repo: str) -> list[str]:
+    if is_moonboys_repo(target_repo):
+        return []  # Website jobs must supply the specific files reviewed by The Brain.
     if _normalize_repo_slug(target_repo) == _normalize_repo_slug(SWARMSY_REPO):
         return ["src/", "app/", "components/", "lib/", "tests/", "docs/", "package.json", "package-lock.json", "tsconfig.json"]
     return ["src/", "tests/", "docs/", "pyproject.toml", "README.md"]
@@ -154,6 +178,7 @@ class DoctorRequest(BaseModel):
     pr_number: int = 0
     head_sha: str = ""
     base_branch: str = ""
+    expected_base_sha: str = ""
     base_sha: str = ""
     merge_sha: str = ""
     deployment_status: Literal["unconfigured", "pending", "deployed", "failed"] = "unconfigured"
@@ -264,6 +289,18 @@ class JsonDoctorArchive:
             items = {item.request_id: item for item in self._load(strict=True)}
             items[request.request_id] = request
             self._save(list(items.values()))
+
+    def get_request(self, request_id: str) -> DoctorRequest | None:
+        return next((item for item in self._load(strict=True) if item.request_id == request_id), None)
+
+    def enqueue_once(self, request: DoctorRequest) -> DoctorRequest:
+        with archive_lock(self.path.with_suffix(self.path.suffix + ".lock")):
+            items = self._load(strict=True)
+            existing = next((item for item in items if item.request_id == request.request_id), None)
+            if existing is not None:
+                return existing
+            self._save([*items, request])
+            return request
 
     def recent_requests(self, limit: int = 10) -> list[DoctorRequest]:
         items = self._load()
@@ -435,6 +472,13 @@ class DoctorQueueConsumer:
             return False, "SWARMSY Doctor mode can target only HODLKONG64/SWARMSY."
         if not request.allowed_paths:
             return False, "No allowed paths provided."
+        if is_moonboys_repo(request.repo_target) and (
+            not re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id)
+            or not re.fullmatch(r"[a-f0-9]{40}", request.expected_base_sha)
+            or not 1 <= len(request.allowed_paths) <= 5
+            or not all(moonboys_repair_path(path) for path in request.allowed_paths)
+        ):
+            return False, "Website repairs require a Brain-approved case, exact frontend files, and a reviewed Git commit."
         for path in request.allowed_paths:
             try:
                 _normalize_path(path)
@@ -552,7 +596,8 @@ class DoctorQueueConsumer:
             )
 
         should_try_merge = (
-            (_normalize_repo_slug(request.repo_target) != _normalize_repo_slug(SWARMSY_REPO) or self.swarmsy_auto_merge)
+            not is_moonboys_repo(request.repo_target)
+            and (_normalize_repo_slug(request.repo_target) != _normalize_repo_slug(SWARMSY_REPO) or self.swarmsy_auto_merge)
             and attempt.review_verdict == "approved"
             and attempt.merge_ready
         )
@@ -560,6 +605,8 @@ class DoctorQueueConsumer:
             return self._finalize(request, "merged", "Merged automatically after passing policy gates.", attempt.tests_run)
 
         if attempt.review_verdict == "approved" and attempt.merge_ready and not should_try_merge:
+            if is_moonboys_repo(request.repo_target):
+                return self._finalize(request, "pr_opened_waiting_review", "Website policy requires a manual merge.")
             return self._finalize(request, "pr_opened_waiting_review", "Codex and CI passed. SWARMSY auto-merge is disabled.")
         return self._finalize(
             request, "pr_opened_waiting_review", attempt.reason or "PR opened and waiting for review/merge policy.", attempt.tests_run
