@@ -34,7 +34,7 @@ Worker and D1 releases use the [website's protected Cloudflare workflow](https:/
 
 ## Repair intelligence
 
-Doctor can search all local repairs, rank related successful and failed repairs, and optionally maintain a resumable GitHub issue/PR index and private R2 terminal lesson library. Run the sync commands separately from the repair watcher. Shared lessons do not grant permission to repair or merge and are not a cross-host queue. See the [repair intelligence runbook](docs/DOCTOR_REPAIR_INTELLIGENCE.md) for setup, verification and remaining failover gates.
+Doctor can search all local repairs, rank related successful and failed repairs, and optionally maintain a resumable GitHub issue/PR index and private R2 terminal lesson library. Run the sync commands separately from the repair watcher. Use `--intelligence-report` for aggregate repair outcomes and historical coverage. Configure `DADDY_DOCTOR_SHARED_REPOS` independently of GitHub history access. Shared lessons do not grant permission to repair or merge and are not a cross-host queue. See the [repair intelligence runbook](docs/DOCTOR_REPAIR_INTELLIGENCE.md) for setup, verification and remaining failover gates.
 
 ## Develop
 
