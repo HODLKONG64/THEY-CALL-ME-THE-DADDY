@@ -236,12 +236,37 @@ def _serialized_size(value):
     return len(json.dumps(value, ensure_ascii=True).encode())
 
 
+def evidence_identity(record):
+    identity = (str(record.get("repo", "")).casefold(), record.get("number") or record.get("pr"))
+    reference = record.get("url") or record.get("reference")
+    refmatch = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/(?:pull|issues)/(\d+)", str(reference or ""))
+    if refmatch:
+        identity = (refmatch[1].casefold(), int(refmatch[2]))
+    if not identity[0] or not identity[1]:
+        identity = ("text", " ".join(sorted(terms(str(record.get("problem") or record.get("title") or "")))),
+                    record.get("outcome") or record.get("status"))
+    return identity
+
+
 def budget_evidence(records, settings, *, max_bytes=MAX_CONTEXT_BYTES):
     """Single cap across local, historical and shared advisory sources."""
-    # Prefer the attested local repair outcome over a duplicate historical reference.
-    ordered = sorted(records, key=lambda r: (float(r.get("similarity", 0)),
-        r.get("source") == "local_doctor_archive"), reverse=True)
-    seen = set()
+    # Resolve duplicate identities before applying relevance ranking or byte limits.
+    # A metadata match must never replace a recorded repair/deployment outcome.
+    groups = {}
+    for item in records:
+        identity = evidence_identity(item)
+        groups.setdefault(identity, []).append(item)
+    ordered = []
+    priority = {"local_doctor_archive": 2, "shared_doctor_advisory": 1}
+    for group in groups.values():
+        winner = max(group, key=lambda item: (
+            priority.get(item.get("source"), 0),
+            item.get("updated", ""),
+            float(item.get("similarity", 0))))
+        record = dict(winner)
+        record["similarity"] = max(float(item.get("similarity", 0)) for item in group)
+        ordered.append(record)
+    ordered.sort(key=lambda item: item["similarity"], reverse=True)
     out = []
     for original in ordered:
         record = dict(original)
@@ -256,16 +281,6 @@ def budget_evidence(records, settings, *, max_bytes=MAX_CONTEXT_BYTES):
                 lines.extend(compact_lines(item.get("detail", "") if isinstance(item, dict) else item,
                                            settings, technical=True, limit=2))
             record["lessons"] = list(dict.fromkeys(lines))[:2]
-        identity = (str(record.get("repo", "")).casefold(), record.get("number") or record.get("pr"))
-        reference = record.get("url") or record.get("reference")
-        refmatch = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/(?:pull|issues)/(\d+)", str(reference or ""))
-        if refmatch:
-            identity = (refmatch[1].casefold(), int(refmatch[2]))
-        if not identity[0] or not identity[1]:
-            identity = ("text", " ".join(sorted(terms(str(record.get("problem") or record.get("title") or "")))),
-                        record.get("outcome") or record.get("status"))
-        if identity in seen:
-            continue
         for field in ("discussion_notes_unverified", "review_findings_unverified", "technical_notes",
                       "lessons", "affected_paths", "observed_merge_checks", "reported_verification",
                       "reported_solution", "reported_root_cause", "reported_problem", "reported_failure"):
@@ -278,7 +293,6 @@ def budget_evidence(records, settings, *, max_bytes=MAX_CONTEXT_BYTES):
             break
         if _serialized_size([*out, record]) > max_bytes:
             continue
-        seen.add(identity)
         out.append(record)
     return out
 
