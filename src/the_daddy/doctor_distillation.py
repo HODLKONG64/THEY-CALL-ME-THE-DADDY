@@ -191,7 +191,12 @@ def enrich(record, reader, settings, previous=None):
     if record["classification"] != "technical":
         return unavailable
     if kind == "pr":
-        if reuse and "pr_detail" not in missing and previous.get("status") in ("merged_not_production_verified", "closed_unmerged"):
+        cached_status = previous.get("status")
+        cached_merge = previous.get("merge_sha")
+        reusable_detail = cached_status == "closed_unmerged" or (
+            cached_status == "merged_not_production_verified"
+            and isinstance(cached_merge, str) and SHA.fullmatch(cached_merge))
+        if reuse and "pr_detail" not in missing and reusable_detail:
             detail = {"merged": previous["status"] == "merged_not_production_verified",
                       "merge_commit_sha": previous.get("merge_sha"), "head": {"sha": previous.get("head_sha")}}
         else:
