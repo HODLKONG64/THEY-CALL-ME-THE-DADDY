@@ -179,13 +179,20 @@ def checked_checks(checks):
     return checked_list(checks.get("check_runs"))
 
 
-def enrich(record, reader, settings):
+def enrich(record, reader, settings, previous=None):
     number, kind = record["number"], record["kind"]
     unavailable = {}
+    previous = previous or {}
+    missing = previous.get("unavailable_evidence", {})
+    reuse = bool(previous) and isinstance(missing, dict)
     if record["classification"] != "technical":
         return unavailable
     if kind == "pr":
-        detail = reader.fetch("pr_detail", f"pulls/{number}", checked_pr, unavailable)
+        if reuse and "pr_detail" not in missing and previous.get("status") in ("merged_not_production_verified", "closed_unmerged"):
+            detail = {"merged": previous["status"] == "merged_not_production_verified",
+                      "merge_commit_sha": previous.get("merge_sha"), "head": {"sha": previous.get("head_sha")}}
+        else:
+            detail = reader.fetch("pr_detail", f"pulls/{number}", checked_pr, unavailable)
         if detail is not None and detail["merged"]:
             record["status"] = "merged_not_production_verified"
             for name, value in (("merge_sha", detail.get("merge_commit_sha")),
@@ -193,7 +200,12 @@ def enrich(record, reader, settings):
                                  if isinstance(detail.get("head"), dict) else None)):
                 if isinstance(value, str) and SHA.fullmatch(value):
                     record[name] = value
-            files = reader.fetch("pr_files", f"pulls/{number}/files?per_page=20", checked_list, unavailable)
+            same_merge = reuse and record.get("merge_sha") == previous.get("merge_sha") and record.get("head_sha") == previous.get("head_sha")
+            if same_merge and "affected_paths" in previous and "pr_files" not in missing:
+                record["affected_paths"] = previous["affected_paths"]
+                files = None
+            else:
+                files = reader.fetch("pr_files", f"pulls/{number}/files?per_page=20", checked_list, unavailable)
             if files is not None:
                 paths = []
                 for item in files[:20]:
@@ -201,15 +213,23 @@ def enrich(record, reader, settings):
                     if path and not SECRET_PATH.search(path):
                         paths.append(scrub(path, settings)[:150])
                 record["affected_paths"] = list(dict.fromkeys(paths))[:8]
-            inline = reader.fetch("pr_comments", f"pulls/{number}/comments?per_page=20", checked_list, unavailable)
+            if same_merge and "review_findings_unverified" in previous and "pr_comments" not in missing:
+                record["review_findings_unverified"] = previous["review_findings_unverified"]
+                inline = None
+            else:
+                inline = reader.fetch("pr_comments", f"pulls/{number}/comments?per_page=20", checked_list, unavailable)
             if inline is not None:
                 notes = []
                 for item in inline[:20]:
                     notes.extend(compact_lines(item.get("body"), settings, technical=True, limit=2))
                 record["review_findings_unverified"] = list(dict.fromkeys(notes))[:3]
             if "merge_sha" in record:
-                check_rows = reader.fetch("merge_checks", f"commits/{record['merge_sha']}/check-runs?per_page=30",
-                                          checked_checks, unavailable)
+                if same_merge and "observed_merge_checks" in previous and "merge_checks" not in missing:
+                    record["observed_merge_checks"] = previous["observed_merge_checks"]
+                    check_rows = None
+                else:
+                    check_rows = reader.fetch("merge_checks", f"commits/{record['merge_sha']}/check-runs?per_page=30",
+                                              checked_checks, unavailable)
                 if check_rows is not None:
                     record["observed_merge_checks"] = [
                         {"name": scrub(str(item.get("name") or ""), settings)[:100],
@@ -220,7 +240,11 @@ def enrich(record, reader, settings):
                 unavailable["merge_checks"] = "unknown_missing_merge_sha"
         elif detail is not None and record["status"] == "closed_unverified":
             record["status"] = "closed_unmerged"
-    comments = reader.fetch("issue_comments", f"issues/{number}/comments?per_page=20", checked_list, unavailable)
+    if reuse and "discussion_notes_unverified" in previous and "issue_comments" not in missing:
+        record["discussion_notes_unverified"] = previous["discussion_notes_unverified"]
+        comments = None
+    else:
+        comments = reader.fetch("issue_comments", f"issues/{number}/comments?per_page=20", checked_list, unavailable)
     if comments is not None:
         notes = []
         for item in comments[:20]:
@@ -237,7 +261,7 @@ def distill_pending(index, repo, api, *, limit=BATCH):
     reader = EvidenceReader(db, repo, api, now)
     try:
         rows = db.execute("""SELECT h.repo,h.number,h.kind,h.state,h.updated,h.title,h.body,
-                                    d.revision,d.version,d.processed,d.retry_after,d.complete
+                                    d.revision,d.version,d.processed,d.retry_after,d.complete,d.record
                              FROM history h LEFT JOIN distilled_history d
                                ON h.repo=d.repo AND h.number=d.number WHERE h.repo=?
                              ORDER BY CASE WHEN d.number IS NULL THEN 0 ELSE 1 END,
@@ -246,7 +270,7 @@ def distill_pending(index, repo, api, *, limit=BATCH):
             if processed >= limit:
                 break
             raw = row[:7]
-            old_revision, version, when, retry, complete = row[7:]
+            old_revision, version, when, retry, complete, cached_record = row[7:]
             rev = revision(raw)
             if old_revision == rev and version == VERSION:
                 if retry and retry > stamp:
@@ -255,8 +279,15 @@ def distill_pending(index, repo, api, *, limit=BATCH):
                     skipped += 1
                     continue
             record = metadata(raw, index.settings)
+            previous = None
+            if old_revision == rev and version == VERSION and not complete and cached_record:
+                candidate = json.loads(cached_record)
+                started = candidate.get("evidence_started_at", "")
+                if started > (now - timedelta(days=30)).isoformat(timespec="seconds"):
+                    previous = candidate
+            record["evidence_started_at"] = previous["evidence_started_at"] if previous else stamp
             reader.retry_until = now
-            unavailable = enrich(record, reader, index.settings)
+            unavailable = enrich(record, reader, index.settings, previous)
             successful = not unavailable
             if unavailable:
                 partial += 1
