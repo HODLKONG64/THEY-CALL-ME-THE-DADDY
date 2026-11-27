@@ -136,8 +136,8 @@ class GitHubDoctorWorker:
         branch = pr["head"]["ref"]
         if branch == base_branch or branch.startswith("doctor/"):
             return "tracked_by_existing_flow"
-        # One adoption per PR. Broad or protected diffs stay with the operator.
-        request_id = f"ci-pr-{number}"
+        # One adoption per repository and PR. Broad or protected diffs stay with the operator.
+        request_id = f"ci-pr-{_normalize_repo_slug(self.git.github_repo)}-{number}"
         if self.archive.get_request(request_id):
             return "tracked"
         if pr["base"]["sha"] != base:
@@ -596,7 +596,8 @@ class GitHubDoctorWorker:
                         ci_repair_path(path, request.repo_target) and path not in PROTECTED_FILES
                         for path in request.allowed_paths)):
                 follow_up = self.archive.enqueue_once(DoctorRequest(
-                    request_id=f"ci-follow-up-{commit}", repo_target=request.repo_target,
+                    request_id=f"ci-follow-up-{_normalize_repo_slug(request.repo_target)}-{commit}",
+                    repo_target=request.repo_target,
                     source="daddy", ci_follow_up=True, ci_origin_pr=request.pr_number,
                     expected_base_sha=commit, allowed_paths=request.allowed_paths,
                     problem_summary=f"Investigate the functional CI failure after merging PR #{request.pr_number}.",

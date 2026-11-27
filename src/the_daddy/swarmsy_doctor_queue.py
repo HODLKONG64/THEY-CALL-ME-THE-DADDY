@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .config import Settings, _DADDY_REPO, _normalize_repo_slug
+from .doctor_ci import audit_workflow
 from .doctor_repair import scrub
 from .doctor_worker import GitHubDoctorWorker
 from .swarmsy_doctor import (
@@ -21,6 +22,10 @@ from .swarmsy_doctor import (
 )
 
 DEFAULT_ARCHIVE_FILE = "doctor_local/swarmsy_repair_archive.json"
+
+
+def _watch_ci() -> bool:
+    return os.getenv("DADDY_DOCTOR_WATCH_CI", "").lower() == "true"
 
 
 def _max_review_cycles() -> int:
@@ -40,7 +45,7 @@ def _worker(settings: Settings, archive: JsonDoctorArchive) -> GitHubDoctorWorke
         settings, archive, validation_image=image, validation_command=command, required_checks=checks,
         deploy_workflow=os.getenv("DADDY_DOCTOR_CLOUDFLARE_WORKFLOW", "").strip(),
         deploy_job=os.getenv("DADDY_DOCTOR_CLOUDFLARE_JOB", "Cloudflare deploy").strip(),
-        watch_ci=os.getenv("DADDY_DOCTOR_WATCH_CI", "").lower() == "true",
+        watch_ci=_watch_ci(),
         dispatch_ci=os.getenv("DADDY_DOCTOR_DISPATCH_CI", "").lower() == "true",
     )
 
@@ -49,10 +54,11 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
     if not archive.path.is_file():
         return {"status": "queue_source_unavailable", "reason": "Create or supply the persistent Doctor archive."}
     lock = archive.path.with_suffix(archive.path.suffix + ".process.lock")
+    watch_ci = _watch_ci() and bool(audit_workflow(settings.github_repo))
     try:
         with archive_lock(lock, blocking=False):
             try:
-                active = archive.active_requests(settings.github_repo)
+                active = archive.active_requests(settings.github_repo, include_post_merge_ci=watch_ci)
             except ValueError:
                 return {"status": "archive_invalid", "reason": "Doctor could not read the archive. Existing data was preserved."}
             if not active and not discover:
@@ -67,7 +73,7 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
             if discover and worker.ci_workflow:
                 try:
                     discovery = worker.discover_ci_repairs(enqueue=True)
-                    active = archive.active_requests(settings.github_repo)
+                    active = archive.active_requests(settings.github_repo, include_post_merge_ci=watch_ci)
                 except (RuntimeError, OSError, ValueError) as exc:
                     discovery = {"status": "scan_failed", "reason": scrub(str(exc), settings)[-500:]}
             if not active:
@@ -76,7 +82,7 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
             if request.status == "merged":
                 if request.deployment_status == "pending":
                     worker.poll_deployment(request)
-                if request.post_merge_ci == "pending":
+                if watch_ci and request.post_merge_ci == "pending":
                     try:
                         worker.poll_merged_ci(request)
                     except (RuntimeError, OSError, ValueError) as exc:
@@ -119,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = Settings()
     archive = JsonDoctorArchive(Path(os.getenv("DADDY_DOCTOR_ARCHIVE_FILE", DEFAULT_ARCHIVE_FILE)).resolve())
-    watch_ci = os.getenv("DADDY_DOCTOR_WATCH_CI", "").lower() == "true"
+    watch_ci = _watch_ci()
     if args.scan_prs:
         worker = _worker(settings, archive)
         if worker is None or not worker.ci_workflow:

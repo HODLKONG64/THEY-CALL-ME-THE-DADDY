@@ -302,11 +302,12 @@ class JsonDoctorArchive:
     def list_queued_requests(self) -> list[DoctorRequest]:
         return [item for item in self._load() if item.status == "queued"]
 
-    def active_requests(self, repo: str = "") -> list[DoctorRequest]:
+    def active_requests(self, repo: str = "", *, include_post_merge_ci: bool = True) -> list[DoctorRequest]:
         return sorted(
             (item for item in self._load(strict=True)
              if (item.status not in FINAL_STATUSES or item.status == "merged"
-                 and (item.deployment_status == "pending" or item.post_merge_ci == "pending"))
+                 and (item.deployment_status == "pending"
+                      or include_post_merge_ci and item.post_merge_ci == "pending"))
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
             key=lambda item: item.updated_at,
         )

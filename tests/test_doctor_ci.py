@@ -2,19 +2,20 @@ from unittest.mock import Mock
 
 import pytest
 
-from the_daddy.config import Settings
+from the_daddy.config import Settings, _DADDY_REPO, _normalize_repo_slug
 from the_daddy.doctor_ci import MERGE_LABEL, PAUSE_LABEL, REPAIR_LABEL, exact_ci
 from the_daddy.doctor_repair import RepairLoop
 from the_daddy.doctor_worker import GitHubDoctorWorker
 from the_daddy.swarmsy_doctor import DoctorRequest, JsonDoctorArchive, MOONBOYS_REPO
+from the_daddy.swarmsy_doctor_queue import _process_once
 
 BASE = "a" * 40
 HEAD = "b" * 40
 APP = "games/chain-maze/index.html"
 
 
-def make_worker(tmp_path, *, dispatch=False):
-    settings = Settings(github_repo=MOONBOYS_REPO, allowed_target_repos=frozenset({MOONBOYS_REPO}))
+def make_worker(tmp_path, *, dispatch=False, repo=MOONBOYS_REPO):
+    settings = Settings(github_repo=repo, allowed_target_repos=frozenset({repo}))
     return GitHubDoctorWorker(settings, JsonDoctorArchive(tmp_path / "archive.json"),
                               validation_image="tests", validation_command="true", required_checks={"tests"},
                               watch_ci=True, dispatch_ci=dispatch)
@@ -68,8 +69,22 @@ def test_discovery_reports_paused_and_adopts_only_safe_selected_pr(tmp_path, mon
     assert [(item["ci"], item["paused"]) for item in result] == [
         ("queued", False), ("failed", True), ("failed", True), ("needs_manual_scope", False), ("unavailable", False),
     ]
-    assert worker.archive.get_request("ci-pr-5").allowed_paths == [APP]
+    assert worker.archive.get_request(f"ci-pr-{_normalize_repo_slug(MOONBOYS_REPO)}-5").allowed_paths == [APP]
     assert worker.discover_ci_repairs(enqueue=True)[0]["ci"] == "tracked"
+
+
+def test_shared_archive_keeps_same_pr_number_in_both_repositories(tmp_path):
+    website = make_worker(tmp_path)
+    daddy = make_worker(tmp_path, repo=_DADDY_REPO)
+    for worker, path in ((website, APP), (daddy, "src/the_daddy/runtime/error_digest.py")):
+        worker._api = Mock(side_effect=[
+            {"merge_base_commit": {"sha": BASE}},
+            [{"filename": path, "status": "modified"}],
+        ])
+        assert worker._adopt_ci_pr(pr(), BASE, "main", []) == "queued"
+    queued = website.archive.list_queued_requests()
+    assert {request.repo_target for request in queued} == {MOONBOYS_REPO, _DADDY_REPO}
+    assert len({request.request_id for request in queued}) == 2
 
 
 def test_adopted_pr_cannot_merge_without_label_or_exact_green_ci(tmp_path, monkeypatch):
@@ -110,11 +125,39 @@ def test_post_merge_dispatch_and_follow_up_are_bound_and_deduplicated(tmp_path, 
     worker.poll_merged_ci(request)
     worker.poll_merged_ci(request)
     assert request.post_merge_ci == "follow_up_queued"
-    assert worker.archive.get_request(f"ci-follow-up-{BASE}").expected_base_sha == BASE
+    follow_up_id = f"ci-follow-up-{_normalize_repo_slug(MOONBOYS_REPO)}-{BASE}"
+    assert worker.archive.get_request(follow_up_id).expected_base_sha == BASE
     assert len(worker.archive.list_queued_requests()) == 1
     worker._repo.return_value = ("main", HEAD)
     worker.poll_merged_ci(request)
     assert request.post_merge_ci == "needs_review"
+
+
+def test_disabling_ci_leaves_repairs_and_deployments_schedulable(tmp_path, monkeypatch):
+    worker = make_worker(tmp_path)
+    archive = worker.archive
+    pending = DoctorRequest(request_id="pending", source="daddy", repo_target=MOONBOYS_REPO,
+                            status="merged", problem_summary="Pending after merge", post_merge_ci="pending",
+                            updated_at="2026-01-01T00:00:00+00:00")
+    deployment = pending.model_copy(update={"request_id": "deploy", "deployment_status": "pending",
+                                            "updated_at": "2026-02-01T00:00:00+00:00"})
+    repair = pending.model_copy(update={"request_id": "repair", "status": "queued",
+                                         "updated_at": "2026-03-01T00:00:00+00:00"})
+    for item in (pending, deployment, repair):
+        archive.upsert_request(item)
+    monkeypatch.setenv("DADDY_DOCTOR_WATCH_CI", "false")
+    monkeypatch.setattr("the_daddy.swarmsy_doctor_queue._worker", lambda *args: worker)
+    worker.poll_merged_ci = Mock()
+    worker.poll_deployment = Mock()
+    assert _process_once(archive, worker.settings)["request_id"] == "deploy"
+    worker.poll_deployment.assert_called_once()
+    worker.poll_merged_ci.assert_not_called()
+    archive.upsert_request(deployment.model_copy(update={"deployment_status": "deployed"}))
+    assert _process_once(archive, worker.settings)["request_id"] == "repair"
+    assert archive.get_request("pending").post_merge_ci == "pending"
+    monkeypatch.setenv("DADDY_DOCTOR_WATCH_CI", "true")
+    assert _process_once(archive, worker.settings)["request_id"] == "pending"
+    worker.poll_merged_ci.assert_called_once()
 
 
 def test_repair_requires_local_reproduction_before_asking_for_a_patch():

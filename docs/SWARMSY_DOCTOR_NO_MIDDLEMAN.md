@@ -94,7 +94,9 @@ still enforces its own branch rules. Reviewed website support PRs retain
 the existing commit-specific Telegram merge approval.
 
 After a tracked PR merges, `--show-recent` includes the CI status and link for
-the **merge commit**, separately from deployment. Use the test workflow on
+the **merge commit**, separately from deployment. Turning off CI watching
+pauses pending CI records without blocking repairs or deployment tracking.
+Use the test workflow on
 that commit, or set `DADDY_DOCTOR_DISPATCH_CI=true` to let Doctor request a
 missing run on the current ref with Actions write permission. Doctor
 checks the returned run's SHA before using it. Start the first failing
