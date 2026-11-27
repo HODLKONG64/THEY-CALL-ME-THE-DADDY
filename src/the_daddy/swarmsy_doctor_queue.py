@@ -12,6 +12,7 @@ from .doctor_ci import audit_workflow
 from .doctor_repair import scrub
 from .doctor_worker import GitHubDoctorWorker
 from .doctor_history import HistoryIndex, repo_scope
+from .doctor_shared_lessons import sync_shared
 from .git_tools import GitBranchExecutor
 from .swarmsy_doctor import (
     SWARMSY_REPO,
@@ -118,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     operation.add_argument("--process-once", action="store_true", help="Process one request or review.")
     operation.add_argument("--watch", action="store_true", help="Continuously process requests and pending reviews.")
     operation.add_argument("--show-recent", action="store_true", help="Show recent archived repairs.")
+    operation.add_argument("--sync-shared-memory", action="store_true", help="Synchronize terminal advisory lessons with private R2.")
     operation.add_argument("--sync-history", action="store_true", help="Index one historical GitHub page per approved read repository.")
     operation.add_argument("--scan-prs", action="store_true", help="Report recent open PRs and exact CI state without queuing repairs.")
     parser.add_argument("--allow-path", action="append", help="Narrow the request to a file or directory prefix ending in /.")
@@ -129,6 +131,23 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings()
     archive = JsonDoctorArchive(Path(os.getenv("DADDY_DOCTOR_ARCHIVE_FILE", DEFAULT_ARCHIVE_FILE)).resolve())
     watch_ci = _watch_ci()
+    if args.sync_shared_memory:
+        if _normalize_repo_slug(settings.github_repo) not in settings.allowed_target_repos:
+            parser.error("The configured target is outside DADDY_ALLOWED_TARGET_REPOS.")
+        if not archive.path.is_file():
+            parser.error("The persistent Doctor archive must exist.")
+        repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), settings.github_repo)
+        index = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), settings)
+        try:
+            with archive_lock(archive.path.with_suffix(".intelligence.lock"), blocking=False):
+                result = sync_shared(index, settings, archive, settings.github_repo, repos)
+        except BlockingIOError:
+            result = {"status": "sync_busy"}
+        except (RuntimeError, OSError, ValueError) as exc:
+            print(json.dumps({"status": "shared_sync_failed", "reason": scrub(str(exc), settings)[:500]}))
+            return 1
+        print(json.dumps(result, indent=2))
+        return 0
     if args.sync_history:
         if os.getenv("DADDY_DOCTOR_HISTORY_ENABLED", "").lower() != "true":
             parser.error("Enable DADDY_DOCTOR_HISTORY_ENABLED before indexing GitHub history.")
