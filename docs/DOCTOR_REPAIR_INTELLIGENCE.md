@@ -69,7 +69,10 @@ python -m the_daddy.swarmsy_doctor_queue --sync-shared-memory
 
 Each invocation exports up to 25 new terminal versions from its configured target and
 imports up to 25 objects per read repository. The import cursor wraps to find late
-inserts. Failures return a nonzero status; the local queue remains intact. Shared
+inserts. Sync checkpoints and cached lessons are scoped to the R2 account endpoint
+and bucket. Switching either starts an independent sync and republishes the local
+terminal lessons; credentials can rotate without resetting progress. Older unscoped
+cache tables are ignored. Failures return a nonzero status; the local queue remains intact. Shared
 records are checked for schema, size, repository and content hash and sanitized again.
 A record's hash proves consistency, not the truth of its claims. Remote lessons are
 untrusted advisory evidence and never execute edits. Use a dedicated sync timer; do not
