@@ -205,6 +205,12 @@ class DoctorRequest(BaseModel):
     deployment_job: str = ""
     deployment_url: str = ""
     deployment_reason: str = ""
+    live_review_status: Literal["unconfigured", "pending", "passed", "needs_review", "rollback_queued"] = "unconfigured"
+    live_review_reason: str = ""
+    live_review_attempts: int = 0
+    auto_release: bool = False
+    rollback_of: str = ""
+    rollback_edits: list[DoctorEdit] = Field(default_factory=list)
     pending_head_sha: str = ""
     pending_base_sha: str = ""
     pending_revalidation: bool = False
@@ -312,6 +318,7 @@ class JsonDoctorArchive:
             (item for item in self._load(strict=True)
              if (item.status not in FINAL_STATUSES or item.status == "merged"
                  and (item.deployment_status == "pending"
+                      or item.live_review_status == "pending"
                       or include_post_merge_ci and item.post_merge_ci == "pending"))
              and (not repo or _normalize_repo_slug(item.repo_target) == _normalize_repo_slug(repo))),
             key=lambda item: item.updated_at,
@@ -482,6 +489,8 @@ def show_recent_daddy_repairs(archive: DoctorArchive, *, limit: int = 10) -> lis
             "deployment_status": item.deployment_status,
             "deployment_url": item.deployment_url,
             "deployment_reason": item.deployment_reason,
+            "live_review_status": item.live_review_status,
+            "live_review_reason": item.live_review_reason,
             "post_merge_ci": item.post_merge_ci,
             "post_merge_ci_url": item.post_merge_ci_url,
             "post_merge_ci_reason": item.post_merge_ci_reason,
@@ -535,8 +544,10 @@ class DoctorQueueConsumer:
         )
         ci_repair = (request.source == "daddy" and request.ci_origin_pr > 0
                      and bool(request.ci_branch or request.ci_follow_up))
+        rollback = bool(request.rollback_of and request.request_id == request.rollback_of + "-rollback"
+                        and re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.rollback_of))
         if is_moonboys_repo(request.repo_target) and (
-            not (re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id) or ci_repair)
+            not (re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id) or ci_repair or rollback)
             or not re.fullmatch(r"[a-f0-9]{40}", request.expected_base_sha)
             or not frontend_scope
         ):
@@ -619,6 +630,10 @@ class DoctorQueueConsumer:
 
             if not actionable:
                 break
+
+            if request.rollback_of:
+                return self._finalize(request, "blocked_needs_human_permission",
+                                      "The exact revert did not pass review or CI. Owner attention required.")
 
             if request.review_cycles >= self.max_review_cycles:
                 return self._finalize(

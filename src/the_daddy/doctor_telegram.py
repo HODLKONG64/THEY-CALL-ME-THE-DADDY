@@ -17,6 +17,7 @@ TELEGRAM_EVENTS = {
     "failed_with_reason", "blocked_needs_human_permission", "merged",
     "deployment_deployed", "deployment_failed", "post_merge_needs_review",
     "post_merge_follow_up_queued",
+    "live_review_passed", "live_review_needs_review", "live_review_rollback_queued",
 }
 
 
@@ -49,18 +50,26 @@ class TelegramApproval:
         return {"repo": repo, "job_key": digest([repo, request.request_id]),
                 "pr_number": request.pr_number, "head_sha": request.head_sha, "base_sha": request.base_sha}
 
-    def decision(self, request: DoctorRequest, action: str = "read") -> str:
+    def approval(self, request: DoctorRequest, action: str = "read", *, allow_auto: bool = False) -> tuple[str, str]:
         identity = self.identity(request)
         if not request.pr_number or not all(re.fullmatch(r"[a-f0-9]{40}", identity[k]) for k in ("head_sha", "base_sha")):
-            return "unavailable"
-        response = self._post({"action": action, **identity})
+            return "unavailable", ""
+        payload = {"action": action, **identity}
+        if action == "ready" and allow_auto:
+            payload["allow_auto"] = True
+        response = self._post(payload)
         state = response.get("state")
         if state == "missing":
-            return "missing"
+            return "missing", ""
         if (response.get("head_sha") != request.head_sha or response.get("base_sha") != request.base_sha
                 or type(response.get("revision")) is not int):
-            return "unavailable"
-        return state if state in {"ready", "approved", "rejected", "fix_requested", "invalidated", "merged"} else "unavailable"
+            return "unavailable", ""
+        if state not in {"ready", "approved", "rejected", "fix_requested", "invalidated", "merged"}:
+            return "unavailable", ""
+        return state, "auto" if response.get("decision_mode") == "auto" else "manual"
+
+    def decision(self, request: DoctorRequest, action: str = "read", *, allow_auto: bool = False) -> str:
+        return self.approval(request, action, allow_auto=allow_auto)[0]
 
     def _db(self):
         db = sqlite3.connect(self.path, timeout=5)
@@ -110,7 +119,9 @@ class TelegramApproval:
             self.emit(request, "deployment_" + request.deployment_status, request.merge_sha)
         if request.post_merge_ci in ("passed", "needs_review", "follow_up_queued"):
             self.emit(request, "post_merge_" + request.post_merge_ci, request.merge_sha)
-        if request.status == "merged":
+        if request.live_review_status in ("passed", "needs_review", "rollback_queued"):
+            self.emit(request, "live_review_" + request.live_review_status, request.merge_sha)
+        if request.status == "merged" and not request.rollback_of:
             self.record_merge(request)
 
     def flush(self) -> None:
