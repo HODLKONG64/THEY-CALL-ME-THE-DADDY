@@ -11,6 +11,10 @@ from ..config import Settings
 
 LOGGER = logging.getLogger(__name__)
 URL = "http://127.0.0.1:11434/api/chat"
+CONTEXT_TOKENS = 4096
+OUTPUT_TOKENS = 768
+TEMPLATE_RESERVE = 512
+SUPPORTED_MODEL = "qwen3:4b-instruct"
 
 
 class LocalRepairClient:
@@ -20,8 +24,16 @@ class LocalRepairClient:
     def propose(self, *, system: str, prompt: str, schema: dict) -> dict | None:
         if not self.settings.doctor_local_ai:
             return None
-        # Never silently truncate code or evidence to fit the small shared model.
-        if len((system + prompt + json.dumps(schema)).encode()) > self.settings.doctor_local_prompt_bytes:
+        # Qwen3 uses byte-level BPE: conservatively count every UTF-8 byte
+        # as one token, including the schema, and reserve chat-template and
+        # generation space. Unknown model templates/tokenizers are not trusted.
+        if self.settings.doctor_local_model != SUPPORTED_MODEL:
+            LOGGER.info("doctor_local_ai skipped: unsupported context accounting")
+            return None
+        input_bound = sum(len(value.encode("utf-8")) for value in (system, prompt, json.dumps(schema, ensure_ascii=True)))
+        safe_budget = min(self.settings.doctor_local_prompt_bytes,
+                          CONTEXT_TOKENS - OUTPUT_TOKENS - TEMPLATE_RESERVE)
+        if input_bound > safe_budget:
             LOGGER.info("doctor_local_ai skipped: context budget")
             return None
         started = time.monotonic()
@@ -34,7 +46,7 @@ class LocalRepairClient:
                     "messages": [{"role": "system", "content": system},
                                  {"role": "user", "content": prompt}],
                     "format": schema, "stream": False, "think": False,
-                    "options": {"num_ctx": 4096, "num_predict": 768, "temperature": 0},
+                    "options": {"num_ctx": CONTEXT_TOKENS, "num_predict": OUTPUT_TOKENS, "temperature": 0},
                 })
                 response.raise_for_status()
                 data = response.json()
@@ -43,7 +55,7 @@ class LocalRepairClient:
                 result = json.loads(data["message"]["content"])
                 if not isinstance(result, dict):
                     raise ValueError("expected object")
-                # Approval is exclusively the existing OpenAI review path.
+                # The local provider never grants approval.
                 if result.get("verdict") != "patch" or not result.get("edits"):
                     LOGGER.info("doctor_local_ai escalated: no patch")
                     return None
