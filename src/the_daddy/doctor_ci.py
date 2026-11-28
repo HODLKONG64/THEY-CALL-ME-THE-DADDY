@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import urlencode
 
 from .config import _DADDY_REPO, _normalize_repo_slug
+from .doctor_repair import scrub
 from .swarmsy_doctor import DoctorReviewComment, is_moonboys_repo
 
 REPAIR_LABEL = "doctor:repair-ci"
@@ -25,6 +27,25 @@ def labels(pr: dict) -> set[str]:
 
 def paused(pr: dict) -> bool:
     return pr.get("draft") is True or PAUSE_LABEL in labels(pr)
+
+
+def _failure_annotations(worker, job: dict) -> str:
+    prefix = f"https://api.github.com/repos/{worker.git.github_repo}/check-runs/"
+    match = re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", job.get("check_run_url") or "", re.I)
+    if not match:
+        return ""
+    try:
+        annotations = worker._api("GET", f"check-runs/{match[1]}/annotations?per_page=10")
+    except (OSError, RuntimeError):
+        return ""
+    if not isinstance(annotations, list):
+        return ""
+    lines = [
+        scrub(f"{item.get('path', '')}:{item.get('start_line', '')}: {item.get('message', '')}", worker.settings)
+        for item in annotations[:10]
+        if isinstance(item, dict) and item.get("annotation_level") == "failure"
+    ]
+    return "\n".join(lines)[:1400]
 
 
 def exact_ci(worker, commit: str, branch: str, *, merged: bool = False) -> tuple[str, str, list[DoctorReviewComment]]:
@@ -58,9 +79,11 @@ def exact_ci(worker, commit: str, branch: str, *, merged: bool = False) -> tuple
         }
         if not validation_steps.intersection(steps) or job.get("conclusion") != "failure":
             continue
+        evidence = _failure_annotations(worker, job)
         findings.append(DoctorReviewComment(author="GitHub CI", body=(
             f"Test failure in {job['name']}: {', '.join(steps)}. "
             f"Attempt {run['run_attempt']}, {url}/job/{int(job['id'])}. "
             "Use the configured isolated test's output to diagnose the functional regression."
+            + (f"\nGitHub failure annotations (diagnostic evidence):\n{evidence}" if evidence else "")
         )))
     return ("failed" if findings else "blocked"), url, findings

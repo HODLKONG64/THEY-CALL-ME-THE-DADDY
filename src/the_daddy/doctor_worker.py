@@ -8,7 +8,7 @@ import shlex
 import sqlite3
 import tempfile
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 
 from .config import Settings, _normalize_repo_slug
@@ -274,11 +274,12 @@ class GitHubDoctorWorker:
 
     def _publish(self, request: DoctorRequest, base_branch: str) -> DoctorRepairAttempt:
         website = is_moonboys_repo(request.repo_target)
-        if (website or request.ci_follow_up) and request.pending_base_sha != self._repo()[1]:
+        if (request.ci_follow_up or (website and not request.pr_number)) and request.pending_base_sha != self._repo()[1]:
             raise PermissionError("The website advanced during validation. Request a fresh review of the case.")
         remote = self._head(request)
         if request.pr_number:
-            self._verify_open_pr(request, remote)
+            if not self._delivery_pr_ready(request, remote):
+                return self._attempt(request, reason="Waiting for GitHub to update the pull request head.")
         if remote != request.pending_head_sha:
             if remote != request.head_sha:
                 raise PermissionError("Doctor repair branch changed outside the validated delivery.")
@@ -288,11 +289,18 @@ class GitHubDoctorWorker:
             self.archive.upsert_request(request)
             with tempfile.TemporaryDirectory(prefix="doctor-delivery-") as root:
                 workspace = DoctorWorkspace(Path(root), self.settings)
-                workspace.checkout(request.head_sha or request.pending_base_sha)
-                workspace.apply(request, request.pending_edits)
+                if request.pending_revalidation:
+                    workspace.checkout(request.pending_base_sha)
+                    workspace.apply(request, request.learned_edits)
+                else:
+                    workspace.checkout(request.head_sha or request.pending_base_sha)
+                    workspace.apply(request, request.pending_edits)
                 if hashlib.sha256(workspace.diff().encode()).hexdigest() != request.pending_diff_digest:
                     raise PermissionError("Persisted repair does not reproduce the tested and reviewed diff.")
-                request.pending_head_sha = workspace.commit(self._reference(request))
+                request.pending_head_sha = (
+                    workspace.commit_revalidation(self._reference(request), request.head_sha, request.pending_base_sha)
+                    if request.pending_revalidation else workspace.commit(self._reference(request))
+                )
                 self.archive.upsert_request(request)
                 workspace.push(self._branch(request), request.pending_head_sha, request.head_sha)
         if not request.pr_number:
@@ -325,10 +333,8 @@ class GitHubDoctorWorker:
             request.pr_number = int(pr["number"])
             request.swarmsy_pr_url = f"https://github.com/{self.git.github_repo}/pull/{request.pr_number}"
         else:
-            pr = self._api("GET", f"pulls/{request.pr_number}")
-            self._verify_pr(request, pr, request.pending_head_sha, base_branch)
-            if pr["state"] != "open" or pr["draft"]:
-                raise PermissionError("The Doctor pull request was closed or converted to draft during delivery.")
+            if not self._delivery_pr_ready(request, request.pending_head_sha):
+                return self._attempt(request, reason="Waiting for GitHub to update the pull request head.")
         request.head_sha = request.pending_head_sha
         request.codex_only_head = request.head_sha if request.pending_codex_only else ""
         request.pending_codex_only = False
@@ -338,19 +344,76 @@ class GitHubDoctorWorker:
         request.learned_edits = [*request.learned_edits, *request.pending_edits]
         request.pending_head_sha = request.pending_base_sha = request.pending_diff_digest = ""
         request.pending_edits = []
+        request.pending_revalidation = False
         request.review_request_id = 0
         log(request, self.settings, "pr_head_published", request.head_sha, self._checkpoint)
         self._request_review(request)
         return self._attempt(request, reason="Waiting for Codex to review the validated commit.")
 
+    def _delivery_pr_ready(self, request: DoctorRequest, expected_head: str) -> bool:
+        pr = self._api("GET", f"pulls/{request.pr_number}")
+        head = pr["head"]["sha"]
+        if head not in (request.head_sha, request.pending_head_sha):
+            raise PermissionError("Pull request head differs from the validated Doctor delivery.")
+        self._verify_pr(request, pr, head, request.base_branch)
+        self._require_open_pr(request, pr)
+        return head == expected_head
+
+    def _revalidate_website(self, request: DoctorRequest, base_branch: str, base: str) -> DoctorRepairAttempt:
+        if not self.telegram.enabled or request.codex_patch_requested_head == request.head_sha:
+            raise PermissionError("Website revalidation requires the owner approval service and a complete repair candidate.")
+        decision = self.telegram.decision(request)
+        if decision in ("rejected", "fix_requested"):
+            raise PermissionError("An owner decision on the previous candidate requires review before revalidation.")
+        if decision not in ("missing", "invalidated"):
+            if decision not in ("ready", "approved") or self.telegram.decision(request, "invalidate") != "invalidated":
+                return self._attempt(request, reason="Waiting to invalidate previous Telegram approval before revalidation.")
+        with tempfile.TemporaryDirectory(prefix="doctor-revalidate-") as root:
+            workspace = DoctorWorkspace(Path(root), self.settings)
+            workspace.checkout(base)
+            edits = request.learned_edits
+            try:
+                if request.wiki_link and workspace.wiki_link_edits(request.wiki_link) != edits:
+                    raise ValueError("Wiki link or its target changed.")
+                workspace.apply(request, edits)
+                diff = workspace.diff()
+                if not diff:
+                    raise ValueError("No repair remains after applying the validated edits.")
+            except (ValueError, PermissionError, RuntimeError) as exc:
+                raise PermissionError("The previous repair no longer applies cleanly. Request a fresh case review.") from exc
+            passed, output = self.repair.validator(workspace.root)
+            log(request, self.settings, "validation",
+                ("Validation passed.\n" if passed else "Validation failed.\n") + output, self._checkpoint)
+            if not passed:
+                raise PermissionError("The previous repair failed local validation on the new website base.")
+            self._verify_open_pr(request, request.head_sha)
+            if self._repo() != (base_branch, base):
+                return self._attempt(request, reason="Website base advanced during revalidation. Retrying on the next poll.")
+            latest_decision = self.telegram.decision(request)
+            if latest_decision not in ("missing", "invalidated"):
+                return self._attempt(request, reason="Waiting to verify previous Telegram approval before republishing.")
+            request.pending_head_sha = workspace.commit_revalidation(self._reference(request), request.head_sha, base)
+            request.pending_base_sha = base
+            request.pending_diff_digest = hashlib.sha256(diff.encode()).hexdigest()
+            request.pending_revalidation = True
+            request.pending_codex_only = request.codex_only_head == request.head_sha
+            request.delivery_retries = 0
+            self.archive.upsert_request(request)
+            workspace.push(self._branch(request), request.pending_head_sha, request.head_sha)
+        return self._publish(request, base_branch)
+
     def _verify_open_pr(self, request: DoctorRequest, expected_head: str) -> dict:
         pr = self._api("GET", f"pulls/{request.pr_number}")
         self._verify_pr(request, pr, expected_head, request.base_branch)
+        self._require_open_pr(request, pr)
+        return pr
+
+    @staticmethod
+    def _require_open_pr(request: DoctorRequest, pr: dict) -> None:
         if pr.get("state") != "open":
             raise PermissionError("PR closed during validation.")
         if paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
             raise RuntimeError("PR is paused, draft, or no longer selected for CI repair.")
-        return pr
 
     def _verify_pr(self, request: DoctorRequest, pr: dict, expected_head: str, base_branch: str) -> None:
         head = pr["head"]
@@ -489,12 +552,21 @@ class GitHubDoctorWorker:
             self._stage(request, base=base, parent=base, findings=[])
         return self._publish(request, base_branch)
 
+    @staticmethod
+    def _is_website_support_repair(request: DoctorRequest) -> bool:
+        return bool(is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up)
+                    and re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id))
+
     def apply_review_comment_fixes(
         self, request: DoctorRequest, actionable_comments: list[DoctorReviewComment], cycle: int,
     ) -> DoctorRepairAttempt:
         self._verify_target(request)
         base_branch, base = self._repo()
         if base != request.base_sha:
+            if self._is_website_support_repair(request):
+                request.review_cycles = max(0, request.review_cycles - 1)
+                self.archive.upsert_request(request)
+                return self._attempt(request, reason="Website base advanced before applying findings. Revalidating on the next poll.")
             raise PermissionError("Base advanced; the existing Doctor PR needs a fresh repair against the current base.")
         pr = self._api("GET", f"pulls/{request.pr_number}")
         self._verify_pr(request, pr, request.head_sha, base_branch)
@@ -661,7 +733,11 @@ class GitHubDoctorWorker:
             if self.telegram.enabled:
                 self.telegram.decision(request, "invalidate")
             return self._attempt(request, reason="PR is paused, draft, or no longer selected for CI repair.")
-        if request.base_sha != base or pr["base"]["sha"] != base:
+        if request.base_sha != base and self._is_website_support_repair(request):
+            return self._revalidate_website(request, base_branch, base)
+        if request.base_sha == base and pr["base"]["sha"] != base:
+            return self._attempt(request, reason="Waiting for GitHub to report the current base commit.")
+        if request.base_sha != base:
             if self.telegram.enabled:
                 self.telegram.decision(request, "invalidate")
             raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
@@ -684,13 +760,19 @@ class GitHubDoctorWorker:
                                  reason=f"Selected PR is waiting on its exact-head functional CI failure ({status}).")
         self._request_review(request)
         verdict, comments = self._codex_review(request)
+        ci = None
+        if self.ci_workflow and (verdict == "approved" or (verdict == "pending" and self.dispatch_ci)):
+            ci = self._request_ci(request, request.head_sha, self._branch(request))
         if verdict != "approved":
             if self.telegram.enabled:
                 self.telegram.decision(request, "invalidate")
+            if ci and ci[0] == "dispatch_failed":
+                return self._attempt(request, review_verdict=verdict, review_comments=comments,
+                                     reason=self._dispatch_problem(request))
             return self._attempt(request, review_verdict=verdict, review_comments=comments,
                                  reason="Waiting for a completed Codex review of this exact commit.")
-        if self.ci_workflow:
-            status, _, findings = self._request_ci(request, request.head_sha, self._branch(request))
+        if ci is not None:
+            status, url, findings = ci
             if findings and (request.wiki_link or any(
                     not ci_repair_path(path, request.repo_target) or path in PROTECTED_FILES
                     for path in request.allowed_paths)):
@@ -701,7 +783,8 @@ class GitHubDoctorWorker:
             if status != "passed":
                 if self.telegram.enabled:
                     self.telegram.decision(request, "invalidate")
-                return self._attempt(request, reason=f"Waiting for exact-head CI ({status}).")
+                reason = self._dispatch_problem(request) if status == "dispatch_failed" else f"Waiting for exact-head CI ({status})."
+                return self._attempt(request, reason=f"{reason} {url}".rstrip())
         passed, failures = self._ci_review(request.head_sha)
         if failures:
             if self.telegram.enabled:
@@ -828,22 +911,37 @@ class GitHubDoctorWorker:
             request.deployment_status = "pending"
             request.deployment_reason = "Waiting for the target's production deployment workflow."
 
+    def _dispatch_problem(self, request: DoctorRequest) -> str:
+        status = request.ci_dispatch_status or "prior dispatch outcome unknown"
+        if status in ("HTTP 401", "HTTP 403", "HTTP 404"):
+            return f"GitHub refused CI dispatch ({status}). Check the Doctor credential has Actions write access for this repository."
+        return f"Automatic CI dispatch could not be confirmed ({status}). Check GitHub Actions for the exact repair commit."
+
     def _request_ci(self, request: DoctorRequest, commit: str, branch: str, *, merged: bool = False):
         result = exact_ci(self, commit, branch, merged=merged)
-        if result[0] != "missing" or not self.dispatch_ci or request.ci_dispatched_ref == commit:
+        if result[0] != "missing" or not self.dispatch_ci:
             return result
+        if request.ci_dispatched_ref == commit:
+            return ("pending" if request.ci_dispatch_status == "accepted" else "dispatch_failed"), "", []
         current = self._api("GET", f"branches/{quote(branch, safe='')}")["commit"]["sha"]
         if current != commit:
             return "ref_advanced", "", []
         # Record dispatch intent before the API write so retries never spam CI after a timeout.
         request.ci_dispatched_ref = commit
+        request.ci_dispatch_status = "unconfirmed"
         self.archive.upsert_request(request)
         try:
             self._api("POST", f"actions/workflows/{self.ci_workflow}/dispatches", {"ref": branch})
         except RuntimeError as exc:
-            if isinstance(exc.__cause__, HTTPError):
-                return "dispatch_failed", "", []
-            raise
+            if not isinstance(exc.__cause__, HTTPError):
+                raise
+            request.ci_dispatch_status = f"HTTP {exc.__cause__.code}"
+            self.archive.upsert_request(request)
+            return "dispatch_failed", "", []
+        except (TimeoutError, URLError):
+            return "dispatch_failed", "", []
+        request.ci_dispatch_status = "accepted"
+        self.archive.upsert_request(request)
         return "pending", "", []
 
     def poll_merged_ci(self, request: DoctorRequest) -> None:

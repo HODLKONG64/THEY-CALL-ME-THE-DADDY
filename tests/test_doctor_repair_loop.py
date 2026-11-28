@@ -4,13 +4,14 @@ import json
 import os
 import subprocess
 import sys
+from unittest.mock import Mock
 
 import pytest
 
 from the_daddy.config import Settings
 from the_daddy.doctor_repair import CloudRepairUnavailable, DoctorWorkspace, RepairLoop
 from the_daddy.doctor_worker import CODEX_BOT, GitHubDoctorWorker
-from the_daddy.swarmsy_doctor import DoctorEdit, DoctorRequest, JsonDoctorArchive
+from the_daddy.swarmsy_doctor import DoctorEdit, DoctorRequest, JsonDoctorArchive, MOONBOYS_REPO
 from the_daddy.swarmsy_doctor_queue import main
 
 REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
@@ -38,6 +39,99 @@ def local_repo(tmp_path):
     git(source, "add", ".")
     git(source, "commit", "-qm", "broken answer")
     return source
+
+
+@pytest.mark.parametrize("delivery", ["normal", "interrupted_push", "stale_pr_head"])
+def test_website_revalidates_same_pr_on_new_base(local_repo, tmp_path, monkeypatch, delivery):
+    page = local_repo / "games/chain-maze/index.html"
+    page.parent.mkdir(parents=True)
+    page.write_text('<div id="app">\n')
+    git(local_repo, "add", ".")
+    git(local_repo, "commit", "-qm", "website")
+    old_base = git(local_repo, "rev-parse", "main")
+
+    worker = GitHubDoctorWorker(Settings(github_repo=MOONBOYS_REPO, doctor_telegram_required=True),
+                                JsonDoctorArchive(tmp_path / "archive.json"),
+                                validation_image="test", validation_command="true", required_checks=set())
+    request = DoctorRequest(source="daddy", repo_target=MOONBOYS_REPO, request_id="support-5-11",
+                            problem_summary="Add a landmark", allowed_paths=["games/chain-maze/index.html"],
+                            base_branch="main", base_sha=old_base, expected_base_sha=old_base, pr_number=42,
+                            review_request_id=1, learned_edits=[
+                                DoctorEdit(path="games/chain-maze/index.html", old='<div id="app">',
+                                           new='<div id="app" role="main">'),
+                            ])
+    branch = worker._branch(request)
+    git(local_repo, "checkout", "-qb", branch)
+    page.write_text('<div id="app" role="main">\n')
+    git(local_repo, "commit", "-qam", "validated repair")
+    old_head = request.head_sha = git(local_repo, "rev-parse", "HEAD")
+    git(local_repo, "checkout", "-q", "main")
+    (local_repo / "unrelated.txt").write_text("other PR\n")
+    git(local_repo, "add", ".")
+    git(local_repo, "commit", "-qm", "other PR")
+    base = git(local_repo, "rev-parse", "main")
+
+    original_init = DoctorWorkspace.__init__
+    original_push = DoctorWorkspace.push
+
+    def setup(workspace, root, settings):
+        original_init(workspace, root, settings)
+        workspace.url = local_repo.as_uri()
+
+    fail_push = delivery == "interrupted_push"
+    stale_pr_head = delivery == "stale_pr_head"
+
+    def push(workspace, *args):
+        nonlocal fail_push
+        if fail_push:
+            fail_push = False
+            raise RuntimeError("interrupted push")
+        return original_push(workspace, *args)
+
+    def current_pr(*args):
+        nonlocal stale_pr_head
+        head = git(local_repo, "rev-parse", branch)
+        if stale_pr_head and head != old_head:
+            head = old_head
+            stale_pr_head = False
+        return {"state": "open", "draft": False,
+                "head": {"repo": {"full_name": MOONBOYS_REPO}, "ref": branch, "sha": head},
+                "base": {"repo": {"full_name": MOONBOYS_REPO}, "ref": "main", "sha": base}}
+
+    def validate(root):
+        assert (root / "unrelated.txt").read_text() == "other PR\n"
+        assert 'role="main"' in (root / request.allowed_paths[0]).read_text()
+        return True, "passed"
+
+    monkeypatch.setattr(DoctorWorkspace, "__init__", setup)
+    monkeypatch.setattr(DoctorWorkspace, "push", push)
+    worker._verify_target = Mock()
+    worker._repo = Mock(return_value=("main", base))
+    worker._head = Mock(side_effect=lambda _: git(local_repo, "rev-parse", branch))
+    worker._api = Mock(side_effect=current_pr)
+    worker._request_review = Mock()
+    worker.repair.validator = Mock(side_effect=validate)
+    worker.telegram.decision = Mock(side_effect=["approved", "invalidated", "invalidated"])
+
+    if delivery == "interrupted_push":
+        with pytest.raises(RuntimeError, match="interrupted push"):
+            worker.poll_review(request)
+        request = worker.archive.get_request(request.request_id)
+        assert request.pending_revalidation
+    if delivery == "stale_pr_head":
+        result = worker.poll_review(request)
+        assert "Waiting for GitHub" in result.reason
+        assert request.pending_revalidation and request.head_sha == old_head
+
+    result = worker.poll_review(request)
+    assert not result.merge_ready
+    assert request.pr_number == 42 and request.review_request_id == 0
+    assert request.base_sha == base and request.head_sha != old_head
+    assert not request.pending_revalidation and len(request.learned_edits) == 1
+    assert git(local_repo, "rev-list", "--parents", "-n", "1", branch).split()[1:] == [old_head, base]
+    assert git(local_repo, "diff", "--name-only", base, branch) == request.allowed_paths[0]
+    worker.repair.validator.assert_called_once()
+    worker._request_review.assert_called_once_with(request)
 
 
 class GitHubStub:

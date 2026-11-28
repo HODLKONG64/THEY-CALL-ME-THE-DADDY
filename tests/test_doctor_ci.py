@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+from urllib.error import HTTPError
 
 import pytest
 
@@ -36,12 +37,48 @@ def test_exact_workflow_matches_sha_event_and_latest_attempt(tmp_path):
          {"id": 91, "head_sha": HEAD, "head_branch": "topic-5", "event": "workflow_dispatch", "status": "completed",
           "conclusion": "failure", "run_attempt": 2}],
         [{"id": 44, "name": "Arcade", "status": "completed", "conclusion": "failure",
+          "check_run_url": f"https://api.github.com/repos/{MOONBOYS_REPO}/check-runs/44",
           "steps": [{"name": "Run complete domain tests (no changed-file filtering)", "conclusion": "failure"}]}],
     ])
+    worker._api = Mock(return_value=[{"annotation_level": "failure", "path": APP,
+                                     "start_line": 12, "message": "Expected a main landmark"}])
     status, url, findings = exact_ci(worker, HEAD, "topic-5")
     assert status == "failed" and url.endswith("/91")
     assert worker._list.call_args.args[0] == "actions/runs/91/attempts/2/jobs"
     assert len(findings) == 1 and "/job/44" in findings[0].body
+    assert f"{APP}:12: Expected a main landmark" in findings[0].body
+
+
+def test_dispatch_denial_survives_poll_and_clears_when_run_appears(tmp_path, monkeypatch):
+    worker = make_worker(tmp_path, dispatch=True)
+    request = DoctorRequest(source="daddy", repo_target=MOONBOYS_REPO, problem_summary="Original")
+    check = Mock(return_value=("missing", "", []))
+    monkeypatch.setattr("the_daddy.doctor_worker.exact_ci", check)
+    error = RuntimeError("dispatch failed")
+    error.__cause__ = HTTPError("https://api.github.com", 403, "Forbidden", {}, None)
+    worker._api = Mock(side_effect=[{"commit": {"sha": HEAD}}, error])
+    assert worker._request_ci(request, HEAD, "topic-5")[0] == "dispatch_failed"
+    request = worker.archive.get_request(request.request_id)
+    assert worker._request_ci(request, HEAD, "topic-5")[0] == "dispatch_failed"
+    assert "HTTP 403" in worker._dispatch_problem(request)
+    assert worker._api.call_count == 2
+    check.return_value = ("pending", "https://github.com/run", [])
+    assert worker._request_ci(request, HEAD, "topic-5") == check.return_value
+
+
+def test_website_starts_ci_while_codex_reviews_without_making_merge_ready(tmp_path):
+    worker = make_worker(tmp_path, dispatch=True)
+    request = DoctorRequest(source="daddy", repo_target=MOONBOYS_REPO, request_id="support-5-11",
+                            problem_summary="Add a landmark", pr_number=5, head_sha=HEAD, base_sha=BASE)
+    record = pr()
+    record["head"]["ref"] = worker._branch(request)
+    worker._repo = Mock(return_value=("main", BASE))
+    worker._api = Mock(return_value=record)
+    worker._request_review = Mock()
+    worker._codex_review = Mock(return_value=("pending", []))
+    worker._request_ci = Mock(return_value=("pending", "", []))
+    assert not worker.poll_review(request).merge_ready
+    worker._request_ci.assert_called_once_with(request, HEAD, worker._branch(request))
 
 
 def test_discovery_reports_paused_and_adopts_only_safe_selected_pr(tmp_path, monkeypatch):
