@@ -18,6 +18,7 @@ from openai import OpenAIError
 from pydantic import BaseModel, ValidationError
 
 from .agents.openai_client import OpenAIJSONClient
+from .agents.local_repair import LocalRepairClient
 from .config import Settings
 from .merge_rules import PROTECTED_CORE_FILES
 from .runtime.redaction import sanitize_text
@@ -360,6 +361,7 @@ class RepairLoop:
     ) -> None:
         self.settings = settings
         self.api = OpenAIJSONClient(settings)
+        self.local_api = LocalRepairClient(settings)
         self.validator = validator
         self.checkpoint = checkpoint
 
@@ -410,16 +412,37 @@ class RepairLoop:
                     "feedback": scrub(feedback, self.settings)[-5000:],
                 }
                 try:
-                    response = self.api.generate_json(
-                        model=self.settings.openai_model_review if diff else self.settings.openai_model_main,
-                        system=REPAIR_INSTRUCTIONS + (
-                            "\nFor functional CI repairs preserve test coverage, authorization, account boundaries,"
-                            " and deployment controls. Do not create exploit code or reproduce security attacks."
-                            if ci_repair or require_baseline_failure else ""
-                        ),
-                        prompt=json.dumps(prompt), schema=RepairDecision.model_json_schema(),
+                    system = REPAIR_INSTRUCTIONS + (
+                        "\nFor functional CI repairs preserve test coverage, authorization, account boundaries,"
+                        " and deployment controls. Do not create exploit code or reproduce security attacks."
+                        if ci_repair or require_baseline_failure else ""
                     )
-                    decision = RepairDecision.model_validate(response)
+                    serialized = json.dumps(prompt)
+                    schema = RepairDecision.model_json_schema()
+                    decision = None
+                    # One local proposal at most, only for an initial ordinary repair.
+                    # All subsequent corrections, CI repairs and approvals use OpenAI.
+                    if (attempt == 0 and not diff and not findings and not ci_repair
+                            and not request.wiki_link and not require_baseline_failure):
+                        response = self.local_api.propose(system=system, prompt=serialized, schema=schema)
+                        if response is not None:
+                            try:
+                                candidate = RepairDecision.model_validate(response)
+                                if (candidate.verdict == "patch" and candidate.edits
+                                        and len(candidate.edits) <= 20
+                                        and len({edit.path for edit in candidate.edits}) <= MAX_CHANGED_FILES
+                                        and all(path_allowed(edit.path, request) for edit in candidate.edits)):
+                                    decision = candidate
+                            except ValidationError:
+                                pass
+                            if decision is not None:
+                                log(request, self.settings, "local_ai_proposal", "Local proposal received; independent validation required.", self.checkpoint)
+                    if decision is None:
+                        response = self.api.generate_json(
+                            model=self.settings.openai_model_review if diff else self.settings.openai_model_main,
+                            system=system, prompt=serialized, schema=schema,
+                        )
+                        decision = RepairDecision.model_validate(response)
                 except (ValidationError, ValueError):
                     feedback = "API output did not match the repair contract. Return a valid patch or approval."
                     log(request, self.settings, "api_invalid", feedback, self.checkpoint)
