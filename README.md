@@ -29,6 +29,12 @@ The primary VPS Doctor uses isolated rootless Docker validation. The primary sup
 
 [PR #119](https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY/pull/119) verified a real Doctor self-repair through exact-head Codex review, Telegram approval, and a merge into `main`. The fix gives an empty traceback excerpt for zero or negative limits and preserves positive-limit behavior. [Doctor CI passed on merge commit `d6a7677`](https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY/actions/runs/46100479230).
 
+## Codex CLI repair fallback
+
+Set both `DADDY_DOCTOR_CODEX_FALLBACK=true` and `DADDY_DOCTOR_CODEX_CLI_FALLBACK=true` to use the authenticated Codex CLI when Doctor's OpenAI repair client is unavailable and an existing PR has actionable findings. Check `codex login status` as the Doctor service account before enabling it. The CLI runs in an empty directory with shell tools disabled and receives only redacted findings, validation output and scoped source snippets. Doctor checks the proposal against the exact PR head, applies it in the isolated checkout, and validates it. Every revised head still needs fresh Codex review, required CI and exact-commit Telegram approval.
+
+The CLI needs its own working OpenAI connection and writable Codex state directory. A CLI failure leaves the repair blocked for owner review. Requests already waiting on a legacy GitHub patch comment stay parked. Keep the CLI flag off until the isolated outage test passes on that host.
+
 ## Website support and CI tracking
 
 The Brain sends approved website repair cases to the website-scoped Doctor service. Doctor reproduces the failure, tests the repair in isolation and requests Codex review. The owner can approve the exact reviewed commit in `@WIKICOMSBOT`. [Website support setup](https://github.com/HODLKONG64/the-brain/blob/main/support-ops/README.md)

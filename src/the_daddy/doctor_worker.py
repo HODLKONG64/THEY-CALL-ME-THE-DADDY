@@ -19,21 +19,13 @@ from .doctor_telegram import TelegramApproval
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
 from .doctor_repair import CloudRepairUnavailable, ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
-from .merge_rules import PROTECTED_CORE_FILES
+from .merge_rules import PROTECTED_DOCTOR_FILES as PROTECTED_FILES
 from .swarmsy_doctor import (
     DoctorEdit, DoctorRepairAttempt, DoctorRequest, DoctorReviewComment, JsonDoctorArchive, is_moonboys_repo, utc_now_iso,
 )
 
 CODEX_BOT = "chatgpt-codex-connector[bot]"
 CODEX_SUMMARY = re.compile(r"^<!-- codex-review-state:v1 (\{[^\n]+\}) -->$", re.MULTILINE)
-PROTECTED_FILES = PROTECTED_CORE_FILES | {
-    "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
-    "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
-    "src/the_daddy/agents/local_repair.py", "src/the_daddy/config.py",
-    "src/the_daddy/doctor_telegram.py",
-    "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
-    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py", "src/the_daddy/doctor_distillation.py",
-}
 
 
 def is_codex(item: dict) -> bool:
@@ -66,12 +58,15 @@ class GitHubDoctorWorker:
             raise ValueError("GITHUB_REPO must be a valid GitHub owner/repo.")
         self.settings = settings.model_copy(update={"github_repo": repo})
         self.archive = archive
-        self.required_checks = required_checks
+        website = is_moonboys_repo(repo)
+        self.required_checks = set(required_checks)
+        if website:
+            self.required_checks.add("Runtime Image Policy")
         if deploy_workflow and not re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:yml|yaml)", deploy_workflow):
             raise ValueError("Configure Cloudflare tracking with the target workflow file name.")
         self.deploy_workflow = deploy_workflow
         self.deploy_job = deploy_job
-        self.ci_workflow = audit_workflow(repo) if watch_ci else ""
+        self.ci_workflow = audit_workflow(repo) if website or watch_ci else ""
         self.dispatch_ci = dispatch_ci
         self.git = GitBranchExecutor(
             github_token=settings.github_token, github_repo=repo, allowed_target_repos=settings.allowed_target_repos,
@@ -92,18 +87,20 @@ class GitHubDoctorWorker:
         url = f"https://api.github.com/repos/{self.git.github_repo}"
         return self.git._api_request(method, f"{url}/{endpoint}" if endpoint else url, data)
 
-    def _list(self, endpoint: str, *, list_key: str = "") -> list[dict]:
-        items = []
+    def _pages(self, endpoint: str, *, list_key: str = ""):
         separator = "&" if "?" in endpoint else "?"
         for page in range(1, 11):
             response = self._api("GET", f"{endpoint}{separator}per_page=100&page={page}")
             batch = response.get(list_key) if list_key and isinstance(response, dict) else response
             if not isinstance(batch, list):
                 raise RuntimeError("GitHub returned an incomplete review or check response.")
-            items.extend(batch)
+            yield batch
             if len(batch) < 100:
-                return items
+                return
         raise RuntimeError("GitHub review or check response exceeded Doctor's pagination limit.")
+
+    def _list(self, endpoint: str, *, list_key: str = "") -> list[dict]:
+        return [item for batch in self._pages(endpoint, list_key=list_key) for item in batch]
 
     @staticmethod
     def _reference(request: DoctorRequest) -> str:
@@ -429,9 +426,9 @@ class GitHubDoctorWorker:
         if request.codex_patch_requested_head == head:
             return
         endpoint = f"issues/{request.pr_number}/comments"
-        body = (f"@codex review exact commit {head}. Doctor needs a concrete repair proposal "
-                "because its cloud repair provider is unavailable. Review the existing findings and "
-                "failed tests. Return scoped edits, not direct commits.\n"
+        body = (f"@codex What exact text changes at commit {head} would resolve the existing findings "
+                "and failed tests? Doctor's cloud repair provider is unavailable. Reply with the "
+                "structured proposal in this PR conversation and make no repository changes.\n"
                 f"<!-- doctor-patch-request:{head} -->" + self._patch_contract(head))
         actor = self.git._api_request("GET", "https://api.github.com/user")["login"]
         existing = next((item for item in self._list(endpoint)
@@ -539,6 +536,10 @@ class GitHubDoctorWorker:
                 # A concrete proposal that failed validation consumes its cycle.
                 # Do not reapply it indefinitely or accept approval of the old head.
                 raise PermissionError("Codex patch did not produce a passing candidate; owner review required.") from None
+            if self.settings.doctor_codex_cli_fallback:
+                raise PermissionError(
+                    "Codex CLI fallback did not produce a passing candidate; check CLI authentication and owner review."
+                ) from None
             self._request_codex_patch(request)
             if not codex_edits:
                 # Waiting for a concrete response is not a new repair attempt.
@@ -614,7 +615,12 @@ class GitHubDoctorWorker:
         checks = {}
         for run in runs:
             if run.get("head_sha") == head:
+                if (is_moonboys_repo(self.settings.github_repo) and run.get("name") == "Runtime Image Policy"
+                        and (run.get("app") or {}).get("slug") != "github-actions"):
+                    continue
                 checks.setdefault(run["name"], []).append(run)
+        if is_moonboys_repo(self.settings.github_repo):
+            current_statuses.pop("Runtime Image Policy", None)
         failures = []
         for name in sorted(self.required_checks):
             for run in checks.get(name, []):
@@ -697,15 +703,14 @@ class GitHubDoctorWorker:
                 if self.telegram.enabled:
                     self.telegram.decision(request, "invalidate")
                 return self._attempt(request, reason=f"Waiting for exact-head CI ({status}).")
-        website_support = is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up)
-        if website_support and not self.telegram.enabled:
-            return self._attempt(request, review_verdict="approved", reason="Codex approved. Website merge and release require GK approval.")
         passed, failures = self._ci_review(request.head_sha)
         if failures:
             if self.telegram.enabled:
                 self.telegram.decision(request, "invalidate")
             return self._attempt(request, review_verdict="changes_requested", review_comments=failures,
                                  reason="Required GitHub CI checks requested follow-up.")
+        if not self.telegram.enabled:
+            return self._attempt(request, review_verdict="approved", reason="Private Telegram approval is disabled. Automatic merge is blocked.")
         if not request.learned_edits or any(edit.path in PROTECTED_FILES for edit in request.learned_edits):
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Protected files require a manual merge.")
         label_ok = not (request.ci_branch or request.ci_follow_up) or MERGE_LABEL in labels(pr)
@@ -740,14 +745,17 @@ class GitHubDoctorWorker:
             return False
         if ready.review_verdict != "approved" or not ready.merge_ready:
             return False
-        if self.telegram.enabled and self.telegram.decision(request) != "approved":
+        if self._repo() != (request.base_branch, request.base_sha):
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
+            return False
+        if not self.telegram.enabled or self.telegram.decision(request) != "approved":
             return False
         outcome = self.git.merge_pull_request(request.pr_number, head_sha=request.head_sha)
         if not outcome or outcome.get("merged") is not True:
             return False
         self._record_merge(request, outcome["sha"], request.base_branch)
-        if self.telegram.enabled:
-            self.telegram.decision(request, "merged")
+        self.telegram.record_merge(request)
         return True
 
     def merge_approved_website_pr(
@@ -760,18 +768,16 @@ class GitHubDoctorWorker:
                 or request.head_sha != sha(approved_head)
                 or request.pending_head_sha or not request.review_request_id):
             raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
-        if request.codex_patch_requested_head == request.head_sha:
+        if not self.telegram.enabled or request.codex_patch_requested_head == request.head_sha:
             return "", ""
-        if self.telegram.enabled:
-            # The Brain bridge must use the single shared approval authority.
-            # An old bridge that passes a legacy approval cannot bypass this check.
-            pr = self._api("GET", f"pulls/{request.pr_number}")
-            if self._repo() != ("main", request.base_sha):
-                return "merge_blocked", "The website base changed after approval."
-            if self.telegram.decision(request) != "approved":
-                return "", ""
-            if self._codex_review(request)[0] != "approved":
-                return "", ""
+        # The Brain bridge and Doctor use the same exact-commit decision.
+        pr = self._api("GET", f"pulls/{request.pr_number}")
+        if self._repo() != ("main", request.base_sha):
+            return "merge_blocked", "The website base changed after approval."
+        if self.telegram.decision(request) != "approved":
+            return "", ""
+        if self._codex_review(request)[0] != "approved":
+            return "", ""
         self._verify_pr(request, pr, approved_head, "main")
         if pr.get("state") != "open" or paused(pr) or pr["base"]["sha"] != request.base_sha:
             return "merge_blocked", "The website pull request changed after validation."
@@ -780,11 +786,14 @@ class GitHubDoctorWorker:
             return "merge_blocked", "A required GitHub check failed. Review the checks on the pull request."
         if not passed or pr.get("mergeable") is None:
             return "", ""
-        if self.ci_workflow and exact_ci(self, approved_head, self._branch(request))[0] != "passed":
+        if exact_ci(self, approved_head, self._branch(request))[0] != "passed":
             return "", ""
         if pr.get("mergeable") is not True or pr.get("mergeable_state") != "clean":
             return "merge_blocked", "GitHub reports a merge conflict, missing review, or branch rule. Check the pull request."
-        if self.telegram.enabled and self.telegram.decision(request) != "approved":
+        if self._repo() != ("main", request.base_sha):
+            self.telegram.decision(request, "invalidate")
+            return "merge_blocked", "The website base changed after approval."
+        if self.telegram.decision(request) != "approved":
             return "", ""
         try:
             result = self._api("PUT", f"pulls/{request.pr_number}/merge",
@@ -795,8 +804,9 @@ class GitHubDoctorWorker:
             raise
         if not isinstance(result, dict) or result.get("merged") is not True:
             return "merge_blocked", "GitHub did not confirm the merge. Check the pull request."
-        if self.telegram.enabled:
-            self.telegram.decision(request, "merged")
+        if result.get("sha"):
+            request.merge_sha = sha(result["sha"])
+            self.telegram.record_merge(request)
         return "merged", "GitHub merged the commit you approved in Telegram."
 
     def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:
@@ -805,11 +815,19 @@ class GitHubDoctorWorker:
         if self.ci_workflow:
             request.post_merge_ci = "pending"
             request.post_merge_ci_reason = "Waiting for CI on the exact merge commit."
-        if self.deploy_workflow:
+        if is_moonboys_repo(request.repo_target):
+            if any(edit.path.startswith("workers/moonboys-api/") for edit in request.learned_edits):
+                request.deployment_workflow = "cloudflare-pr-release.yml"
+                request.deployment_job = "release"
+            else:
+                request.deployment_workflow = "pages.yml"
+                request.deployment_job = "deploy"
+        elif self.deploy_workflow:
             request.deployment_workflow = self.deploy_workflow
             request.deployment_job = self.deploy_job
+        if request.deployment_workflow:
             request.deployment_status = "pending"
-            request.deployment_reason = "Waiting for the target's Cloudflare deployment workflow."
+            request.deployment_reason = "Waiting for the target's production deployment workflow."
 
     def _request_ci(self, request: DoctorRequest, commit: str, branch: str, *, merged: bool = False):
         result = exact_ci(self, commit, branch, merged=merged)
@@ -873,11 +891,25 @@ class GitHubDoctorWorker:
         try:
             self._verify_target(request)
             commit = sha(request.merge_sha)
-            query = urlencode({"head_sha": commit, "branch": request.base_branch, "event": "push"})
             workflow = quote(request.deployment_workflow, safe="")
-            runs = self._list(f"actions/workflows/{workflow}/runs?{query}", list_key="workflow_runs")
-            matching = [run for run in runs if run.get("head_sha") == commit and run.get("event") == "push"
-                        and run.get("head_branch") == request.base_branch]
+            endpoint = f"actions/workflows/{workflow}/runs"
+            if is_moonboys_repo(request.repo_target) and request.deployment_workflow == "cloudflare-pr-release.yml":
+                # GitHub attaches pull_request_target runs to the PR head.
+                # The trusted release workflow carries the merge SHA in its run name.
+                title = f"Cloudflare release PR #{request.pr_number} {commit}"
+                matching = []
+                # Runs are returned newest first. Avoid loading older pages
+                # after finding the release or a retry for this exact merge.
+                for batch in self._pages(endpoint, list_key="workflow_runs"):
+                    matching = [run for run in batch if run.get("display_title") == title
+                                and run.get("event") in {"pull_request_target", "workflow_dispatch"}]
+                    if matching:
+                        break
+            else:
+                query = urlencode({"head_sha": commit, "branch": request.base_branch, "event": "push"})
+                runs = self._list(f"{endpoint}?{query}", list_key="workflow_runs")
+                matching = [run for run in runs if run.get("head_sha") == commit and run.get("event") == "push"
+                            and run.get("head_branch") == request.base_branch]
             if matching:
                 run = max(matching, key=lambda item: int(item["id"]))
                 run_id = int(run["id"])
@@ -891,11 +923,11 @@ class GitHubDoctorWorker:
                                 and matches[0].get("conclusion") == "success")
                     request.deployment_status = "deployed" if deployed else "failed"
                     request.deployment_reason = (
-                        "Cloudflare deployment job passed for the merged commit." if deployed
-                        else f"Cloudflare job {request.deployment_job!r} did not pass. Workflow conclusion was {run.get('conclusion')}."
+                        "Production deployment job passed for the merged commit." if deployed
+                        else f"Deployment job {request.deployment_job!r} did not pass. Workflow conclusion was {run.get('conclusion')}."
                     )
                 else:
-                    request.deployment_reason = "Cloudflare deployment workflow is running or awaiting approval."
+                    request.deployment_reason = "Production deployment workflow is running or awaiting approval."
         except RuntimeError as exc:
             request.deployment_reason = scrub(str(exc), self.settings)[-1500:]
         except (PermissionError, ValueError) as exc:

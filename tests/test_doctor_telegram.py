@@ -64,6 +64,18 @@ def test_further_fix_is_actionable(worker, request_record):
     assert attempt.review_comments[0].author == "Telegram owner"
 
 
+def test_disabled_telegram_blocks_merge_but_preserves_ci_repair_findings(worker, request_record):
+    worker.telegram.enabled = False
+    finding = DoctorReviewComment(author="GitHub CI", body="A required check failed.")
+    worker._ci_review.return_value = (False, [finding])
+    attempt = worker.poll_review(request_record)
+    assert attempt.review_comments == [finding]
+    assert attempt.review_verdict == "changes_requested"
+    assert not attempt.merge_ready
+    assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
+    worker.git.merge_pull_request.assert_not_called()
+
+
 def test_final_approval_rechecked(worker, request_record):
     worker.telegram.decision.side_effect = ["approved", "unavailable"]
     assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
@@ -72,6 +84,26 @@ def test_final_approval_rechecked(worker, request_record):
     worker.telegram.decision.return_value = "approved"
     assert worker.merge_pr(request_record, request_record.swarmsy_pr_url)
     worker.git.merge_pull_request.assert_called_once_with(42, head_sha=request_record.head_sha)
+
+
+def test_base_is_rechecked_after_review_before_merge(worker, request_record):
+    worker._repo.side_effect = [("main", request_record.base_sha), ("main", "d"*40)]
+    worker.telegram.decision.return_value = "approved"
+    assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
+    worker.telegram.decision.assert_called_with(request_record, "invalidate")
+    worker.git.merge_pull_request.assert_not_called()
+
+
+def test_fallback_request_asks_for_structured_answer_without_a_review_command(worker, request_record):
+    worker._list = Mock(return_value=[])
+    worker._api = Mock(return_value={"id": 90})
+    worker.git._api_request = Mock(return_value={"login": "doctor"})
+    worker._request_codex_patch(request_record)
+    method, endpoint, data = worker._api.call_args.args
+    assert (method, endpoint) == ("POST", "issues/42/comments")
+    assert data["body"].startswith("@codex What exact text changes")
+    assert "DOCTOR_PATCH " + request_record.head_sha in data["body"]
+    assert request_record.review_request_id == 90
 
 
 def test_ci_and_base_invalidate(worker, request_record):
@@ -110,6 +142,42 @@ def test_outbox_survives_restart_and_deduplicates(tmp_path, monkeypatch, request
     events = [call.args[0] for call in restarted._post.call_args_list if call.args[0]["action"] == "event"]
     assert len(events) == 1
     assert events[0]["event"] == "running"
+
+
+def test_merge_receipt_survives_restart_and_requires_exact_ack(tmp_path, monkeypatch, request_record):
+    monkeypatch.setenv("DOCTOR_APPROVAL_TOKEN", "a"*64)
+    path = tmp_path / "archive.json"
+    request_record.merge_sha = "f"*40
+    client = TelegramApproval(path, True)
+    client.record_merge(request_record)
+    client.record_merge(request_record)
+    client._post = Mock(return_value={})
+    client.flush()
+
+    restarted = TelegramApproval(path, True)
+    ack = {"state": "merged", "head_sha": request_record.head_sha, "base_sha": request_record.base_sha}
+    restarted._post = Mock(return_value=ack)
+    restarted.flush()
+    restarted._post.return_value = {**ack, "merge_sha": request_record.merge_sha}
+    restarted.flush()
+    restarted.flush()
+    receipts = [call.args[0] for call in restarted._post.call_args_list if call.args[0]["action"] == "merged"]
+    assert receipts == [
+        {"action": "merged", **restarted.identity(request_record), "merge_sha": request_record.merge_sha}
+    ] * 2
+
+
+def test_unacknowledged_merge_receipts_do_not_starve_new_ones(tmp_path, monkeypatch, request_record):
+    monkeypatch.setenv("DOCTOR_APPROVAL_TOKEN", "a"*64)
+    client = TelegramApproval(tmp_path / "archive.json", True)
+    for number in range(1, 10):
+        client.record_merge(request_record.model_copy(update={"pr_number": number, "merge_sha": "f"*40}))
+    client._post = Mock(return_value={})
+    client.flush()
+    client.flush()
+    attempts = [call.args[0]["pr_number"] for call in client._post.call_args_list
+                if call.args[0]["action"] == "merged"]
+    assert attempts[:9] == list(range(1, 10))
 
 
 @pytest.mark.parametrize("author, decisions", [
@@ -220,3 +288,18 @@ def test_waiting_for_codex_patch_preserves_budget(worker, request_record):
     assert request_record.review_cycles == 1
     assert worker.archive.get_request(request_record.request_id).review_cycles == 1
     worker._request_codex_patch.assert_called_once_with(request_record)
+
+
+def test_cli_failure_blocks_instead_of_requesting_legacy_patch(worker, request_record):
+    worker.settings.doctor_codex_fallback = True
+    worker.settings.doctor_codex_cli_fallback = True
+    worker.telegram.decision.return_value = "invalidated"
+    worker._stage = Mock(side_effect=CloudRepairUnavailable("No passing candidate"))
+    worker._request_codex_patch = Mock()
+    worker._publish = Mock()
+    with pytest.raises(PermissionError, match="Codex CLI fallback did not produce a passing candidate"):
+        worker.apply_review_comment_fixes(request_record, [
+            DoctorReviewComment(author=CODEX_BOT, body="Fix remaining defect")
+        ], 1)
+    worker._request_codex_patch.assert_not_called()
+    worker._publish.assert_not_called()
