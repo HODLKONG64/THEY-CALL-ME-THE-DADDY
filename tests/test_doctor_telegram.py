@@ -160,6 +160,7 @@ def patch_body(head, path="src/example.py"):
 
 @pytest.mark.parametrize("case", ["fresh", "stale", "wrong_head", "human", "protected", "ambiguous", "clean"])
 def test_pending_codex_patch_requires_fresh_authenticated_scoped_proposal(worker, request_record, case):
+    worker.settings.doctor_codex_fallback = True
     head = request_record.head_sha
     request_record.codex_patch_requested_head = head
     anchor = {"id": 1, "body": f"<!-- doctor-patch-request:{head} -->",
