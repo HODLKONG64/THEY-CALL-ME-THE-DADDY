@@ -11,7 +11,7 @@ from the_daddy.config import Settings
                                   "approval", "truncated", "redirect"])
 def test_local_provider_transport(monkeypatch, case):
     calls = []
-    settings = Settings(doctor_local_ai=case != "disabled", doctor_local_prompt_bytes=1000)
+    settings = Settings(doctor_local_ai=case != "disabled", doctor_local_prompt_bytes=1000, doctor_local_model="qwen3:4b-instruct")
     patch = {"verdict": "patch", "edits": [{"path": "src/a.py", "old": "1", "new": "2"}]}
     class Client:
         def __init__(self, **kwargs):
@@ -43,3 +43,23 @@ def test_local_provider_transport(monkeypatch, case):
                                                   schema={"type": "object"})
     assert result == (patch if case == "valid" else None)
     assert len(calls) == (0 if case in ("disabled", "oversized") else 1)
+
+
+@pytest.mark.parametrize("prompt", ["1234567890"*600, "界"*1000, "x"*3000])
+def test_token_dense_context_is_rejected_before_network(monkeypatch, prompt):
+    settings = Settings(doctor_local_ai=True, doctor_local_prompt_bytes=8000,
+                        doctor_local_model="qwen3:4b-instruct")
+    def unexpected_client(**kwargs):
+        pytest.fail("Oversized input must not reach Ollama")
+    monkeypatch.setattr("the_daddy.agents.local_repair.httpx.Client", unexpected_client)
+    assert LocalRepairClient(settings).propose(system="system", prompt=prompt,
+                                              schema={"type": "object"}) is None
+
+
+def test_unknown_model_context_accounting_fails_closed(monkeypatch):
+    settings = Settings(doctor_local_ai=True, doctor_local_model="unverified:latest")
+    def unexpected_client(**kwargs):
+        pytest.fail("Unknown tokenizer/template must not reach Ollama")
+    monkeypatch.setattr("the_daddy.agents.local_repair.httpx.Client", unexpected_client)
+    assert LocalRepairClient(settings).propose(system="system", prompt="fix",
+                                              schema={"type": "object"}) is None
