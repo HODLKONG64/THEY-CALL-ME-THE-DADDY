@@ -211,3 +211,35 @@ records can collect fallback evidence without waiting for the Checks cooldown.
 The existing endpoint cooldowns apply separately to Actions and commit statuses.
 Completed fallback samples may be reused on same-revision retries, subject to
 the existing evidence revalidation window. No new cloud resources are required.
+
+
+### VPS local repair proposals
+
+Doctor can optionally reuse the existing loopback Ollama instance at
+http://127.0.0.1:11434/api/chat, with qwen3:4b-instruct by default.
+Set DADDY_DOCTOR_LOCAL_AI=true in the protected worker environment to opt in.
+DADDY_DOCTOR_LOCAL_MODEL selects the installed model. The settings
+DOCTOR_LOCAL_TIMEOUT (default 90 seconds) and DOCTOR_LOCAL_PROMPT_BYTES
+(default 8000 bytes including system instructions and schema) bound the
+request; oversized prompts skip local inference without truncating evidence.
+The adapter uses structured output, a 4096 context and 768 output-token
+budget, disables proxies and redirects, and sends no provider credentials.
+
+Only the initial ordinary scoped patch proposal can use the local model.
+CI repairs, wiki repairs, review findings, corrections and final approval
+remain on OpenAI. Invalid, blocked, unavailable or out-of-scope local output
+escalates to OpenAI; rejected patches and failed tests follow the existing
+repair loop. OpenAI credentials remain mandatory. No local model can approve
+a patch or bypass independent tests or Codex review. This is not offline
+autonomous merging. The opt-in defaults off until VPS smoke tests and a
+representative repair benchmark establish quality and latency. The existing
+Ollama queue and memory limits remain the server-level concurrency guard.
+
+The WSL-to-VPS migration preserves existing archives and uses a separate
+rootless Docker engine for tests (DOCKER_HOST=unix:///run/user/1002/docker.sock
+on the migrated host). Production Docker remains separate. Both repair
+watchers and the Brain coordinator must inherit the rootless endpoint.
+The existing validator has per-container CPU, RAM and process limits.
+Shared aggregate test scheduling, actual repair smoke tests and cold boot
+verification remain separate acceptance gates. Never start old WSL watchers
+while the VPS workers are active.
