@@ -74,6 +74,26 @@ def test_final_approval_rechecked(worker, request_record):
     worker.git.merge_pull_request.assert_called_once_with(42, head_sha=request_record.head_sha)
 
 
+def test_base_is_rechecked_after_review_before_merge(worker, request_record):
+    worker._repo.side_effect = [("main", request_record.base_sha), ("main", "d"*40)]
+    worker.telegram.decision.return_value = "approved"
+    assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
+    worker.telegram.decision.assert_called_with(request_record, "invalidate")
+    worker.git.merge_pull_request.assert_not_called()
+
+
+def test_fallback_request_asks_for_structured_answer_without_a_review_command(worker, request_record):
+    worker._list = Mock(return_value=[])
+    worker._api = Mock(return_value={"id": 90})
+    worker.git._api_request = Mock(return_value={"login": "doctor"})
+    worker._request_codex_patch(request_record)
+    method, endpoint, data = worker._api.call_args.args
+    assert (method, endpoint) == ("POST", "issues/42/comments")
+    assert data["body"].startswith("@codex What exact text changes")
+    assert "DOCTOR_PATCH " + request_record.head_sha in data["body"]
+    assert request_record.review_request_id == 90
+
+
 def test_ci_and_base_invalidate(worker, request_record):
     worker._ci_review.return_value = (False, [])
     assert not worker.poll_review(request_record).merge_ready

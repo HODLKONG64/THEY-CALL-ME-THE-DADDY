@@ -429,9 +429,9 @@ class GitHubDoctorWorker:
         if request.codex_patch_requested_head == head:
             return
         endpoint = f"issues/{request.pr_number}/comments"
-        body = (f"@codex review exact commit {head}. Doctor needs a concrete repair proposal "
-                "because its cloud repair provider is unavailable. Review the existing findings and "
-                "failed tests. Return scoped edits, not direct commits.\n"
+        body = (f"@codex What exact text changes at commit {head} would resolve the existing findings "
+                "and failed tests? Doctor's cloud repair provider is unavailable. Reply with the "
+                "structured proposal in this PR conversation and make no repository changes.\n"
                 f"<!-- doctor-patch-request:{head} -->" + self._patch_contract(head))
         actor = self.git._api_request("GET", "https://api.github.com/user")["login"]
         existing = next((item for item in self._list(endpoint)
@@ -700,6 +700,8 @@ class GitHubDoctorWorker:
         website_support = is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up)
         if website_support and not self.telegram.enabled:
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Website merge and release require GK approval.")
+        if not self.telegram.enabled:
+            return self._attempt(request, review_verdict="approved", reason="Private Telegram approval is disabled. Automatic merge is blocked.")
         passed, failures = self._ci_review(request.head_sha)
         if failures:
             if self.telegram.enabled:
@@ -740,7 +742,11 @@ class GitHubDoctorWorker:
             return False
         if ready.review_verdict != "approved" or not ready.merge_ready:
             return False
-        if self.telegram.enabled and self.telegram.decision(request) != "approved":
+        if self._repo() != (request.base_branch, request.base_sha):
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
+            return False
+        if not self.telegram.enabled or self.telegram.decision(request) != "approved":
             return False
         outcome = self.git.merge_pull_request(request.pr_number, head_sha=request.head_sha)
         if not outcome or outcome.get("merged") is not True:
@@ -760,18 +766,16 @@ class GitHubDoctorWorker:
                 or request.head_sha != sha(approved_head)
                 or request.pending_head_sha or not request.review_request_id):
             raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
-        if request.codex_patch_requested_head == request.head_sha:
+        if not self.telegram.enabled or request.codex_patch_requested_head == request.head_sha:
             return "", ""
-        if self.telegram.enabled:
-            # The Brain bridge must use the single shared approval authority.
-            # An old bridge that passes a legacy approval cannot bypass this check.
-            pr = self._api("GET", f"pulls/{request.pr_number}")
-            if self._repo() != ("main", request.base_sha):
-                return "merge_blocked", "The website base changed after approval."
-            if self.telegram.decision(request) != "approved":
-                return "", ""
-            if self._codex_review(request)[0] != "approved":
-                return "", ""
+        # The Brain bridge and Doctor use the same exact-commit decision.
+        pr = self._api("GET", f"pulls/{request.pr_number}")
+        if self._repo() != ("main", request.base_sha):
+            return "merge_blocked", "The website base changed after approval."
+        if self.telegram.decision(request) != "approved":
+            return "", ""
+        if self._codex_review(request)[0] != "approved":
+            return "", ""
         self._verify_pr(request, pr, approved_head, "main")
         if pr.get("state") != "open" or paused(pr) or pr["base"]["sha"] != request.base_sha:
             return "merge_blocked", "The website pull request changed after validation."
@@ -784,7 +788,10 @@ class GitHubDoctorWorker:
             return "", ""
         if pr.get("mergeable") is not True or pr.get("mergeable_state") != "clean":
             return "merge_blocked", "GitHub reports a merge conflict, missing review, or branch rule. Check the pull request."
-        if self.telegram.enabled and self.telegram.decision(request) != "approved":
+        if self._repo() != ("main", request.base_sha):
+            self.telegram.decision(request, "invalidate")
+            return "merge_blocked", "The website base changed after approval."
+        if self.telegram.decision(request) != "approved":
             return "", ""
         try:
             result = self._api("PUT", f"pulls/{request.pr_number}/merge",

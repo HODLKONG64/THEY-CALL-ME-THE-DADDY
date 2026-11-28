@@ -177,6 +177,10 @@ def test_queue_restarts_uses_fixes_and_merges_only_reviewed_head(tmp_path, monke
         instance = GitHubDoctorWorker(settings, archive, validation_image="test-image",
                                       validation_command="python -m tests.check", required_checks={"tests"},
                                       deploy_workflow="deploy-worker.yml")
+        instance.telegram.enabled = True
+        instance.telegram.decision = lambda request, action="read": (
+            "invalidated" if action == "invalidate" else "approved" if github.ci_success else "missing"
+        )
         original_validator = instance.repair.validator
         instance.repair.validator = validation
         validation.command = original_validator.command

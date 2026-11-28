@@ -61,5 +61,13 @@ def test_doctor_merges_only_the_approved_website_head_with_clean_checks(tmp_path
     assert worker.merge_approved_website_pr(request, head, pr) == ("", "")
     worker._api.assert_not_called()
     worker._ci_review.return_value = (True, [])
+    assert worker.merge_approved_website_pr(request, head, pr) == ("", "")
+    worker._api.assert_not_called()
+    worker.telegram.enabled = True
+    worker.telegram.decision = Mock(return_value="approved")
+    worker._codex_review = Mock(return_value=("approved", []))
+    worker._repo = Mock(return_value=("main", base))
+    worker._api.side_effect = [pr, {"merged": True}]
     assert worker.merge_approved_website_pr(request, head, pr)[0] == "merged"
-    worker._api.assert_called_once_with("PUT", "pulls/12/merge", {"sha": head, "merge_method": "squash"})
+    assert worker._api.call_count == 2
+    worker._api.assert_called_with("PUT", "pulls/12/merge", {"sha": head, "merge_method": "squash"})

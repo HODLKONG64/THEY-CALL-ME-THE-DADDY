@@ -102,6 +102,9 @@ def test_adopted_pr_cannot_merge_without_label_or_exact_green_ci(tmp_path, monke
     monkeypatch.setattr("the_daddy.doctor_worker.exact_ci", lambda *a, **kw: ("passed", "", []))
     assert not worker.poll_review(request).merge_ready
     worker._api.return_value = pr()
+    assert not worker.poll_review(request).merge_ready
+    worker.telegram.enabled = True
+    worker.telegram.decision = Mock(return_value="approved")
     assert worker.poll_review(request).merge_ready
     monkeypatch.setattr("the_daddy.doctor_worker.exact_ci", lambda *a, **kw: ("missing", "", []))
     assert not worker.poll_review(request).merge_ready
