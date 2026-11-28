@@ -477,9 +477,13 @@ class GitHubDoctorWorker:
             if decision == "rejected":
                 raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
             if any(comment.author == "Telegram owner" for comment in actionable_comments) and decision != "fix_requested":
+                request.review_cycles = max(0, request.review_cycles - 1)
+                self.archive.upsert_request(request)
                 return self._attempt(request, reason="Further-fix decision is no longer current.")
             if decision in ("ready", "approved"):
                 if self.telegram.decision(request, "invalidate") != "invalidated":
+                    request.review_cycles = max(0, request.review_cycles - 1)
+                    self.archive.upsert_request(request)
                     return self._attempt(request, reason="Waiting to invalidate previous Telegram approval before editing.")
         findings = [comment.body for comment in actionable_comments]
         log(request, self.settings, f"codex_fix_cycle_{cycle}", "\n".join(findings), self._checkpoint)
