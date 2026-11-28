@@ -5,7 +5,7 @@ import pytest
 from the_daddy.config import Settings
 from the_daddy.doctor_telegram import TelegramApproval
 from the_daddy.doctor_worker import GitHubDoctorWorker
-from the_daddy.swarmsy_doctor import DoctorRequest, DoctorEdit, JsonDoctorArchive
+from the_daddy.swarmsy_doctor import DoctorRequest, DoctorEdit, DoctorReviewComment, JsonDoctorArchive
 
 REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
 
@@ -107,3 +107,21 @@ def test_outbox_survives_restart_and_deduplicates(tmp_path, monkeypatch, request
     events = [call.args[0] for call in restarted._post.call_args_list if call.args[0]["action"] == "event"]
     assert len(events) == 1
     assert events[0]["event"] == "running"
+
+
+@pytest.mark.parametrize("author, decisions", [
+    ("Codex", ["approved", "unavailable"]),
+    ("Telegram owner", ["unavailable"]),
+])
+def test_wait_only_approval_paths_restore_repair_budget(worker, request_record, author, decisions):
+    worker._stage = Mock()
+    worker.telegram.decision.side_effect = decisions
+    request_record.review_cycles = 3
+    worker.archive.upsert_request(request_record)
+    attempt = worker.apply_review_comment_fixes(
+        request_record, [DoctorReviewComment(author=author, body="Check remaining defect")], 3,
+    )
+    assert not attempt.merge_ready
+    worker._stage.assert_not_called()
+    assert request_record.review_cycles == 2
+    assert worker.archive.get_request(request_record.request_id).review_cycles == 2
