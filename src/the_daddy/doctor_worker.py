@@ -95,18 +95,20 @@ class GitHubDoctorWorker:
         url = f"https://api.github.com/repos/{self.git.github_repo}"
         return self.git._api_request(method, f"{url}/{endpoint}" if endpoint else url, data)
 
-    def _list(self, endpoint: str, *, list_key: str = "") -> list[dict]:
-        items = []
+    def _pages(self, endpoint: str, *, list_key: str = ""):
         separator = "&" if "?" in endpoint else "?"
         for page in range(1, 11):
             response = self._api("GET", f"{endpoint}{separator}per_page=100&page={page}")
             batch = response.get(list_key) if list_key and isinstance(response, dict) else response
             if not isinstance(batch, list):
                 raise RuntimeError("GitHub returned an incomplete review or check response.")
-            items.extend(batch)
+            yield batch
             if len(batch) < 100:
-                return items
+                return
         raise RuntimeError("GitHub review or check response exceeded Doctor's pagination limit.")
+
+    def _list(self, endpoint: str, *, list_key: str = "") -> list[dict]:
+        return [item for batch in self._pages(endpoint, list_key=list_key) for item in batch]
 
     @staticmethod
     def _reference(request: DoctorRequest) -> str:
@@ -894,10 +896,15 @@ class GitHubDoctorWorker:
             if is_moonboys_repo(request.repo_target) and request.deployment_workflow == "cloudflare-pr-release.yml":
                 # GitHub attaches pull_request_target runs to the PR head.
                 # The trusted release workflow carries the merge SHA in its run name.
-                runs = self._list(endpoint, list_key="workflow_runs")
                 title = f"Cloudflare release PR #{request.pr_number} {commit}"
-                matching = [run for run in runs if run.get("display_title") == title
-                            and run.get("event") in {"pull_request_target", "workflow_dispatch"}]
+                matching = []
+                # Runs are returned newest first. Avoid loading older pages
+                # after finding the release or a retry for this exact merge.
+                for batch in self._pages(endpoint, list_key="workflow_runs"):
+                    matching = [run for run in batch if run.get("display_title") == title
+                                and run.get("event") in {"pull_request_target", "workflow_dispatch"}]
+                    if matching:
+                        break
             else:
                 query = urlencode({"head_sha": commit, "branch": request.base_branch, "event": "push"})
                 runs = self._list(f"{endpoint}?{query}", list_key="workflow_runs")

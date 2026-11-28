@@ -107,7 +107,16 @@ def test_website_deploy_tracking_matches_the_production_workflow(tmp_path: Path,
         assert request.deployment_workflow == "pages.yml"
         valid = {**common, "event": "push", "head_sha": commit, "head_branch": "main"}
         unrelated = {**valid, "id": 2, "head_sha": "b" * 40}
-    worker._list = Mock(side_effect=[[valid, unrelated], [{"name": request.deployment_job, "conclusion": "success"}]])
+    jobs = [{"name": request.deployment_job, "conclusion": "success"}]
+    if worker_edit:
+        def release_pages():
+            yield [unrelated]
+            yield [valid]
+            pytest.fail("Lookup must stop at the first matching release page")
+        worker._pages = Mock(return_value=release_pages())
+        worker._list = Mock(return_value=jobs)
+    else:
+        worker._list = Mock(side_effect=[[valid, unrelated], jobs])
     worker.poll_deployment(request)
     assert request.deployment_status == "deployed"
     assert request.deployment_url.endswith("/actions/runs/1")
