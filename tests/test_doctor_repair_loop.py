@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from the_daddy.config import Settings
-from the_daddy.doctor_repair import DoctorWorkspace, RepairLoop
+from the_daddy.doctor_repair import CloudRepairUnavailable, DoctorWorkspace, RepairLoop
 from the_daddy.doctor_worker import CODEX_BOT, GitHubDoctorWorker
 from the_daddy.swarmsy_doctor import DoctorEdit, DoctorRequest, JsonDoctorArchive
 from the_daddy.swarmsy_doctor_queue import main
@@ -376,3 +376,35 @@ def test_local_proposal_cannot_approve_candidate(local_repo):
         loop.run(workspace, request, [], [])
     assert calls
     assert not workspace.diff()
+
+
+@pytest.mark.parametrize("mode", ["passing_local", "failing_local", "no_candidate", "codex_patch", "bad_codex_patch"])
+def test_missing_openai_fallback_requires_passing_scoped_candidate(local_repo, mode):
+    settings = Settings(github_repo=REPO, max_attempts=3, openai_api_key="",
+                        doctor_local_ai=True, doctor_codex_fallback=True)
+    request = DoctorRequest(problem_summary="Fix answer", repo_target=REPO,
+                            source="daddy", allowed_paths=["src/"])
+    workspace = DoctorWorkspace(local_repo, settings)
+    def validate(root):
+        return ("answer = 2" in (root / "src/example.py").read_text(), "test output")
+    loop = RepairLoop(settings, validate, lambda _: None)
+    edit = DoctorEdit(path="src/example.py", old="answer = 0",
+                      new="answer = 1" if mode in ("failing_local", "bad_codex_patch") else "answer = 2")
+    loop.local_api.propose = lambda **kw: (
+        {"verdict": "patch", "candidate_digest": "", "reason": "Fix", "edits": [edit.model_dump()]}
+        if mode in ("passing_local", "failing_local") else None
+    )
+    def unexpected_cloud(**kw):
+        pytest.fail("Missing credentials must not trigger an OpenAI request")
+    loop.api.generate_json = unexpected_cloud
+    options = {"codex_edits": [edit]} if mode in ("codex_patch", "bad_codex_patch") else {}
+    findings = ["Fix remaining defect"] if options else []
+    if mode in ("passing_local", "codex_patch"):
+        edits, digest = loop.run(workspace, request, findings, [], **options)
+        assert edits == [edit] and digest
+        assert request.pending_codex_only is True
+        assert not any(item["event"] == "api_approved" for item in request.repair_log)
+    else:
+        with pytest.raises(CloudRepairUnavailable):
+            loop.run(workspace, request, findings, [], **options)
+        assert request.pending_codex_only is False

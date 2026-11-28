@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock
 
 import httpx
@@ -5,7 +6,8 @@ import pytest
 
 from the_daddy.config import Settings
 from the_daddy.doctor_telegram import TelegramApproval
-from the_daddy.doctor_worker import GitHubDoctorWorker
+from the_daddy.doctor_worker import CODEX_BOT, GitHubDoctorWorker
+from the_daddy.doctor_repair import CloudRepairUnavailable
 from the_daddy.swarmsy_doctor import DoctorRequest, DoctorEdit, DoctorReviewComment, JsonDoctorArchive
 
 REPO = "HODLKONG64/THEY-CALL-ME-THE-DADDY"
@@ -148,3 +150,73 @@ def test_transport_uses_explicit_application_user_agent(tmp_path, monkeypatch, r
     monkeypatch.setattr("the_daddy.doctor_telegram.httpx.Client", client)
     assert TelegramApproval(tmp_path/"archive.json", True).decision(request_record) == "approved"
     assert len(seen) == 1
+
+
+def patch_body(head, path="src/example.py"):
+    return "DOCTOR_PATCH " + head + "\n```json\n" + json.dumps([
+        {"path": path, "old": "b", "new": "c"}
+    ]) + "\n```"
+
+
+@pytest.mark.parametrize("case", ["fresh", "stale", "wrong_head", "human", "protected", "ambiguous", "clean"])
+def test_pending_codex_patch_requires_fresh_authenticated_scoped_proposal(worker, request_record, case):
+    worker.settings.doctor_codex_fallback = True
+    head = request_record.head_sha
+    request_record.codex_patch_requested_head = head
+    anchor = {"id": 1, "body": f"<!-- doctor-patch-request:{head} -->",
+              "created_at": "2026-11-28T00:00:00Z"}
+    bot = {"login": CODEX_BOT, "type": "Bot"}
+    proposal = {"id": 2, "created_at": "2026-11-28T00:00:01Z", "user": bot,
+                "body": patch_body(head)}
+    if case == "stale":
+        proposal["created_at"] = anchor["created_at"]
+    elif case == "wrong_head":
+        proposal["body"] = patch_body("d"*40)
+    elif case == "human":
+        proposal["user"] = {"login": CODEX_BOT, "type": "User"}
+    elif case == "protected":
+        proposal["body"] = patch_body(head, "src/the_daddy/doctor_worker.py")
+    elif case == "clean":
+        proposal["body"] = f"DOCTOR_REVIEW_APPROVED {head}"
+    comments = [anchor, proposal]
+    if case == "ambiguous":
+        comments.append(dict(proposal, id=3))
+    worker._list = Mock(side_effect=lambda endpoint: comments if endpoint == "issues/42/comments" else [])
+    worker.telegram.decision.return_value = "approved"
+    attempt = worker.poll_review(request_record)
+    assert not attempt.merge_ready
+    assert bool(attempt.review_comments) == (case == "fresh")
+    worker._codex_review.assert_not_called()
+    worker.git.merge_pull_request.assert_not_called()
+    assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
+    worker.git.merge_pull_request.assert_not_called()
+
+
+def test_failed_concrete_codex_patch_consumes_cycle(worker, request_record):
+    worker.settings.doctor_codex_fallback = True
+    worker.telegram.decision.return_value = "invalidated"
+    request_record.review_cycles = 2
+    worker._stage = Mock(side_effect=CloudRepairUnavailable("No passing candidate"))
+    worker._request_codex_patch = Mock()
+    with pytest.raises(PermissionError, match="Codex patch did not produce"):
+        worker.apply_review_comment_fixes(request_record, [
+            DoctorReviewComment(author=CODEX_BOT, body=patch_body(request_record.head_sha))
+        ], 2)
+    assert request_record.review_cycles == 2
+    worker._request_codex_patch.assert_not_called()
+    worker.git.merge_pull_request.assert_not_called()
+
+
+def test_waiting_for_codex_patch_preserves_budget(worker, request_record):
+    worker.settings.doctor_codex_fallback = True
+    worker.telegram.decision.return_value = "invalidated"
+    request_record.review_cycles = 2
+    worker._stage = Mock(side_effect=CloudRepairUnavailable("No passing candidate"))
+    worker._request_codex_patch = Mock()
+    attempt = worker.apply_review_comment_fixes(request_record, [
+        DoctorReviewComment(author=CODEX_BOT, body="Fix remaining defect")
+    ], 2)
+    assert not attempt.merge_ready
+    assert request_record.review_cycles == 1
+    assert worker.archive.get_request(request_record.request_id).review_cycles == 1
+    worker._request_codex_patch.assert_called_once_with(request_record)

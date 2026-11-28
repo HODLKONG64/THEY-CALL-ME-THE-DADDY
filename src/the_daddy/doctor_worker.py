@@ -442,6 +442,38 @@ class GitHubDoctorWorker:
         request.review_request_id = int(comment["id"])
         log(request, self.settings, "codex_patch_requested", head, self._checkpoint)
 
+    def _pending_codex_patch(self, request: DoctorRequest) -> list[DoctorReviewComment]:
+        """A patch request is not an approval request, even on the same head."""
+        number = request.pr_number
+        comments = self._list(f"issues/{number}/comments")
+        marker = f"<!-- doctor-patch-request:{request.head_sha} -->"
+        anchor = next((item for item in comments
+                       if item.get("id") == request.review_request_id
+                       and marker in str(item.get("body") or "")), None)
+        if not anchor or not anchor.get("created_at"):
+            return []
+        since = anchor["created_at"]
+        candidates = []
+        reviews = self._list(f"pulls/{number}/reviews")
+        for review in reviews:
+            if (not is_codex(review) or review.get("commit_id") != request.head_sha
+                    or review.get("state") not in {"APPROVED", "COMMENTED", "CHANGES_REQUESTED"}
+                    or (review.get("submitted_at") or "") <= since):
+                continue
+            for item in self._list(f"pulls/{number}/reviews/{int(review['id'])}/comments"):
+                if is_codex(item) and item.get("commit_id") == request.head_sha:
+                    candidates.append(DoctorReviewComment(author=CODEX_BOT, body=str(item.get("body") or "")))
+            candidates.append(DoctorReviewComment(author=CODEX_BOT, body=str(review.get("body") or "")))
+        for item in comments:
+            if is_codex(item) and (item.get("created_at") or "") > since:
+                candidates.append(DoctorReviewComment(author=CODEX_BOT, body=str(item.get("body") or "")))
+        # A standalone patch can include several edits. Ignore explanatory
+        # comments without a patch; reject ambiguous competing patch proposals.
+        valid = [item for item in candidates if self._codex_edits(request, [item])]
+        if len(valid) != 1:
+            return []
+        return valid
+
     def _attempt(self, request: DoctorRequest, **kwargs) -> DoctorRepairAttempt:
         return DoctorRepairAttempt(
             validation_passed=bool(request.head_sha), pr_url=request.swarmsy_pr_url, tests_run=request.tests_run, **kwargs,
@@ -474,6 +506,10 @@ class GitHubDoctorWorker:
             raise PermissionError("The Doctor pull request must be open and ready for review.")
         if self.telegram.enabled:
             decision = self.telegram.decision(request)
+            if decision == "unavailable":
+                request.review_cycles = max(0, request.review_cycles - 1)
+                self.archive.upsert_request(request)
+                return self._attempt(request, reason="Waiting for Telegram before editing.")
             if decision == "rejected":
                 raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
             if any(comment.author == "Telegram owner" for comment in actionable_comments) and decision != "fix_requested":
@@ -499,6 +535,10 @@ class GitHubDoctorWorker:
         except CloudRepairUnavailable:
             if not self.settings.doctor_codex_fallback or request.wiki_link:
                 raise
+            if codex_edits:
+                # A concrete proposal that failed validation consumes its cycle.
+                # Do not reapply it indefinitely or accept approval of the old head.
+                raise PermissionError("Codex patch did not produce a passing candidate; owner review required.") from None
             self._request_codex_patch(request)
             if not codex_edits:
                 # Waiting for a concrete response is not a new repair attempt.
@@ -620,14 +660,21 @@ class GitHubDoctorWorker:
             if self.telegram.enabled:
                 self.telegram.decision(request, "invalidate")
             raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
+        if request.codex_patch_requested_head == request.head_sha:
+            if not self.settings.doctor_codex_fallback:
+                return self._attempt(request, reason="Codex fallback is disabled with an outstanding patch request; merge blocked.")
+            if self.telegram.enabled:
+                decision = self.telegram.decision(request)
+                if decision == "rejected":
+                    raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
+                self.telegram.decision(request, "invalidate")
+            comments = self._pending_codex_patch(request)
+            if comments:
+                return self._attempt(request, review_comments=comments, review_verdict="changes_requested",
+                                     reason="Codex supplied a fresh exact-head repair proposal.")
+            return self._attempt(request, reason="Waiting for concrete exact-head Codex edits; merge blocked.")
         if request.ci_branch and not request.learned_edits:
             status, _, findings = exact_ci(self, request.head_sha, request.ci_branch)
-            if status == "failed" and request.codex_patch_requested_head == request.head_sha:
-                verdict, comments = self._codex_review(request)
-                if verdict == "changes_requested" and self._codex_edits(request, comments):
-                    return self._attempt(request, review_comments=comments, review_verdict=verdict,
-                                         reason="Codex supplied an exact-head repair for the selected CI failure.")
-                return self._attempt(request, reason="Waiting for concrete Codex edits for the reproduced CI failure.")
             return self._attempt(request, review_comments=findings,
                                  reason=f"Selected PR is waiting on its exact-head functional CI failure ({status}).")
         self._request_review(request)
@@ -713,6 +760,8 @@ class GitHubDoctorWorker:
                 or request.head_sha != sha(approved_head)
                 or request.pending_head_sha or not request.review_request_id):
             raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
+        if request.codex_patch_requested_head == request.head_sha:
+            return "", ""
         if self.telegram.enabled:
             # The Brain bridge must use the single shared approval authority.
             # An old bridge that passes a legacy approval cannot bypass this check.
