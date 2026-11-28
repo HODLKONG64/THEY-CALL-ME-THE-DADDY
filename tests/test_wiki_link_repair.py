@@ -62,13 +62,23 @@ def test_doctor_merges_only_the_approved_website_head_with_clean_checks(tmp_path
     assert worker.merge_approved_website_pr(request, head, pr) == ("", "")
     worker._api.assert_not_called()
     worker._ci_review.return_value = (True, [])
-    assert worker.ci_workflow == "full-linux-test-suite.yml"
     assert worker.merge_approved_website_pr(request, head, pr) == ("", "")
     worker._api.assert_not_called()
+    worker.telegram.enabled = True
+    worker.telegram.decision = Mock(return_value="approved")
+    worker._codex_review = Mock(return_value=("approved", []))
+    worker._repo = Mock(return_value=("main", base))
+    worker._api.return_value = pr
+    assert worker.ci_workflow == "full-linux-test-suite.yml"
+    assert worker.merge_approved_website_pr(request, head, pr) == ("", "")
+    worker._api.assert_called_once_with("GET", "pulls/12")
+    worker._api.reset_mock()
     worker._list.return_value = [{"id": 1, "head_sha": head, "head_branch": worker._branch(request),
                                   "event": "workflow_dispatch", "status": "completed", "conclusion": "success"}]
+    worker._api.side_effect = [pr, {"merged": True}]
     assert worker.merge_approved_website_pr(request, head, pr)[0] == "merged"
-    worker._api.assert_called_once_with("PUT", "pulls/12/merge", {"sha": head, "merge_method": "squash"})
+    assert worker._api.call_count == 2
+    worker._api.assert_called_with("PUT", "pulls/12/merge", {"sha": head, "merge_method": "squash"})
 
 
 def test_website_requires_a_github_actions_runtime_image_check(tmp_path: Path):
