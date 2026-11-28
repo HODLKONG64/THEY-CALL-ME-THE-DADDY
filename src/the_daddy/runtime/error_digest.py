@@ -25,7 +25,7 @@ def summarize_errors(events: list[dict[str, Any]] | None = None) -> dict[str, An
 
 def summarize_traceback_excerpt(text: str, max_lines: int = 12) -> dict[str, Any]:
     lines = [line.rstrip() for line in str(text or "").splitlines() if line.strip()]
-    tail = lines[-max_lines:]
+    tail = lines[-max_lines:] if max_lines > 0 else []
     return {
         "line_count": len(lines),
         "excerpt": tail,
