@@ -39,7 +39,7 @@ class TelegramApproval:
         try:
             with httpx.Client(timeout=httpx.Timeout(12, connect=4), trust_env=False,
                               follow_redirects=False) as client:
-                response = client.post(URL, headers={"X-Doctor-Approval-Token": self.token}, json=payload)
+                response = client.post(URL, headers={"X-Doctor-Approval-Token": self.token, "User-Agent": "Moonboys-Doctor/1.0"}, json=payload)
                 response.raise_for_status()
                 data = response.json()
                 return data if isinstance(data, dict) else {}
