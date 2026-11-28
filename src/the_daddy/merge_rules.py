@@ -37,6 +37,17 @@ ALLOWLISTED_RUNTIME_HELPERS = {
     "src/the_daddy/runtime/run_health.py",
 }
 
+PROTECTED_DOCTOR_FILES = PROTECTED_CORE_FILES | {
+    "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
+    "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
+    "src/the_daddy/agents/local_repair.py", "src/the_daddy/agents/codex_repair.py",
+    "src/the_daddy/config.py", "src/the_daddy/doctor_telegram.py",
+    "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
+    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py",
+    "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py",
+    "src/the_daddy/doctor_distillation.py",
+}
+
 
 def _normalize_path(path: str) -> str:
     normalized = (path or "").strip().replace("\\", "/")

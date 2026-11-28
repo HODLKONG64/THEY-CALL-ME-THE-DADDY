@@ -17,10 +17,11 @@ from typing import Callable, Literal
 from openai import OpenAIError
 from pydantic import BaseModel, ValidationError
 
+from .agents.codex_repair import propose_codex_edits
 from .agents.openai_client import OpenAIJSONClient
 from .agents.local_repair import LocalRepairClient
 from .config import Settings
-from .merge_rules import PROTECTED_CORE_FILES
+from .merge_rules import PROTECTED_CORE_FILES, PROTECTED_DOCTOR_FILES
 from .runtime.redaction import sanitize_text
 from .swarmsy_doctor import (
     DoctorEdit,
@@ -490,6 +491,16 @@ class RepairLoop:
                             request.pending_codex_only = True
                             log(request, self.settings, "codex_only_candidate", "Passing local candidate; independent API approval unavailable. Fresh Codex review mandatory.", self.checkpoint)
                             return edits, digest
+                        if (self.settings.doctor_codex_cli_fallback and not codex_edits and not diff
+                                and not edits and findings and request.pr_number and request.head_sha
+                                and workspace.git("rev-parse", "HEAD").strip() == request.head_sha):
+                            evidence = {key: prompt[key] for key in ("problem", "findings", "feedback")}
+                            evidence["files"] = {
+                                path: content for path, content in prompt["files"].items()
+                                if path not in PROTECTED_DOCTOR_FILES
+                            }
+                            if evidence["files"]:
+                                codex_edits = propose_codex_edits(sha(request.head_sha), evidence)
                         if codex_edits and not diff and not edits:
                             try:
                                 workspace.apply(request, codex_edits)
