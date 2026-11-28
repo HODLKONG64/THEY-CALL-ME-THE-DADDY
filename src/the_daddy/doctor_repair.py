@@ -354,6 +354,10 @@ Echo the supplied candidate_digest exactly on approval. Never give review-only f
 when you can give a fix. Preserve behavior outside the repair and its regression tests."""
 
 
+class CloudRepairUnavailable(RuntimeError):
+    pass
+
+
 class RepairLoop:
     def __init__(
         self, settings: Settings, validator: Callable[[Path], tuple[bool, str]],
@@ -369,8 +373,10 @@ class RepairLoop:
         self, workspace: DoctorWorkspace, request: DoctorRequest,
         findings: list[str], remembered: list[DoctorEdit],
         *, require_baseline_failure: bool = False, history: list[dict] | None = None,
+        codex_edits: list[DoctorEdit] | None = None,
     ) -> tuple[list[DoctorEdit], str]:
         edits: list[DoctorEdit] = []
+        request.pending_codex_only = False
         evidence = "\n".join([request.problem_summary, request.feature_hint, *request.allowed_paths,
                              *request.logs[-8:], *findings])
         baseline_valid, baseline_output = self.validator(workspace.root)
@@ -438,6 +444,8 @@ class RepairLoop:
                             if decision is not None:
                                 log(request, self.settings, "local_ai_proposal", "Local proposal received; independent validation required.", self.checkpoint)
                     if decision is None:
+                        if self.settings.doctor_codex_fallback and not self.settings.has_openai:
+                            raise CloudRepairUnavailable("OpenAI credentials unavailable.")
                         response = self.api.generate_json(
                             model=self.settings.openai_model_review if diff else self.settings.openai_model_main,
                             system=system, prompt=serialized, schema=schema,
@@ -447,10 +455,32 @@ class RepairLoop:
                     feedback = "API output did not match the repair contract. Return a valid patch or approval."
                     log(request, self.settings, "api_invalid", feedback, self.checkpoint)
                     continue
-                except OpenAIError as exc:
+                except (OpenAIError, CloudRepairUnavailable) as exc:
                     status = getattr(exc, "status_code", None)
                     feedback = f"OpenAI request failed ({status or type(exc).__name__})."
                     log(request, self.settings, "api_error", feedback, self.checkpoint)
+                    unavailable = isinstance(exc, CloudRepairUnavailable) or status is None or status in {401, 403, 404, 408, 429} or (isinstance(status, int) and status >= 500)
+                    if self.settings.doctor_codex_fallback and unavailable and not request.wiki_link:
+                        if diff and valid and edits:
+                            request.pending_codex_only = True
+                            log(request, self.settings, "codex_only_candidate", "Passing local candidate; independent API approval unavailable. Fresh Codex review mandatory.", self.checkpoint)
+                            return edits, digest
+                        if codex_edits and not diff and not edits:
+                            try:
+                                workspace.apply(request, codex_edits)
+                                candidate_diff = workspace.diff()
+                                if not candidate_diff:
+                                    raise ValueError("Empty Codex candidate.")
+                                passed, output = self.validator(workspace.root)
+                                log(request, self.settings, "codex_patch_validation", output, self.checkpoint)
+                                if passed:
+                                    request.pending_codex_only = True
+                                    log(request, self.settings, "codex_only_candidate", "Passing Codex-supplied patch; fresh review of new commit mandatory.", self.checkpoint)
+                                    return codex_edits, hashlib.sha256(candidate_diff.encode()).hexdigest()
+                            except (ValueError, PermissionError):
+                                pass
+                            workspace.reset()
+                        raise CloudRepairUnavailable("OpenAI unavailable and no passing scoped candidate; concrete Codex edits required.") from exc
                     if status in {401, 403, 404}:
                         raise RuntimeError(feedback) from exc
                     continue
