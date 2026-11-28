@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     openai_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("OPENAI_TIMEOUT_SECONDS", "120")))
 
     # Opt-in local proposal provider; OpenAI remains the independent approval provider.
+    doctor_telegram_required: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_TELEGRAM_APPROVAL_REQUIRED", "false").lower() == "true")
     doctor_codex_fallback: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_CODEX_FALLBACK", "false").lower() == "true")
     doctor_local_ai: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_LOCAL_AI", "false").lower() == "true")
     doctor_local_model: str = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_LOCAL_MODEL", "qwen3:4b-instruct"))
