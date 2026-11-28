@@ -87,8 +87,6 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
             if not active:
                 return {"status": "no_queued_requests", **({"ci_scan": discovery} if discovery is not None else {})}
             request = active[0]
-            if request.status == "queued":
-                telegram.emit(request, "running")
             if request.status == "merged":
                 if request.deployment_status == "pending":
                     worker.poll_deployment(request)

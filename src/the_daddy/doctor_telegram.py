@@ -13,13 +13,10 @@ import httpx
 from .swarmsy_doctor import DoctorRequest
 
 URL = "https://api.cryptomoonboys.com/internal/doctor-approvals"
-EVENTS = {
-    "running", "baseline_validation", "local_ai_proposal", "api_error", "api_invalid",
-    "api_patch", "api_blocked", "api_approved", "codex_only_candidate", "codex_patch_requested",
-    "codex_patch_validation", "patch_rejected", "pr_head_published", "codex_review_requested",
-    "pr_opened_waiting_review", "failed_with_reason", "blocked_needs_human_permission", "merged",
-    "deployment_deployed", "deployment_failed", "post_merge_passed", "post_merge_needs_review",
-    "post_merge_follow_up_queued", "validation_passed", "validation_failed", "codex_fix_cycle",
+TELEGRAM_EVENTS = {
+    "failed_with_reason", "blocked_needs_human_permission", "merged",
+    "deployment_deployed", "deployment_failed", "post_merge_needs_review",
+    "post_merge_follow_up_queued",
 }
 
 
@@ -90,7 +87,7 @@ class TelegramApproval:
             return
 
     def emit(self, request: DoctorRequest, event: str, discriminator: str = "") -> None:
-        if not self.enabled or event not in EVENTS:
+        if not self.enabled or event not in TELEGRAM_EVENTS:
             return
         identity = self.identity(request)
         key = digest([identity["job_key"], request.head_sha, event, discriminator])
@@ -106,17 +103,6 @@ class TelegramApproval:
         except (OSError, sqlite3.Error):
             # Reporting is advisory; merge approval always fails closed independently.
             return
-
-    def checkpoint(self, request: DoctorRequest) -> None:
-        if not request.repair_log:
-            return
-        item = request.repair_log[-1]
-        event = item.get("event", "")
-        if event == "validation":
-            event = "validation_passed" if item.get("detail", "").startswith("Validation passed.") else "validation_failed"
-        elif event.startswith("codex_fix_cycle_"):
-            event = "codex_fix_cycle"
-        self.emit(request, event, digest([item.get("at"), item.get("event"), item.get("detail")]))
 
     def report(self, request: DoctorRequest) -> None:
         self.emit(request, request.status)
