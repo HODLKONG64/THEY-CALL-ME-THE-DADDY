@@ -66,12 +66,15 @@ class GitHubDoctorWorker:
             raise ValueError("GITHUB_REPO must be a valid GitHub owner/repo.")
         self.settings = settings.model_copy(update={"github_repo": repo})
         self.archive = archive
-        self.required_checks = required_checks
+        website = is_moonboys_repo(repo)
+        self.required_checks = set(required_checks)
+        if website:
+            self.required_checks.add("Runtime Image Policy")
         if deploy_workflow and not re.fullmatch(r"[A-Za-z0-9_.-]+\.(?:yml|yaml)", deploy_workflow):
             raise ValueError("Configure Cloudflare tracking with the target workflow file name.")
         self.deploy_workflow = deploy_workflow
         self.deploy_job = deploy_job
-        self.ci_workflow = audit_workflow(repo) if watch_ci else ""
+        self.ci_workflow = audit_workflow(repo) if website or watch_ci else ""
         self.dispatch_ci = dispatch_ci
         self.git = GitBranchExecutor(
             github_token=settings.github_token, github_repo=repo, allowed_target_repos=settings.allowed_target_repos,
@@ -614,7 +617,12 @@ class GitHubDoctorWorker:
         checks = {}
         for run in runs:
             if run.get("head_sha") == head:
+                if (is_moonboys_repo(self.settings.github_repo) and run.get("name") == "Runtime Image Policy"
+                        and (run.get("app") or {}).get("slug") != "github-actions"):
+                    continue
                 checks.setdefault(run["name"], []).append(run)
+        if is_moonboys_repo(self.settings.github_repo):
+            current_statuses.pop("Runtime Image Policy", None)
         failures = []
         for name in sorted(self.required_checks):
             for run in checks.get(name, []):
@@ -780,7 +788,7 @@ class GitHubDoctorWorker:
             return "merge_blocked", "A required GitHub check failed. Review the checks on the pull request."
         if not passed or pr.get("mergeable") is None:
             return "", ""
-        if self.ci_workflow and exact_ci(self, approved_head, self._branch(request))[0] != "passed":
+        if exact_ci(self, approved_head, self._branch(request))[0] != "passed":
             return "", ""
         if pr.get("mergeable") is not True or pr.get("mergeable_state") != "clean":
             return "merge_blocked", "GitHub reports a merge conflict, missing review, or branch rule. Check the pull request."
@@ -805,11 +813,19 @@ class GitHubDoctorWorker:
         if self.ci_workflow:
             request.post_merge_ci = "pending"
             request.post_merge_ci_reason = "Waiting for CI on the exact merge commit."
-        if self.deploy_workflow:
+        if is_moonboys_repo(request.repo_target):
+            if any(edit.path.startswith("workers/moonboys-api/") for edit in request.learned_edits):
+                request.deployment_workflow = "cloudflare-pr-release.yml"
+                request.deployment_job = "release"
+            else:
+                request.deployment_workflow = "pages.yml"
+                request.deployment_job = "deploy"
+        elif self.deploy_workflow:
             request.deployment_workflow = self.deploy_workflow
             request.deployment_job = self.deploy_job
+        if request.deployment_workflow:
             request.deployment_status = "pending"
-            request.deployment_reason = "Waiting for the target's Cloudflare deployment workflow."
+            request.deployment_reason = "Waiting for the target's production deployment workflow."
 
     def _request_ci(self, request: DoctorRequest, commit: str, branch: str, *, merged: bool = False):
         result = exact_ci(self, commit, branch, merged=merged)
@@ -873,11 +889,20 @@ class GitHubDoctorWorker:
         try:
             self._verify_target(request)
             commit = sha(request.merge_sha)
-            query = urlencode({"head_sha": commit, "branch": request.base_branch, "event": "push"})
             workflow = quote(request.deployment_workflow, safe="")
-            runs = self._list(f"actions/workflows/{workflow}/runs?{query}", list_key="workflow_runs")
-            matching = [run for run in runs if run.get("head_sha") == commit and run.get("event") == "push"
-                        and run.get("head_branch") == request.base_branch]
+            endpoint = f"actions/workflows/{workflow}/runs"
+            if is_moonboys_repo(request.repo_target) and request.deployment_workflow == "cloudflare-pr-release.yml":
+                # GitHub attaches pull_request_target runs to the PR head.
+                # The trusted release workflow carries the merge SHA in its run name.
+                runs = self._list(endpoint, list_key="workflow_runs")
+                title = f"Cloudflare release PR #{request.pr_number} {commit}"
+                matching = [run for run in runs if run.get("display_title") == title
+                            and run.get("event") in {"pull_request_target", "workflow_dispatch"}]
+            else:
+                query = urlencode({"head_sha": commit, "branch": request.base_branch, "event": "push"})
+                runs = self._list(f"{endpoint}?{query}", list_key="workflow_runs")
+                matching = [run for run in runs if run.get("head_sha") == commit and run.get("event") == "push"
+                            and run.get("head_branch") == request.base_branch]
             if matching:
                 run = max(matching, key=lambda item: int(item["id"]))
                 run_id = int(run["id"])
@@ -891,11 +916,11 @@ class GitHubDoctorWorker:
                                 and matches[0].get("conclusion") == "success")
                     request.deployment_status = "deployed" if deployed else "failed"
                     request.deployment_reason = (
-                        "Cloudflare deployment job passed for the merged commit." if deployed
-                        else f"Cloudflare job {request.deployment_job!r} did not pass. Workflow conclusion was {run.get('conclusion')}."
+                        "Production deployment job passed for the merged commit." if deployed
+                        else f"Deployment job {request.deployment_job!r} did not pass. Workflow conclusion was {run.get('conclusion')}."
                     )
                 else:
-                    request.deployment_reason = "Cloudflare deployment workflow is running or awaiting approval."
+                    request.deployment_reason = "Production deployment workflow is running or awaiting approval."
         except RuntimeError as exc:
             request.deployment_reason = scrub(str(exc), self.settings)[-1500:]
         except (PermissionError, ValueError) as exc:
