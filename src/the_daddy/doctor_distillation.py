@@ -182,6 +182,91 @@ def checked_checks(checks):
     return checked_list(checks.get("check_runs"))
 
 
+def checked_runs(value):
+    if not isinstance(value, dict):
+        raise ValueError("Missing workflow runs response")
+    return checked_list(value.get("workflow_runs"))
+
+
+def checked_jobs(value):
+    if not isinstance(value, dict):
+        raise ValueError("Missing workflow jobs response")
+    return checked_list(value.get("jobs"))
+
+
+def observed_state(status, conclusion):
+    if status != "completed":
+        return "pending" if status in ("queued", "in_progress", "waiting", "requested", "pending") else "unknown"
+    if conclusion == "success":
+        return "passed"
+    if conclusion in ("failure", "timed_out", "startup_failure", "action_required"):
+        return "failed"
+    return "unknown"
+
+
+def alternative_ci(record, reader, settings, unavailable, previous):
+    """Bounded exact-SHA observations, never a substitute for required merge checks."""
+    sha = record["merge_sha"]
+    evidence = {}
+    prior = previous.get("alternative_ci", {}) if previous.get("merge_sha") == sha else {}
+    runs = prior.get("workflow_runs")
+    cached_runs = {(item["id"], item["attempt"]): item for item in runs or []}
+    if not runs or any(item.get("state") in ("pending", "unknown") or item.get("jobs_unavailable")
+                       or any(job.get("state") in ("pending", "unknown") for job in item.get("jobs", []))
+                       for item in runs):
+        rows = reader.fetch("workflow_runs", f"actions/runs?head_sha={sha}&per_page=20",
+                            checked_runs, unavailable)
+        if rows is not None:
+            runs = []
+            for run in rows[:20]:
+                if run.get("head_sha") != sha or run.get("event") not in ("push", "workflow_dispatch"):
+                    continue
+                run_id, attempt = run.get("id"), run.get("run_attempt")
+                if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:
+                    continue
+                item = {"id": run_id, "attempt": attempt,
+                        "name": scrub(str(run.get("name") or ""), settings)[:100],
+                        "state": observed_state(run.get("status"), run.get("conclusion"))}
+                jobs = reader.fetch("workflow_jobs", f"actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=20",
+                                    checked_jobs, unavailable)
+                if jobs is None:
+                    item["jobs_unavailable"] = True
+                    cached = cached_runs.get((run_id, attempt), {})
+                    if "jobs" in cached:
+                        item["jobs"] = cached["jobs"]
+                else:
+                    item["jobs"] = [{"name": scrub(str(job.get("name") or ""), settings)[:100],
+                                     "state": observed_state(job.get("status"), job.get("conclusion"))}
+                                    for job in jobs[:20] if job.get("head_sha") == sha][:4]
+                runs.append(item)
+                if len(runs) >= 3:
+                    break
+    if runs is not None:
+        evidence["workflow_runs"] = runs
+    statuses = prior.get("commit_statuses")
+    if not statuses or any(item.get("state") in ("pending", "unknown") for item in statuses):
+        rows = reader.fetch("commit_statuses", f"commits/{sha}/statuses?per_page=30",
+                            checked_list, unavailable)
+        if rows is not None:
+            statuses = []
+            seen = set()
+            for row in rows[:30]:
+                identity = row.get("context")
+                if not isinstance(identity, str) or not identity or identity in seen:
+                    continue
+                seen.add(identity)
+                context = scrub(identity, settings)[:100]
+                state = {"success": "passed", "failure": "failed", "error": "failed",
+                         "pending": "pending"}.get(str(row.get("state")), "unknown")
+                statuses.append({"context": context, "state": state})
+                if len(statuses) >= 6:
+                    break
+    if statuses is not None:
+        evidence["commit_statuses"] = statuses
+    record["alternative_ci"] = evidence
+    record["ci_evidence_source"] = "alternative_bounded_sample"
+
+
 def enrich(record, reader, settings, previous=None):
     number, kind = record["number"], record["kind"]
     unavailable = {}
@@ -244,6 +329,8 @@ def enrich(record, reader, settings, previous=None):
                          "conclusion": scrub(str(item.get("conclusion") or "pending"), settings)[:30]}
                         for item in check_rows[:30] if item.get("head_sha") == record["merge_sha"]
                     ][:6]
+                if "merge_checks" in unavailable:
+                    alternative_ci(record, reader, settings, unavailable, previous if same_merge else {})
             else:
                 unavailable["merge_checks"] = "unknown_missing_merge_sha"
         elif detail is not None and record["status"] == "closed_unverified":
@@ -281,7 +368,12 @@ def distill_pending(index, repo, api, *, limit=BATCH):
             old_revision, version, when, retry, complete, cached_record = row[7:]
             rev = revision(raw)
             if old_revision == rev and version == VERSION:
-                if retry and retry > stamp:
+                needs_fallback = False
+                if not complete and cached_record:
+                    cached = json.loads(cached_record)
+                    needs_fallback = (bool(cached.get("merge_sha")) and "merge_checks" in cached.get("unavailable_evidence", {})
+                                      and "alternative_ci" not in cached)
+                if retry and retry > stamp and not needs_fallback:
                     continue
                 if complete and when > (now - timedelta(days=30)).isoformat(timespec="seconds"):
                     skipped += 1
@@ -414,7 +506,8 @@ def budget_evidence(records, settings, *, max_bytes=MAX_CONTEXT_BYTES):
             record["lessons"] = list(dict.fromkeys(lines))[:2]
         for field in ("discussion_notes_unverified", "review_findings_unverified", "technical_notes",
                       "lessons", "affected_paths", "observed_merge_checks", "reported_verification",
-                      "reported_solution", "reported_root_cause", "reported_problem", "reported_failure"):
+                      "reported_solution", "reported_root_cause", "reported_problem", "reported_failure",
+                      "alternative_ci"):
             if _serialized_size(record) <= MAX_RECORD_BYTES:
                 break
             record.pop(field, None)
