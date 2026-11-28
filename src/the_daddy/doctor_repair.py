@@ -257,7 +257,32 @@ class ContainerValidator:
         if not self.command:
             raise ValueError("Doctor validation requires a trusted test command.")
 
+    @staticmethod
+    def _container_user() -> str:
+        # Rootless Docker maps container UID/GID 0 to the daemon's
+        # unprivileged host account, not to host root. The host UID inside
+        # that namespace instead maps to a subordinate UID.
+        # Query the actual selected daemon, never infer from a socket name.
+        try:
+            result = subprocess.run(
+                ["docker", "info", "--format", "{{json .SecurityOptions}}"],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+            options = json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise RuntimeError("Doctor could not verify Docker security mode.") from exc
+        if not isinstance(options, list) or not all(isinstance(item, str) for item in options):
+            raise RuntimeError("Doctor received invalid Docker security options.")
+        if "name=rootless" in options:
+            if os.getuid() == 0 or os.getgid() == 0:
+                raise RuntimeError("Rootless validation requires an unprivileged host worker.")
+            return "0:0"
+        if os.getuid() == 0 or os.getgid() == 0:
+            raise RuntimeError("Rootful validation requires an unprivileged host worker.")
+        return f"{os.getuid()}:{os.getgid()}"
+
     def __call__(self, root: Path) -> tuple[bool, str]:
+        user = self._container_user()
         name = f"doctor-validation-{uuid.uuid4().hex}"
         with tempfile.TemporaryDirectory(prefix="doctor-check-") as scratch, tempfile.TemporaryFile() as output:
             copy = Path(scratch) / "src"
@@ -267,7 +292,7 @@ class ContainerValidator:
                 "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=512m",
                 "--cap-drop=ALL", "--security-opt=no-new-privileges",
                 "--memory=2g", "--pids-limit=128", "--cpus=2", "--log-driver=none",
-                "--user", f"{os.getuid()}:{os.getgid()}", "--env", "HOME=/tmp",
+                "--user", user, "--env", "HOME=/tmp",
                 "--mount", f"type=bind,src={copy},dst=/workspace",
                 "--workdir", "/workspace", "--entrypoint", self.command[0], self.image, *self.command[1:],
             ]
