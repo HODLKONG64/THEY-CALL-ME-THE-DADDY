@@ -22,6 +22,12 @@ Use `--process-once` to process one queue entry or check one pending PR. Use `--
 - For configured Cloudflare Workers, the [deployment workflow and tracking setup](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md#cloudflare-worker-deployment) can ship and verify a reviewed merge.
 - The legacy `the_daddy.cli` engine remains available for diagnostics and manual PR review. The queue worker handles automatic review follow-up and merge.
 
+## Codex CLI repair fallback
+
+Set both `DADDY_DOCTOR_CODEX_FALLBACK=true` and `DADDY_DOCTOR_CODEX_CLI_FALLBACK=true` to use the authenticated Codex CLI when Doctor's OpenAI repair client is unavailable and an existing PR has actionable findings. Check `codex login status` as the Doctor service account before enabling it. The CLI runs in an empty directory with shell tools disabled and receives only redacted findings, validation output and scoped source snippets. Doctor checks the proposal against the exact PR head, applies it in the isolated checkout, and validates it. Every revised head still needs fresh Codex review, required CI and exact-commit Telegram approval.
+
+The CLI needs its own working OpenAI connection and writable Codex state directory. A CLI failure leaves the repair blocked for owner review. Requests already waiting on a legacy GitHub patch comment stay parked. Keep the CLI flag off until the isolated outage test passes on that host.
+
 ## Website support and CI tracking
 
 The Brain sends approved website repair cases to the website-scoped Doctor service. Doctor reproduces the failure, tests the repair in isolation and requests Codex review. The owner can approve the exact reviewed commit in `@WIKICOMSBOT`. [Website support setup](https://github.com/HODLKONG64/the-brain/blob/main/support-ops/README.md)

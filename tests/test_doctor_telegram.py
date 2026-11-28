@@ -252,3 +252,18 @@ def test_waiting_for_codex_patch_preserves_budget(worker, request_record):
     assert request_record.review_cycles == 1
     assert worker.archive.get_request(request_record.request_id).review_cycles == 1
     worker._request_codex_patch.assert_called_once_with(request_record)
+
+
+def test_cli_failure_blocks_instead_of_requesting_legacy_patch(worker, request_record):
+    worker.settings.doctor_codex_fallback = True
+    worker.settings.doctor_codex_cli_fallback = True
+    worker.telegram.decision.return_value = "invalidated"
+    worker._stage = Mock(side_effect=CloudRepairUnavailable("No passing candidate"))
+    worker._request_codex_patch = Mock()
+    worker._publish = Mock()
+    with pytest.raises(PermissionError, match="Codex CLI fallback did not produce a passing candidate"):
+        worker.apply_review_comment_fixes(request_record, [
+            DoctorReviewComment(author=CODEX_BOT, body="Fix remaining defect")
+        ], 1)
+    worker._request_codex_patch.assert_not_called()
+    worker._publish.assert_not_called()

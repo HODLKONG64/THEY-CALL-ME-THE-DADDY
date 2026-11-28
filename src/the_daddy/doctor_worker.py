@@ -19,21 +19,13 @@ from .doctor_telegram import TelegramApproval
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
 from .doctor_repair import CloudRepairUnavailable, ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
-from .merge_rules import PROTECTED_CORE_FILES
+from .merge_rules import PROTECTED_DOCTOR_FILES as PROTECTED_FILES
 from .swarmsy_doctor import (
     DoctorEdit, DoctorRepairAttempt, DoctorRequest, DoctorReviewComment, JsonDoctorArchive, is_moonboys_repo, utc_now_iso,
 )
 
 CODEX_BOT = "chatgpt-codex-connector[bot]"
 CODEX_SUMMARY = re.compile(r"^<!-- codex-review-state:v1 (\{[^\n]+\}) -->$", re.MULTILINE)
-PROTECTED_FILES = PROTECTED_CORE_FILES | {
-    "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
-    "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
-    "src/the_daddy/agents/local_repair.py", "src/the_daddy/config.py",
-    "src/the_daddy/doctor_telegram.py",
-    "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
-    "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py", "src/the_daddy/doctor_distillation.py",
-}
 
 
 def is_codex(item: dict) -> bool:
@@ -544,6 +536,10 @@ class GitHubDoctorWorker:
                 # A concrete proposal that failed validation consumes its cycle.
                 # Do not reapply it indefinitely or accept approval of the old head.
                 raise PermissionError("Codex patch did not produce a passing candidate; owner review required.") from None
+            if self.settings.doctor_codex_cli_fallback:
+                raise PermissionError(
+                    "Codex CLI fallback did not produce a passing candidate; check CLI authentication and owner review."
+                ) from None
             self._request_codex_patch(request)
             if not codex_edits:
                 # Waiting for a concrete response is not a new repair attempt.
