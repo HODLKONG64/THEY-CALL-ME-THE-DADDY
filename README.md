@@ -17,10 +17,17 @@ Use `--process-once` to process one queue entry or check one pending PR. Use `--
 ## Target repositories and merging
 
 - `DADDY_ALLOWED_TARGET_REPOS` defaults to `HODLKONG64/THEY-CALL-ME-THE-DADDY`. Set `GITHUB_REPO` to the target and explicitly allowlist SWARMSY to repair it.
-- Doctor can merge its PR after a completed Codex review of the current commit, all configured CI checks pass, and GitHub permits the merge. Changes to protected files require a manual merge.
+- For the VPS rollout, every Doctor-managed merge requires owner approval in the private `@WIKICOMSBOT` chat. **Approve merge** binds approval to the repository, PR, reviewed head and validated base. Doctor rechecks the decision, completed Codex review, configured CI and GitHub merge rules before merging. Protected paths may still require a manual merge.
+- **Request further fix** returns the repair to review and invalidates the prior approval. **Reject** blocks the managed merge. A revised head needs fresh review, CI and owner approval. See [the rollout and remaining checks](https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY/issues/113).
 - `DADDY_SWARMSY_AUTO_MERGE` defaults to `false`. SWARMSY requests still get tested, published and reviewed in this mode.
 - For configured Cloudflare Workers, the [deployment workflow and tracking setup](docs/SWARMSY_DOCTOR_NO_MIDDLEMAN.md#cloudflare-worker-deployment) can ship and verify a reviewed merge.
 - The legacy `the_daddy.cli` engine remains available for diagnostics and manual PR review. The queue worker handles automatic review follow-up and merge.
+
+### VPS validation and repair providers
+
+The primary VPS Doctor uses isolated rootless Docker validation. The primary supervisor has opt-in local Qwen3 (`qwen3:4b-instruct`) and Codex fallback enabled. If the API review is unavailable, a candidate that passed local validation can be published for independent Codex review. A pending Codex edit blocks merging the current head. Accepted edits must match the current reviewed commit and pass validation again. The website worker uses its existing provider configuration.
+
+[PR #119](https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY/pull/119) verified a real Doctor self-repair through exact-head Codex review, Telegram approval, and a merge into `main`. The fix gives an empty traceback excerpt for zero or negative limits and preserves positive-limit behavior. [Doctor CI passed on merge commit `d6a7677`](https://github.com/HODLKONG64/THEY-CALL-ME-THE-DADDY/actions/runs/46100479230).
 
 ## Website support and CI tracking
 
