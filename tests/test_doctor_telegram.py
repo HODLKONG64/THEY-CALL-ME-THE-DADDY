@@ -1,5 +1,6 @@
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from the_daddy.config import Settings
@@ -125,3 +126,25 @@ def test_wait_only_approval_paths_restore_repair_budget(worker, request_record, 
     worker._stage.assert_not_called()
     assert request_record.review_cycles == 2
     assert worker.archive.get_request(request_record.request_id).review_cycles == 2
+
+
+def test_transport_uses_explicit_application_user_agent(tmp_path, monkeypatch, request_record):
+    monkeypatch.setenv("DOCTOR_APPROVAL_TOKEN", "a"*64)
+    real_client = httpx.Client
+    seen = []
+
+    def handler(req):
+        assert req.headers["User-Agent"] == "Moonboys-Doctor/1.0"
+        assert req.headers["X-Doctor-Approval-Token"] == "a"*64
+        seen.append(req)
+        return httpx.Response(200, json={"state": "approved", "head_sha": request_record.head_sha,
+                                         "base_sha": request_record.base_sha, "revision": 1})
+
+    def client(**kwargs):
+        assert kwargs["trust_env"] is False
+        assert kwargs["follow_redirects"] is False
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr("the_daddy.doctor_telegram.httpx.Client", client)
+    assert TelegramApproval(tmp_path/"archive.json", True).decision(request_record) == "approved"
+    assert len(seen) == 1
