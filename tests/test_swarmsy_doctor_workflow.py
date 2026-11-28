@@ -353,6 +353,10 @@ def test_queue_cli_leaves_request_queued_when_only_noop_worker(monkeypatch, tmp_
     monkeypatch.setenv("DADDY_DOCTOR_ARCHIVE_FILE", str(archive_path))
     monkeypatch.setenv("DADDY_SWARMSY_REVIEW_MAX_CYCLES", "not-an-int")
     monkeypatch.delenv("DADDY_ALLOWED_TARGET_REPOS", raising=False)
+    monkeypatch.setenv("GITHUB_REPO", request.repo_target)
+    monkeypatch.setattr("the_daddy.swarmsy_doctor_queue._worker", lambda settings, archive: None)
+    monkeypatch.setenv("DADDY_DOCTOR_TELEGRAM_APPROVAL_REQUIRED", "false")
+    monkeypatch.setenv("DADDY_DOCTOR_WATCH_CI", "false")
 
     exit_code = doctor_queue_main(["--process-once"])
     payload = json.loads(capsys.readouterr().out)
