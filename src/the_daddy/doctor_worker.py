@@ -746,8 +746,7 @@ class GitHubDoctorWorker:
         if not outcome or outcome.get("merged") is not True:
             return False
         self._record_merge(request, outcome["sha"], request.base_branch)
-        if self.telegram.enabled:
-            self.telegram.decision(request, "merged")
+        self.telegram.record_merge(request)
         return True
 
     def merge_approved_website_pr(
@@ -795,8 +794,9 @@ class GitHubDoctorWorker:
             raise
         if not isinstance(result, dict) or result.get("merged") is not True:
             return "merge_blocked", "GitHub did not confirm the merge. Check the pull request."
-        if self.telegram.enabled:
-            self.telegram.decision(request, "merged")
+        if result.get("sha"):
+            request.merge_sha = sha(result["sha"])
+            self.telegram.record_merge(request)
         return "merged", "GitHub merged the commit you approved in Telegram."
 
     def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:

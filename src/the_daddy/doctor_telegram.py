@@ -68,7 +68,26 @@ class TelegramApproval:
     def _db(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.execute("CREATE TABLE IF NOT EXISTS outbox (event_key TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0)")
+        db.execute("CREATE TABLE IF NOT EXISTS merge_receipts (receipt_key TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0)")
         return db
+
+    def record_merge(self, request: DoctorRequest) -> None:
+        if not self.enabled or not request.pr_number or not all(
+            re.fullmatch(r"[a-f0-9]{40}", commit)
+            for commit in (request.head_sha, request.base_sha, request.merge_sha)
+        ):
+            return
+        payload = {"action": "merged", **self.identity(request), "merge_sha": request.merge_sha}
+        try:
+            db = self._db()
+            try:
+                with db:
+                    db.execute("INSERT OR IGNORE INTO merge_receipts(receipt_key,payload) VALUES(?,?)",
+                               (digest(payload), json.dumps(payload)))
+            finally:
+                db.close()
+        except (OSError, sqlite3.Error):
+            return
 
     def emit(self, request: DoctorRequest, event: str, discriminator: str = "") -> None:
         if not self.enabled or event not in EVENTS:
@@ -106,7 +125,7 @@ class TelegramApproval:
         if request.post_merge_ci in ("passed", "needs_review", "follow_up_queued"):
             self.emit(request, "post_merge_" + request.post_merge_ci, request.merge_sha)
         if request.status == "merged":
-            self.decision(request, "merged")
+            self.record_merge(request)
 
     def flush(self) -> None:
         if not self.enabled or not self.token:
@@ -114,6 +133,16 @@ class TelegramApproval:
         try:
             db = self._db()
             try:
+                for key, raw in db.execute("SELECT receipt_key,payload FROM merge_receipts WHERE sent=0 ORDER BY attempts,rowid LIMIT 8").fetchall():
+                    receipt = json.loads(raw)
+                    response = self._post(receipt)
+                    recorded = response.get("state") == "merged" and all(
+                        response.get(field) == receipt[field] for field in ("head_sha", "base_sha", "merge_sha")
+                    )
+                    terminal = response.get("state") in {"missing", "rejected", "fix_requested", "invalidated"}
+                    with db:
+                        db.execute("UPDATE merge_receipts SET sent=?,attempts=attempts+1 WHERE receipt_key=?",
+                                   (int(recorded or terminal), key))
                 for key, raw in db.execute("SELECT event_key,payload FROM outbox WHERE sent=0 ORDER BY rowid LIMIT 8").fetchall():
                     if self._post(json.loads(raw)).get("ok") is not True:
                         break

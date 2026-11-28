@@ -112,6 +112,42 @@ def test_outbox_survives_restart_and_deduplicates(tmp_path, monkeypatch, request
     assert events[0]["event"] == "running"
 
 
+def test_merge_receipt_survives_restart_and_requires_exact_ack(tmp_path, monkeypatch, request_record):
+    monkeypatch.setenv("DOCTOR_APPROVAL_TOKEN", "a"*64)
+    path = tmp_path / "archive.json"
+    request_record.merge_sha = "f"*40
+    client = TelegramApproval(path, True)
+    client.record_merge(request_record)
+    client.record_merge(request_record)
+    client._post = Mock(return_value={})
+    client.flush()
+
+    restarted = TelegramApproval(path, True)
+    ack = {"state": "merged", "head_sha": request_record.head_sha, "base_sha": request_record.base_sha}
+    restarted._post = Mock(return_value=ack)
+    restarted.flush()
+    restarted._post.return_value = {**ack, "merge_sha": request_record.merge_sha}
+    restarted.flush()
+    restarted.flush()
+    receipts = [call.args[0] for call in restarted._post.call_args_list if call.args[0]["action"] == "merged"]
+    assert receipts == [
+        {"action": "merged", **restarted.identity(request_record), "merge_sha": request_record.merge_sha}
+    ] * 2
+
+
+def test_unacknowledged_merge_receipts_do_not_starve_new_ones(tmp_path, monkeypatch, request_record):
+    monkeypatch.setenv("DOCTOR_APPROVAL_TOKEN", "a"*64)
+    client = TelegramApproval(tmp_path / "archive.json", True)
+    for number in range(1, 10):
+        client.record_merge(request_record.model_copy(update={"pr_number": number, "merge_sha": "f"*40}))
+    client._post = Mock(return_value={})
+    client.flush()
+    client.flush()
+    attempts = [call.args[0]["pr_number"] for call in client._post.call_args_list
+                if call.args[0]["action"] == "merged"]
+    assert attempts[:9] == list(range(1, 10))
+
+
 @pytest.mark.parametrize("author, decisions", [
     ("Codex", ["approved", "unavailable"]),
     ("Telegram owner", ["unavailable"]),
