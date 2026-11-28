@@ -135,6 +135,19 @@ def test_merge_receipt_survives_restart_and_requires_exact_ack(tmp_path, monkeyp
     ] * 2
 
 
+def test_unacknowledged_merge_receipts_do_not_starve_new_ones(tmp_path, monkeypatch, request_record):
+    monkeypatch.setenv("DOCTOR_APPROVAL_TOKEN", "a"*64)
+    client = TelegramApproval(tmp_path / "archive.json", True)
+    for number in range(1, 10):
+        client.record_merge(request_record.model_copy(update={"pr_number": number, "merge_sha": "f"*40}))
+    client._post = Mock(return_value={})
+    client.flush()
+    client.flush()
+    attempts = [call.args[0]["pr_number"] for call in client._post.call_args_list
+                if call.args[0]["action"] == "merged"]
+    assert attempts[:9] == list(range(1, 10))
+
+
 @pytest.mark.parametrize("author, decisions", [
     ("Codex", ["approved", "unavailable"]),
     ("Telegram owner", ["unavailable"]),

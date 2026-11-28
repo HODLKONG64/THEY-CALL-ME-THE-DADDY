@@ -68,7 +68,7 @@ class TelegramApproval:
     def _db(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.execute("CREATE TABLE IF NOT EXISTS outbox (event_key TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0)")
-        db.execute("CREATE TABLE IF NOT EXISTS merge_receipts (receipt_key TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0)")
+        db.execute("CREATE TABLE IF NOT EXISTS merge_receipts (receipt_key TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0)")
         return db
 
     def record_merge(self, request: DoctorRequest) -> None:
@@ -133,16 +133,16 @@ class TelegramApproval:
         try:
             db = self._db()
             try:
-                for key, raw in db.execute("SELECT receipt_key,payload FROM merge_receipts WHERE sent=0 ORDER BY rowid LIMIT 8").fetchall():
+                for key, raw in db.execute("SELECT receipt_key,payload FROM merge_receipts WHERE sent=0 ORDER BY attempts,rowid LIMIT 8").fetchall():
                     receipt = json.loads(raw)
                     response = self._post(receipt)
                     recorded = response.get("state") == "merged" and all(
                         response.get(field) == receipt[field] for field in ("head_sha", "base_sha", "merge_sha")
                     )
                     terminal = response.get("state") in {"missing", "rejected", "fix_requested", "invalidated"}
-                    if recorded or terminal:
-                        with db:
-                            db.execute("UPDATE merge_receipts SET sent=1 WHERE receipt_key=?", (key,))
+                    with db:
+                        db.execute("UPDATE merge_receipts SET sent=?,attempts=attempts+1 WHERE receipt_key=?",
+                                   (int(recorded or terminal), key))
                 for key, raw in db.execute("SELECT event_key,payload FROM outbox WHERE sent=0 ORDER BY rowid LIMIT 8").fetchall():
                     if self._post(json.loads(raw)).get("ok") is not True:
                         break
