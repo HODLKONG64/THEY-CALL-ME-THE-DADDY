@@ -326,6 +326,13 @@ class GitHubDoctorWorker:
                     "The repair changes no Worker configuration or D1 schema.\n\n"
                     "**Merge/deploy/migrate remains pending GK approval.**"
                 )
+            if request.rollback_of:
+                body = (
+                    f"Checked revert for Telegram case #{request.request_id.split('-')[1]}. "
+                    f"Doctor verified that the repaired files are restored to their previous contents "
+                    f"and passed isolated validation against `{request.pending_base_sha}`. "
+                    "The revert requires fresh Codex, Brain and GitHub CI checks before merging."
+                )
             if request.pending_codex_only:
                 body = body.replace("and obtained an API review. ", ". OpenAI approval unavailable; ")\
                     .replace("and obtained a separate API review of the candidate. ", "OpenAI approval unavailable. ")
@@ -943,6 +950,8 @@ class GitHubDoctorWorker:
             if decision != "approved":
                 return "", ""
         elif self.telegram.decision(request) != "approved":
+            return "", ""
+        if self.settings.doctor_release_review_required and self.brain_reviews.read(request)[0] != "approved":
             return "", ""
         try:
             result = self._api("PUT", f"pulls/{request.pr_number}/merge",

@@ -1,6 +1,7 @@
 """Persist Brain's verdict independently of the Doctor queue archive."""
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Literal
 
@@ -26,7 +27,7 @@ class BrainReviewStore:
         if not self.path.is_file():
             return "pending", ""
         try:
-            with sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=3) as connection:
+            with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)) as connection:
                 row = connection.execute(
                     "SELECT verdict, reason FROM reviews WHERE repo=? AND request_id=? AND pr=? AND head=? AND base=?",
                     self._identity(request),
@@ -38,7 +39,7 @@ class BrainReviewStore:
     def record(self, request: DoctorRequest, verdict: BrainVerdict, reason: str) -> None:
         if verdict not in ("approved", "changes_requested") or not reason.strip():
             raise ValueError("Invalid Brain review verdict.")
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with closing(sqlite3.connect(self.path, timeout=5)) as connection, connection:
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS reviews (
                     repo TEXT NOT NULL, request_id TEXT NOT NULL, pr INTEGER NOT NULL,
@@ -47,6 +48,9 @@ class BrainReviewStore:
                 )
             """)
             connection.execute(
-                "INSERT OR IGNORE INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?)",
+                """INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(repo, request_id, pr, head, base) DO UPDATE
+                   SET verdict=excluded.verdict, reason=excluded.reason
+                   WHERE reviews.verdict='approved' AND excluded.verdict='changes_requested'""",
                 (*self._identity(request), verdict, reason[:1000]),
             )

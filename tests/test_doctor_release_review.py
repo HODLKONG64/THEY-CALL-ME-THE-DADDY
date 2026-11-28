@@ -32,6 +32,9 @@ def test_brain_verdict_is_exact_and_persistent(release):
     assert store.read(request) == ("approved", "Change remains in scope.")
     assert store.read(request.model_copy(update={"head_sha": "1" * 40}))[0] == "pending"
     assert store.read(request.model_copy(update={"base_sha": "2" * 40}))[0] == "pending"
+    store.record(request, "changes_requested", "Withdrawal after further review.")
+    store.record(request, "approved", "Delayed approval.")
+    assert store.read(request) == ("changes_requested", "Withdrawal after further review.")
 
 
 def test_brain_verdict_is_required_before_telegram_options(release, monkeypatch):
