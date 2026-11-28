@@ -243,3 +243,23 @@ The existing validator has per-container CPU, RAM and process limits.
 Shared aggregate test scheduling, actual repair smoke tests and cold boot
 verification remain separate acceptance gates. Never start old WSL watchers
 while the VPS workers are active.
+
+
+### Private Telegram approval rollout
+
+The optional DADDY_DOCTOR_TELEGRAM_APPROVAL_REQUIRED=true policy requires a
+current owner decision for each exact repository, PR, head and validated base.
+Set it in every applicable worker and recovery environment after the reviewed
+website migration and Worker release. Configure the same separate
+DOCTOR_APPROVAL_TOKEN in the Worker and root-only VPS environment; never
+commit or print it. With the policy enabled, missing credentials, transport
+failure and stale decisions prevent automated merges. Existing scope,
+protected-file, CI, Codex and repository policies remain mandatory. The Brain
+support bridge must be upgraded with the Doctor runtime to retire duplicate
+legacy merge prompts. Reject retains the PR; Further Fix consumes the existing
+bounded review budget and needs a substantive validated new commit and new
+approval. The local SQLite progress outbox retries on idle polls; delivery is
+at least once, not exactly once. Progress does not include raw repair logs.
+Pause old workers during rollout, verify the effective policy without exposing
+secrets, and do not enable the older recovery runtime until it also enforces
+the policy. See issue #113 for acceptance tests and coordinated release.

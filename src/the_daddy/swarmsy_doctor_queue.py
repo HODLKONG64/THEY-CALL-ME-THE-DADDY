@@ -15,6 +15,7 @@ from .doctor_history import HistoryIndex, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import sync_shared
 from .doctor_diagnostics import report
 from .doctor_distillation import distill_pending, coverage
+from .doctor_telegram import TelegramApproval
 from .git_tools import GitBranchExecutor
 from .swarmsy_doctor import (
     SWARMSY_REPO,
@@ -62,6 +63,8 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
     watch_ci = _watch_ci() and bool(audit_workflow(settings.github_repo))
     try:
         with archive_lock(lock, blocking=False):
+            telegram = TelegramApproval(archive.path, settings.doctor_telegram_required)
+            telegram.flush()
             try:
                 active = archive.active_requests(settings.github_repo, include_post_merge_ci=watch_ci)
             except ValueError:
@@ -84,6 +87,8 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
             if not active:
                 return {"status": "no_queued_requests", **({"ci_scan": discovery} if discovery is not None else {})}
             request = active[0]
+            if request.status == "queued":
+                telegram.emit(request, "running")
             if request.status == "merged":
                 if request.deployment_status == "pending":
                     worker.poll_deployment(request)
@@ -101,6 +106,8 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
                     swarmsy_auto_merge=settings.swarmsy_auto_merge, max_review_cycles=_max_review_cycles(),
                 )
                 result = consumer.process_request(request)
+            telegram.report(result)
+            telegram.flush()
             return {
                 "status": result.status, "request_id": result.request_id, "archive_id": result.archive_id,
                 "pr_url": result.swarmsy_pr_url, "reason": scrub(result.final_reason, settings),

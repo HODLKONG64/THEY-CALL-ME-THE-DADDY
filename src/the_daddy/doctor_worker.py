@@ -15,6 +15,7 @@ from .config import Settings, _normalize_repo_slug
 from .doctor_history import HistoryIndex, local_lessons, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import shared_search
 from .doctor_distillation import retrieve, budget_evidence
+from .doctor_telegram import TelegramApproval
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
 from .doctor_repair import CloudRepairUnavailable, ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
@@ -29,6 +30,7 @@ PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
     "src/the_daddy/agents/local_repair.py", "src/the_daddy/config.py",
+    "src/the_daddy/doctor_telegram.py",
     "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
     "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py", "src/the_daddy/doctor_distillation.py",
 }
@@ -75,11 +77,16 @@ class GitHubDoctorWorker:
             github_token=settings.github_token, github_repo=repo, allowed_target_repos=settings.allowed_target_repos,
         )
         validator = ContainerValidator(validation_image, validation_command, settings.run_timeout_seconds)
-        self.repair = RepairLoop(self.settings, validator, self.archive.upsert_request)
+        self.telegram = TelegramApproval(archive.path, settings.doctor_telegram_required)
+        self.repair = RepairLoop(self.settings, validator, self._checkpoint)
         self.history_repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), repo)
         self.shared_repos = shared_repo_scope(repo)
         self.history_enabled = os.getenv("DADDY_DOCTOR_HISTORY_ENABLED", "").lower() == "true"
         self.history = HistoryIndex(archive.path.with_suffix(".history.sqlite3"), self.settings)
+
+    def _checkpoint(self, request: DoctorRequest) -> None:
+        self.archive.upsert_request(request)
+        self.telegram.checkpoint(request)
 
     def _api(self, method: str, endpoint: str, data: dict | None = None):
         url = f"https://api.github.com/repos/{self.git.github_repo}"
@@ -209,13 +216,13 @@ class GitHubDoctorWorker:
             except (RuntimeError, OSError, ValueError, sqlite3.Error):
                 log(request, self.settings, "history_unavailable",
                     "GitHub history index unavailable; proceeding with local evidence.",
-                    self.archive.upsert_request)
+                    self._checkpoint)
         if os.getenv("DADDY_DOCTOR_INTELLIGENCE_BUCKET", "").strip():
             try:
                 evidence.extend(shared_search(self.history, self.settings, request, self.shared_repos))
             except (RuntimeError, OSError, ValueError, sqlite3.Error):
                 log(request, self.settings, "shared_history_unavailable",
-                    "Shared advisory cache unavailable; proceeding with local evidence.", self.archive.upsert_request)
+                    "Shared advisory cache unavailable; proceeding with local evidence.", self._checkpoint)
         return budget_evidence(evidence, self.settings)
 
     def _memory(self, request: DoctorRequest) -> list[DoctorEdit]:
@@ -247,7 +254,7 @@ class GitHubDoctorWorker:
                 history = self._historical_evidence(request) if not request.wiki_link else []
                 if history:
                     options["history"] = history
-                    log(request, self.settings, "history_retrieved", f"Retrieved {len(history)} advisory records.", self.archive.upsert_request)
+                    log(request, self.settings, "history_retrieved", f"Retrieved {len(history)} advisory records.", self._checkpoint)
                 if codex_edits:
                     options["codex_edits"] = codex_edits
                 edits, digest = self.repair.run(workspace, request, findings, remembered, **options)
@@ -266,7 +273,7 @@ class GitHubDoctorWorker:
             request.pending_edits = edits
             request.delivery_retries = 0
             request.tests_run = list(dict.fromkeys([*request.tests_run, shlex.join(self.repair.validator.command)]))
-            log(request, self.settings, "delivery_prepared", request.pending_head_sha, self.archive.upsert_request)
+            log(request, self.settings, "delivery_prepared", request.pending_head_sha, self._checkpoint)
             workspace.push(self._branch(request), request.pending_head_sha, request.head_sha)
 
     def _publish(self, request: DoctorRequest, base_branch: str) -> DoctorRepairAttempt:
@@ -336,7 +343,7 @@ class GitHubDoctorWorker:
         request.pending_head_sha = request.pending_base_sha = request.pending_diff_digest = ""
         request.pending_edits = []
         request.review_request_id = 0
-        log(request, self.settings, "pr_head_published", request.head_sha, self.archive.upsert_request)
+        log(request, self.settings, "pr_head_published", request.head_sha, self._checkpoint)
         self._request_review(request)
         return self._attempt(request, reason="Waiting for Codex to review the validated commit.")
 
@@ -379,7 +386,7 @@ class GitHubDoctorWorker:
                          if item.get("body") == body and (item.get("user") or {}).get("login") == actor), None)
         comment = existing or self._api("POST", endpoint, {"body": body})
         request.review_request_id = int(comment["id"])
-        log(request, self.settings, "codex_review_requested", head, self.archive.upsert_request)
+        log(request, self.settings, "codex_review_requested", head, self._checkpoint)
 
     @staticmethod
     def _patch_contract(head: str) -> str:
@@ -433,7 +440,7 @@ class GitHubDoctorWorker:
         request.codex_patch_requested_head = head
         # A new review request must not use a reaction on the old request.
         request.review_request_id = int(comment["id"])
-        log(request, self.settings, "codex_patch_requested", head, self.archive.upsert_request)
+        log(request, self.settings, "codex_patch_requested", head, self._checkpoint)
 
     def _attempt(self, request: DoctorRequest, **kwargs) -> DoctorRepairAttempt:
         return DoctorRepairAttempt(
@@ -465,8 +472,21 @@ class GitHubDoctorWorker:
         self._verify_pr(request, pr, request.head_sha, base_branch)
         if pr["state"] != "open" or paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
             raise PermissionError("The Doctor pull request must be open and ready for review.")
+        if self.telegram.enabled:
+            decision = self.telegram.decision(request)
+            if decision == "rejected":
+                raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
+            if any(comment.author == "Telegram owner" for comment in actionable_comments) and decision != "fix_requested":
+                request.review_cycles = max(0, request.review_cycles - 1)
+                self.archive.upsert_request(request)
+                return self._attempt(request, reason="Further-fix decision is no longer current.")
+            if decision in ("ready", "approved"):
+                if self.telegram.decision(request, "invalidate") != "invalidated":
+                    request.review_cycles = max(0, request.review_cycles - 1)
+                    self.archive.upsert_request(request)
+                    return self._attempt(request, reason="Waiting to invalidate previous Telegram approval before editing.")
         findings = [comment.body for comment in actionable_comments]
-        log(request, self.settings, f"codex_fix_cycle_{cycle}", "\n".join(findings), self.archive.upsert_request)
+        log(request, self.settings, f"codex_fix_cycle_{cycle}", "\n".join(findings), self._checkpoint)
         codex_edits = self._codex_edits(request, actionable_comments) if self.settings.doctor_codex_fallback else []
         require_failure = bool(self.ci_workflow and (
             any(comment.author == "GitHub CI" for comment in actionable_comments)
@@ -579,15 +599,26 @@ class GitHubDoctorWorker:
         if request.pending_head_sha:
             return self._publish(request, base_branch)
         pr = self._api("GET", f"pulls/{request.pr_number}")
-        self._verify_pr(request, pr, request.head_sha, base_branch)
+        try:
+            self._verify_pr(request, pr, request.head_sha, base_branch)
+        except PermissionError:
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
+            raise
         if pr.get("merged") is True:
             self._record_merge(request, pr["merge_commit_sha"], base_branch)
             return self._attempt(request, merged=True)
         if pr["state"] != "open":
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             raise PermissionError("The Doctor pull request is closed.")
         if paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             return self._attempt(request, reason="PR is paused, draft, or no longer selected for CI repair.")
         if request.base_sha != base or pr["base"]["sha"] != base:
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
         if request.ci_branch and not request.learned_edits:
             status, _, findings = exact_ci(self, request.head_sha, request.ci_branch)
@@ -602,6 +633,8 @@ class GitHubDoctorWorker:
         self._request_review(request)
         verdict, comments = self._codex_review(request)
         if verdict != "approved":
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             return self._attempt(request, review_verdict=verdict, review_comments=comments,
                                  reason="Waiting for a completed Codex review of this exact commit.")
         if self.ci_workflow:
@@ -614,17 +647,41 @@ class GitHubDoctorWorker:
                 return self._attempt(request, review_verdict="changes_requested", review_comments=findings,
                                      reason="The exact-head CI suite found a functional failure.")
             if status != "passed":
+                if self.telegram.enabled:
+                    self.telegram.decision(request, "invalidate")
                 return self._attempt(request, reason=f"Waiting for exact-head CI ({status}).")
-        if is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up):
+        website_support = is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up)
+        if website_support and not self.telegram.enabled:
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Website merge and release require GK approval.")
         passed, failures = self._ci_review(request.head_sha)
         if failures:
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             return self._attempt(request, review_verdict="changes_requested", review_comments=failures,
                                  reason="Required GitHub CI checks requested follow-up.")
         if not request.learned_edits or any(edit.path in PROTECTED_FILES for edit in request.learned_edits):
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Protected files require a manual merge.")
         label_ok = not (request.ci_branch or request.ci_follow_up) or MERGE_LABEL in labels(pr)
         ready = pr.get("mergeable") is True and pr.get("mergeable_state") == "clean" and passed and label_ok
+        if self.telegram.enabled:
+            if not ready:
+                self.telegram.decision(request, "invalidate")
+            else:
+                decision = self.telegram.decision(request, "ready")
+                if decision == "rejected":
+                    raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
+                if decision == "fix_requested":
+                    return self._attempt(request, review_verdict="changes_requested", review_comments=[
+                        DoctorReviewComment(author="Telegram owner", body=(
+                            "Owner requested another repair pass on this exact candidate. Reassess the original "
+                            "problem and current diff for a concrete remaining defect within the existing approved "
+                            "scope. Do not invent a defect or make cosmetic changes just to create a new commit. "
+                            "If no substantive correction is justified, return blocked and leave the PR unmerged."
+                        ))
+                    ], reason="Owner requested further repair; merge blocked until a new validated commit and approval.")
+                if decision != "approved":
+                    return self._attempt(request, review_verdict="approved",
+                                         reason="Waiting for exact-commit Telegram approval.")
         return self._attempt(request, review_verdict="approved", merge_ready=ready,
                              reason="Codex approved. Waiting for required checks or repository merge policy.")
 
@@ -636,10 +693,14 @@ class GitHubDoctorWorker:
             return False
         if ready.review_verdict != "approved" or not ready.merge_ready:
             return False
+        if self.telegram.enabled and self.telegram.decision(request) != "approved":
+            return False
         outcome = self.git.merge_pull_request(request.pr_number, head_sha=request.head_sha)
         if not outcome or outcome.get("merged") is not True:
             return False
         self._record_merge(request, outcome["sha"], request.base_branch)
+        if self.telegram.enabled:
+            self.telegram.decision(request, "merged")
         return True
 
     def merge_approved_website_pr(
@@ -652,6 +713,16 @@ class GitHubDoctorWorker:
                 or request.head_sha != sha(approved_head)
                 or request.pending_head_sha or not request.review_request_id):
             raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
+        if self.telegram.enabled:
+            # The Brain bridge must use the single shared approval authority.
+            # An old bridge that passes a legacy approval cannot bypass this check.
+            pr = self._api("GET", f"pulls/{request.pr_number}")
+            if self._repo() != ("main", request.base_sha):
+                return "merge_blocked", "The website base changed after approval."
+            if self.telegram.decision(request) != "approved":
+                return "", ""
+            if self._codex_review(request)[0] != "approved":
+                return "", ""
         self._verify_pr(request, pr, approved_head, "main")
         if pr.get("state") != "open" or paused(pr) or pr["base"]["sha"] != request.base_sha:
             return "merge_blocked", "The website pull request changed after validation."
@@ -664,6 +735,8 @@ class GitHubDoctorWorker:
             return "", ""
         if pr.get("mergeable") is not True or pr.get("mergeable_state") != "clean":
             return "merge_blocked", "GitHub reports a merge conflict, missing review, or branch rule. Check the pull request."
+        if self.telegram.enabled and self.telegram.decision(request) != "approved":
+            return "", ""
         try:
             result = self._api("PUT", f"pulls/{request.pr_number}/merge",
                                {"sha": approved_head, "merge_method": "squash"})
@@ -673,6 +746,8 @@ class GitHubDoctorWorker:
             raise
         if not isinstance(result, dict) or result.get("merged") is not True:
             return "merge_blocked", "GitHub did not confirm the merge. Check the pull request."
+        if self.telegram.enabled:
+            self.telegram.decision(request, "merged")
         return "merged", "GitHub merged the commit you approved in Telegram."
 
     def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:
