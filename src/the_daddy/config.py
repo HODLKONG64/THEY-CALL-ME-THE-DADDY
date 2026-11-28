@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     # Opt-in local proposal provider; OpenAI remains the independent approval provider.
     doctor_telegram_required: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_TELEGRAM_APPROVAL_REQUIRED", "false").lower() == "true")
+    doctor_release_review_required: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_RELEASE_REVIEW_REQUIRED", "false").lower() == "true")
     doctor_codex_fallback: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_CODEX_FALLBACK", "false").lower() == "true")
     doctor_codex_cli_fallback: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_CODEX_CLI_FALLBACK", "false").lower() == "true")
     doctor_local_ai: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_LOCAL_AI", "false").lower() == "true")

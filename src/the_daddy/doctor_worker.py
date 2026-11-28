@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -11,11 +12,15 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 
+import httpx
+
+from .agents.codex_repair import review_live_release
 from .config import Settings, _normalize_repo_slug
 from .doctor_history import HistoryIndex, local_lessons, repo_scope, shared_repo_scope
 from .doctor_shared_lessons import shared_search
 from .doctor_distillation import retrieve, budget_evidence
 from .doctor_telegram import TelegramApproval
+from .doctor_release_review import BrainReviewStore
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
 from .doctor_repair import CloudRepairUnavailable, ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
@@ -73,6 +78,7 @@ class GitHubDoctorWorker:
         )
         validator = ContainerValidator(validation_image, validation_command, settings.run_timeout_seconds)
         self.telegram = TelegramApproval(archive.path, settings.doctor_telegram_required)
+        self.brain_reviews = BrainReviewStore(archive.path)
         self.repair = RepairLoop(self.settings, validator, self._checkpoint)
         self.history_repos = repo_scope(os.getenv("DADDY_DOCTOR_HISTORY_REPOS", ""), repo)
         self.shared_repos = shared_repo_scope(repo)
@@ -320,6 +326,13 @@ class GitHubDoctorWorker:
                     "The repair changes no Worker configuration or D1 schema.\n\n"
                     "**Merge/deploy/migrate remains pending GK approval.**"
                 )
+            if request.rollback_of:
+                body = (
+                    f"Checked revert for Telegram case #{request.request_id.split('-')[1]}. "
+                    f"Doctor verified that the repaired files are restored to their previous contents "
+                    f"and passed isolated validation against `{request.pending_base_sha}`. "
+                    "The revert requires fresh Codex, Brain and GitHub CI checks before merging."
+                )
             if request.pending_codex_only:
                 body = body.replace("and obtained an API review. ", ". OpenAI approval unavailable; ")\
                     .replace("and obtained a separate API review of the candidate. ", "OpenAI approval unavailable. ")
@@ -546,7 +559,9 @@ class GitHubDoctorWorker:
             raise PermissionError("The website advanced since the reviewed commit. Request a fresh review of the case.")
         if self._head(request):
             raise PermissionError("A branch already exists without a validated Doctor delivery record.")
-        if request.ci_follow_up:
+        if request.rollback_of:
+            self._stage_rollback(request, base)
+        elif request.ci_follow_up:
             self._stage(request, base=base, parent=base, findings=request.logs, require_ci_failure=True)
         else:
             self._stage(request, base=base, parent=base, findings=[])
@@ -555,7 +570,40 @@ class GitHubDoctorWorker:
     @staticmethod
     def _is_website_support_repair(request: DoctorRequest) -> bool:
         return bool(is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up)
-                    and re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id))
+                    and re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*(?:-rollback)?", request.request_id))
+
+    def _rollback_authorized(self, request: DoctorRequest) -> bool:
+        original = self.archive.get_request(request.rollback_of)
+        return bool(original and original.status == "merged" and original.auto_release
+                    and original.repo_target == request.repo_target
+                    and original.request_id + "-rollback" == request.request_id
+                    and original.merge_sha == request.expected_base_sha
+                    and original.allowed_paths == request.allowed_paths
+                    and self.telegram.approval(original) in (("approved", "auto"), ("merged", "auto")))
+
+    def _stage_rollback(self, request: DoctorRequest, base: str) -> None:
+        if not self.settings.doctor_release_review_required or not self._rollback_authorized(request):
+            raise PermissionError("The rollback has no current owner Auto authorization.")
+        with tempfile.TemporaryDirectory(prefix="doctor-rollback-") as root:
+            workspace = DoctorWorkspace(Path(root), self.settings)
+            workspace.checkout(base)
+            workspace.apply(request, request.rollback_edits)
+            diff = workspace.diff()
+            original = self.archive.get_request(request.rollback_of)
+            before = sha(original.base_sha)
+            workspace.git("fetch", "--depth=1", "--no-tags", workspace.url, before, network=True)
+            if workspace.git("--literal-pathspecs", "diff", "--cached", "--name-only", before,
+                             "--", *request.allowed_paths).strip():
+                raise PermissionError("The inverse repair does not restore the previously validated files.")
+            if not diff or not self.repair.validator(workspace.root)[0]:
+                raise PermissionError("The exact inverse repair did not pass isolated validation.")
+            request.pending_head_sha = workspace.commit(self._reference(request))
+            request.pending_base_sha = base
+            request.pending_diff_digest = hashlib.sha256(diff.encode()).hexdigest()
+            request.pending_edits = request.rollback_edits
+            request.tests_run = [shlex.join(self.repair.validator.command)]
+            self.archive.upsert_request(request)
+            workspace.push(self._branch(request), request.pending_head_sha, "")
 
     def apply_review_comment_fixes(
         self, request: DoctorRequest, actionable_comments: list[DoctorReviewComment], cycle: int,
@@ -733,7 +781,7 @@ class GitHubDoctorWorker:
             if self.telegram.enabled:
                 self.telegram.decision(request, "invalidate")
             return self._attempt(request, reason="PR is paused, draft, or no longer selected for CI repair.")
-        if request.base_sha != base and self._is_website_support_repair(request):
+        if request.base_sha != base and self._is_website_support_repair(request) and not request.rollback_of:
             return self._revalidate_website(request, base_branch, base)
         if request.base_sha == base and pr["base"]["sha"] != base:
             return self._attempt(request, reason="Waiting for GitHub to report the current base commit.")
@@ -791,17 +839,32 @@ class GitHubDoctorWorker:
                 self.telegram.decision(request, "invalidate")
             return self._attempt(request, review_verdict="changes_requested", review_comments=failures,
                                  reason="Required GitHub CI checks requested follow-up.")
+        if passed and self.settings.doctor_release_review_required and self._is_website_support_repair(request):
+            brain, reason = self.brain_reviews.read(request)
+            if brain != "approved":
+                self.telegram.decision(request, "invalidate")
+                if brain == "changes_requested":
+                    return self._attempt(request, review_verdict="changes_requested", review_comments=[
+                        DoctorReviewComment(author="Brain", body=scrub(reason, self.settings))
+                    ], reason="Brain requested changes to the validated commit.")
+                return self._attempt(request, reason="Waiting for Brain to review the commit Codex approved.")
         if not self.telegram.enabled:
             return self._attempt(request, review_verdict="approved", reason="Private Telegram approval is disabled. Automatic merge is blocked.")
         if not request.learned_edits or any(edit.path in PROTECTED_FILES for edit in request.learned_edits):
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Protected files require a manual merge.")
         label_ok = not (request.ci_branch or request.ci_follow_up) or MERGE_LABEL in labels(pr)
         ready = pr.get("mergeable") is True and pr.get("mergeable_state") == "clean" and passed and label_ok
+        if ready and request.rollback_of:
+            status, reason = self.merge_approved_website_pr(request, request.head_sha, pr)
+            return self._attempt(request, merged=status == "merged", reason=reason or "Waiting for rollback merge checks.")
         if self.telegram.enabled:
             if not ready:
                 self.telegram.decision(request, "invalidate")
             else:
-                decision = self.telegram.decision(request, "ready")
+                auto = (self.settings.doctor_release_review_required and self._is_website_support_repair(request)
+                        and not request.wiki_link and self._has_inverse(request))
+                decision = (self.telegram.decision(request, "ready", allow_auto=True) if auto
+                            else self.telegram.decision(request, "ready"))
                 if decision == "rejected":
                     raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
                 if decision == "fix_requested":
@@ -846,7 +909,7 @@ class GitHubDoctorWorker:
         """Merge a validated website commit after the support bridge verifies owner approval."""
         self._verify_target(request)
         if (not is_moonboys_repo(request.repo_target) or request.source != "daddy"
-                or not re.fullmatch(r"support-[1-9][0-9]*-[1-9][0-9]*", request.request_id)
+                or not self._is_website_support_repair(request)
                 or request.head_sha != sha(approved_head)
                 or request.pending_head_sha or not request.review_request_id):
             raise PermissionError("Website merge approval must identify the reviewed Doctor commit.")
@@ -856,9 +919,12 @@ class GitHubDoctorWorker:
         pr = self._api("GET", f"pulls/{request.pr_number}")
         if self._repo() != ("main", request.base_sha):
             return "merge_blocked", "The website base changed after approval."
-        if self.telegram.decision(request) != "approved":
+        if not (self._rollback_authorized(request) if request.rollback_of else
+                self.telegram.decision(request) == "approved"):
             return "", ""
         if self._codex_review(request)[0] != "approved":
+            return "", ""
+        if self.settings.doctor_release_review_required and self.brain_reviews.read(request)[0] != "approved":
             return "", ""
         self._verify_pr(request, pr, approved_head, "main")
         if pr.get("state") != "open" or paused(pr) or pr["base"]["sha"] != request.base_sha:
@@ -875,7 +941,17 @@ class GitHubDoctorWorker:
         if self._repo() != ("main", request.base_sha):
             self.telegram.decision(request, "invalidate")
             return "merge_blocked", "The website base changed after approval."
-        if self.telegram.decision(request) != "approved":
+        mode = "manual"
+        if request.rollback_of:
+            if not self.settings.doctor_release_review_required or not self._rollback_authorized(request):
+                return "", ""
+        elif self.settings.doctor_release_review_required:
+            decision, mode = self.telegram.approval(request)
+            if decision != "approved":
+                return "", ""
+        elif self.telegram.decision(request) != "approved":
+            return "", ""
+        if self.settings.doctor_release_review_required and self.brain_reviews.read(request)[0] != "approved":
             return "", ""
         try:
             result = self._api("PUT", f"pulls/{request.pr_number}/merge",
@@ -888,8 +964,11 @@ class GitHubDoctorWorker:
             return "merge_blocked", "GitHub did not confirm the merge. Check the pull request."
         if result.get("sha"):
             request.merge_sha = sha(result["sha"])
-            self.telegram.record_merge(request)
-        return "merged", "GitHub merged the commit you approved in Telegram."
+            request.auto_release = mode == "auto"
+            self._record_merge(request, request.merge_sha, "main")
+            if not request.rollback_of:
+                self.telegram.record_merge(request)
+        return "merged", "GitHub merged the approved website change."
 
     def _record_merge(self, request: DoctorRequest, commit: str, branch: str) -> None:
         request.merge_sha = sha(commit)
@@ -910,6 +989,90 @@ class GitHubDoctorWorker:
         if request.deployment_workflow:
             request.deployment_status = "pending"
             request.deployment_reason = "Waiting for the target's production deployment workflow."
+            if self.settings.doctor_release_review_required and self._is_website_support_repair(request):
+                request.live_review_status = "pending"
+                if not request.rollback_of and not request.auto_release:
+                    decision, mode = self.telegram.approval(request)
+                    request.auto_release = decision in ("approved", "merged") and mode == "auto"
+
+    def _live_release_evidence(self, request: DoctorRequest) -> dict:
+        commit = sha(request.merge_sha)
+        commit_info = self._api("GET", f"commits/{commit}")
+        if [parent["sha"] for parent in commit_info["parents"]] != [request.base_sha]:
+            raise ValueError("Cannot isolate the deployed change from the validated base.")
+        files = commit_info["files"]
+        if not 1 <= len(files) <= 5 or any(
+            item["status"] != "modified" or not path_allowed(item["filename"], request)
+            or not item.get("patch") or len(item["patch"]) > 12_000 for item in files
+        ):
+            raise ValueError("The deployed change is outside the supported live verification scope.")
+        probes = []
+        with httpx.Client(timeout=15, follow_redirects=False, trust_env=False) as client:
+            for item in files:
+                path = item["filename"]
+                encoded = quote(path, safe="/")
+                source = self._api("GET", f"contents/{encoded}?ref={commit}")
+                if source.get("encoding") != "base64" or source.get("path") != path or source.get("size", 0) > 250_000:
+                    raise ValueError("The deployed file does not have a supported exact GitHub source.")
+                expected = base64.b64decode(source["content"])
+                with client.stream("GET", f"https://cryptomoonboys.com/{encoded}",
+                                   params={"_doctor_verify": commit}, headers={"Cache-Control": "no-cache"}) as response:
+                    content = bytearray()
+                    for chunk in response.iter_bytes():
+                        content.extend(chunk)
+                        if len(content) > len(expected):
+                            break
+                    probes.append({"path": path, "http_status": response.status_code,
+                                   "matches_commit": response.status_code == 200 and content == expected,
+                                   "patch": scrub(item["patch"], self.settings, code=True)})
+        return {"deployment_url": request.deployment_url, "probes": probes}
+
+    def _queue_rollback(self, request: DoctorRequest) -> bool:
+        if (request.rollback_of or not request.auto_release or not self._has_inverse(request)
+                or self._repo() != ("main", request.merge_sha)):
+            return False
+        edits = request.learned_edits
+        rollback = self.archive.enqueue_once(DoctorRequest(
+            request_id=request.request_id + "-rollback", source="daddy", repo_target=request.repo_target,
+            expected_base_sha=request.merge_sha, allowed_paths=request.allowed_paths,
+            problem_summary=f"Restore the reviewed files from before the release of PR #{request.pr_number}.",
+            rollback_of=request.request_id, priority="urgent",
+            rollback_edits=[DoctorEdit(path=edit.path, old=edit.new, new=edit.old) for edit in reversed(edits)],
+        ))
+        return rollback.status not in {"failed_with_reason", "blocked_needs_human_permission"}
+
+    @staticmethod
+    def _has_inverse(request: DoctorRequest) -> bool:
+        return 1 <= len(request.learned_edits) <= 20 and all(edit.old and edit.new for edit in request.learned_edits)
+
+    def poll_live_review(self, request: DoctorRequest) -> None:
+        if request.deployment_status == "pending":
+            return
+        try:
+            if request.deployment_status != "deployed":
+                raise ValueError("The release did not report a successful deployment.")
+            if self._repo() != ("main", request.merge_sha):
+                raise ValueError("A newer website commit prevents a release-specific live review.")
+            evidence = self._live_release_evidence(request)
+            if not all(probe["matches_commit"] for probe in evidence["probes"]):
+                raise ValueError("Live responses could not be matched to the deployed commit.")
+            verdict = review_live_release(request.merge_sha, evidence)
+            if verdict is None:
+                raise ValueError("Codex did not return a usable live verdict.")
+            request.live_review_reason = scrub(verdict.reason, self.settings)[:600]
+            if verdict.safe:
+                request.live_review_status = "passed"
+            elif self._queue_rollback(request):
+                request.live_review_status = "rollback_queued"
+            else:
+                request.live_review_status = "needs_review"
+        except (httpx.HTTPError, OSError, RuntimeError, ValueError, KeyError) as exc:
+            request.live_review_attempts += 1
+            request.live_review_reason = scrub(str(exc), self.settings)[:600]
+            if request.live_review_attempts >= 3 or request.deployment_status == "failed":
+                request.live_review_status = "needs_review"
+        request.updated_at = utc_now_iso()
+        self.archive.upsert_request(request)
 
     def _dispatch_problem(self, request: DoctorRequest) -> str:
         status = request.ci_dispatch_status or "prior dispatch outcome unknown"

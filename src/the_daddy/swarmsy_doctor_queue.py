@@ -90,6 +90,8 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
             if request.status == "merged":
                 if request.deployment_status == "pending":
                     worker.poll_deployment(request)
+                if request.live_review_status == "pending":
+                    worker.poll_live_review(request)
                 if watch_ci and request.post_merge_ci == "pending":
                     try:
                         worker.poll_merged_ci(request)
@@ -111,6 +113,8 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
                 "pr_url": result.swarmsy_pr_url, "reason": scrub(result.final_reason, settings),
                 "deployment_status": result.deployment_status, "deployment_url": result.deployment_url,
                 "deployment_reason": scrub(result.deployment_reason, settings),
+                "live_review_status": result.live_review_status,
+                "live_review_reason": scrub(result.live_review_reason, settings),
                 "post_merge_ci": result.post_merge_ci, "post_merge_ci_url": result.post_merge_ci_url,
                 "post_merge_ci_reason": scrub(result.post_merge_ci_reason, settings),
                 **({"ci_scan": discovery} if discovery is not None else {}),
@@ -212,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             row["problem_summary"] = scrub(row["problem_summary"], settings)
             row["reason"] = scrub(row["reason"], settings)
             row["deployment_reason"] = scrub(row["deployment_reason"], settings)
+            row["live_review_reason"] = scrub(row["live_review_reason"], settings)
             row["post_merge_ci_reason"] = scrub(row["post_merge_ci_reason"], settings)
         print(json.dumps(rows, indent=2))
         return 0
