@@ -207,6 +207,7 @@ class DoctorRequest(BaseModel):
     deployment_reason: str = ""
     pending_head_sha: str = ""
     pending_base_sha: str = ""
+    pending_revalidation: bool = False
     pending_diff_digest: str = ""
     pending_codex_only: bool = False
     codex_only_head: str = ""
@@ -218,6 +219,7 @@ class DoctorRequest(BaseModel):
     ci_origin_pr: int = 0
     ci_follow_up: bool = False
     ci_dispatched_ref: str = ""
+    ci_dispatch_status: str = ""
     post_merge_ci: Literal["unconfigured", "pending", "passed", "follow_up_queued", "needs_review"] = "unconfigured"
     post_merge_ci_url: str = ""
     post_merge_ci_reason: str = ""

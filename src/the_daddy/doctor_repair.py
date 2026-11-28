@@ -249,6 +249,15 @@ class DoctorWorkspace:
                  "commit", "-qm", f"fix: Doctor repair {reference}")
         return sha(self.git("rev-parse", "HEAD").strip())
 
+    def commit_revalidation(self, reference: str, previous: str, base: str) -> str:
+        # Preserve the repair branch history while building the tree on the new base.
+        self.git("fetch", "--depth=1", "--no-tags", self.url, sha(previous), network=True)
+        tree = self.git("write-tree").strip()
+        return sha(self.git(
+            "-c", "user.name=Doctor", "-c", "user.email=doctor@users.noreply.github.com",
+            "commit-tree", tree, "-p", sha(previous), "-p", sha(base), "-m", f"fix: Revalidate Doctor repair {reference}",
+        ).strip())
+
 
 class ContainerValidator:
     def __init__(self, image: str, command: str, timeout: int) -> None:
