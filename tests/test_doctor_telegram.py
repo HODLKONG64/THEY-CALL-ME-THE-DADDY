@@ -64,6 +64,18 @@ def test_further_fix_is_actionable(worker, request_record):
     assert attempt.review_comments[0].author == "Telegram owner"
 
 
+def test_disabled_telegram_blocks_merge_but_preserves_ci_repair_findings(worker, request_record):
+    worker.telegram.enabled = False
+    finding = DoctorReviewComment(author="GitHub CI", body="A required check failed.")
+    worker._ci_review.return_value = (False, [finding])
+    attempt = worker.poll_review(request_record)
+    assert attempt.review_comments == [finding]
+    assert attempt.review_verdict == "changes_requested"
+    assert not attempt.merge_ready
+    assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
+    worker.git.merge_pull_request.assert_not_called()
+
+
 def test_final_approval_rechecked(worker, request_record):
     worker.telegram.decision.side_effect = ["approved", "unavailable"]
     assert not worker.merge_pr(request_record, request_record.swarmsy_pr_url)
