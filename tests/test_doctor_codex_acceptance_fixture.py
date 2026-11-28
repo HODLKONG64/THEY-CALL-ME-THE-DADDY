@@ -2,7 +2,7 @@
 
 
 def count_pending(total: int, completed: int) -> int:
-    return max(0, total - completed)
+    return total - completed
 
 
 def test_counts_pending_items():
