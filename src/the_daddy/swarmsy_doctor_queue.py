@@ -43,7 +43,7 @@ def _max_review_cycles() -> int:
 def _worker(settings: Settings, archive: JsonDoctorArchive) -> GitHubDoctorWorker | None:
     image = os.getenv("DADDY_DOCTOR_VALIDATION_IMAGE", "").strip()
     command = os.getenv("DADDY_DOCTOR_TEST_COMMAND", "").strip()
-    if not (settings.has_openai and settings.has_github and image and command and shutil.which("docker")):
+    if not ((settings.has_openai or settings.doctor_codex_fallback) and settings.has_github and image and command and shutil.which("docker")):
         return None
     checks = {item.strip() for item in os.getenv("DADDY_DOCTOR_REQUIRED_CHECKS", "").split(",") if item.strip()}
     return GitHubDoctorWorker(
@@ -72,7 +72,7 @@ def _process_once(archive: JsonDoctorArchive, settings: Settings, *, discover: b
             if worker is None:
                 return {
                     "status": "worker_unavailable", "request_id": active[0].request_id if active else "",
-                    "reason": "Configure the OpenAI and GitHub credentials, target repo, and Docker validation image and test command.",
+                    "reason": "Configure GitHub credentials, target repo, Docker validation image and test command, and either OpenAI or the opt-in Codex fallback.",
                 }
             discovery = None
             if discover and worker.ci_workflow:

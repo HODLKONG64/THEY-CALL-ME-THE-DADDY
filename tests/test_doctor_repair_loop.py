@@ -323,3 +323,56 @@ def test_replay_limit_counts_paths_reverted_between_api_batches(monkeypatch, loc
     final_edits, _ = loop.run(workspace, request, [], [])
     assert final_edits == [DoctorEdit(path="src/example.py", old="answer = 0", new="answer = 2")]
     assert any(item["event"] == "patch_rejected" and "replayable files" in item["detail"] for item in request.repair_log)
+
+
+@pytest.mark.parametrize("local_result", ["valid", "blocked", "invalid", "unsafe", "wrong_anchor", "failed_validation"])
+def test_local_proposal_escalates_and_requires_cloud_approval(local_repo, local_result):
+    settings = Settings(github_repo=REPO, max_attempts=5, openai_api_key="", doctor_local_ai=True)
+    request = DoctorRequest(problem_summary="Fix answer", repo_target=REPO, source="daddy", allowed_paths=["src/"])
+    workspace = DoctorWorkspace(local_repo, settings)
+    def validate(root):
+        return ("answer = 2" in (root / "src/example.py").read_text(), "test output")
+    loop = RepairLoop(settings, validate, lambda _request: None)
+    local_calls, cloud_calls = [], []
+    def patch(old="answer = 0", new="answer = 2", path="src/example.py"):
+        return {"verdict": "patch", "candidate_digest": "", "reason": "Fix",
+                "edits": [{"path": path, "old": old, "new": new}]}
+    def local(**kwargs):
+        local_calls.append(kwargs)
+        return {
+            "valid": patch(), "blocked": None, "invalid": {"verdict": "patch"},
+            "unsafe": patch(path=".env"), "wrong_anchor": patch(old="not present"),
+            "failed_validation": patch(new="answer = 1"),
+        }[local_result]
+    def cloud(*, prompt, **kwargs):
+        evidence = json.loads(prompt)
+        cloud_calls.append(evidence)
+        if evidence["validation_passed"]:
+            return {"verdict": "approved", "candidate_digest": evidence["candidate_digest"],
+                    "reason": "Verified", "edits": []}
+        return patch(old="answer = 1" if evidence["candidate"] else "answer = 0")
+    loop.local_api.propose = local
+    loop.api.generate_json = cloud
+    edits, digest = loop.run(workspace, request, [], [])
+    assert edits and digest
+    assert len(local_calls) == 1
+    assert cloud_calls[-1]["validation_passed"] is True
+    assert len(cloud_calls) == (1 if local_result == "valid" else 2)
+    assert (local_repo / "src/example.py").read_text() == "answer = 2\n"
+
+
+def test_local_proposal_cannot_approve_candidate(local_repo):
+    settings = Settings(github_repo=REPO, max_attempts=3, openai_api_key="", doctor_local_ai=True)
+    request = DoctorRequest(problem_summary="Fix answer", repo_target=REPO, source="daddy", allowed_paths=["src/"])
+    workspace = DoctorWorkspace(local_repo, settings)
+    loop = RepairLoop(settings, lambda _root: (True, "ok"), lambda _request: None)
+    loop.local_api.propose = lambda **kw: {"verdict": "approved", "candidate_digest": "", "reason": "no", "edits": []}
+    calls = []
+    def cloud(*, prompt, **kwargs):
+        calls.append(prompt)
+        return {"verdict": "blocked", "candidate_digest": "", "reason": "No patch", "edits": []}
+    loop.api.generate_json = cloud
+    with pytest.raises(RuntimeError, match="exhausted"):
+        loop.run(workspace, request, [], [])
+    assert calls
+    assert not workspace.diff()

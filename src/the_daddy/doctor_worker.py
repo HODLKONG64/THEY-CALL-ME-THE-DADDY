@@ -16,7 +16,7 @@ from .doctor_history import HistoryIndex, local_lessons, repo_scope, shared_repo
 from .doctor_shared_lessons import shared_search
 from .doctor_distillation import retrieve, budget_evidence
 from .doctor_ci import MERGE_LABEL, REPAIR_LABEL, audit_workflow, exact_ci, labels, paused
-from .doctor_repair import ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
+from .doctor_repair import CloudRepairUnavailable, ContainerValidator, DoctorWorkspace, RepairLoop, ci_repair_path, log, path_allowed, scrub, sha
 from .git_tools import GITHUB_REPO_SLUG, GitBranchExecutor
 from .merge_rules import PROTECTED_CORE_FILES
 from .swarmsy_doctor import (
@@ -28,6 +28,7 @@ CODEX_SUMMARY = re.compile(r"^<!-- codex-review-state:v1 (\{[^\n]+\}) -->$", re.
 PROTECTED_FILES = PROTECTED_CORE_FILES | {
     "pyproject.toml", "package.json", "package-lock.json", "tsconfig.json",
     "src/the_daddy/doctor_repair.py", "src/the_daddy/doctor_worker.py",
+    "src/the_daddy/agents/local_repair.py", "src/the_daddy/config.py",
     "src/the_daddy/swarmsy_doctor.py", "src/the_daddy/swarmsy_doctor_queue.py",
     "src/the_daddy/doctor_ci.py", "src/the_daddy/doctor_history.py", "src/the_daddy/doctor_shared_lessons.py", "src/the_daddy/doctor_diagnostics.py", "src/the_daddy/doctor_distillation.py",
 }
@@ -235,6 +236,7 @@ class GitHubDoctorWorker:
 
     def _stage(
         self, request: DoctorRequest, *, base: str, parent: str, findings: list[str], require_ci_failure: bool = False,
+        codex_edits: list[DoctorEdit] | None = None,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="doctor-repair-") as root:
             workspace = DoctorWorkspace(Path(root), self.settings)
@@ -246,7 +248,11 @@ class GitHubDoctorWorker:
                 if history:
                     options["history"] = history
                     log(request, self.settings, "history_retrieved", f"Retrieved {len(history)} advisory records.", self.archive.upsert_request)
+                if codex_edits:
+                    options["codex_edits"] = codex_edits
                 edits, digest = self.repair.run(workspace, request, findings, remembered, **options)
+            except CloudRepairUnavailable:
+                raise
             except RuntimeError as exc:
                 raise RuntimeError(scrub(str(exc), self.settings)) from exc
             # Recheck the PR before pushing, including an owner pause while validation ran.
@@ -303,6 +309,10 @@ class GitHubDoctorWorker:
                     "The repair changes no Worker configuration or D1 schema.\n\n"
                     "**Merge/deploy/migrate remains pending GK approval.**"
                 )
+            if request.pending_codex_only:
+                body = body.replace("and obtained an API review. ", ". OpenAI approval unavailable; ")\
+                    .replace("and obtained a separate API review of the candidate. ", "OpenAI approval unavailable. ")
+                body += "\n\nLocally validated candidate only. Independent exact-head Codex review and required CI remain mandatory."
             pr = self.git.create_pull_request(
                 self._branch(request), f"fix: Doctor repair {ref}", body, base_branch=base_branch,
             )
@@ -317,6 +327,9 @@ class GitHubDoctorWorker:
             if pr["state"] != "open" or pr["draft"]:
                 raise PermissionError("The Doctor pull request was closed or converted to draft during delivery.")
         request.head_sha = request.pending_head_sha
+        request.codex_only_head = request.head_sha if request.pending_codex_only else ""
+        request.pending_codex_only = False
+        request.codex_patch_requested_head = ""
         request.base_branch = base_branch
         request.base_sha = request.pending_base_sha
         request.learned_edits = [*request.learned_edits, *request.pending_edits]
@@ -359,12 +372,68 @@ class GitHubDoctorWorker:
             f"include a line reading `DOCTOR_REVIEW_APPROVED {head}` in the completed review.\n\n"
             f"<!-- doctor-review:{head} -->"
         )
+        if self.settings.doctor_codex_fallback:
+            body += self._patch_contract(head)
         actor = self.git._api_request("GET", "https://api.github.com/user")["login"]
         existing = next((item for item in self._list(endpoint)
                          if item.get("body") == body and (item.get("user") or {}).get("login") == actor), None)
         comment = existing or self._api("POST", endpoint, {"body": body})
         request.review_request_id = int(comment["id"])
         log(request, self.settings, "codex_review_requested", head, self.archive.upsert_request)
+
+    @staticmethod
+    def _patch_contract(head: str) -> str:
+        return ("\n\nFor each actionable finding include a concrete exact-text edit as JSON "
+                "in a fenced json block preceded by the line DOCTOR_PATCH " + head
+                + ". The JSON must be an array of objects with path, old, new keys only. "
+                "Use unique exact old spans from this commit. Do not push commits, run commands, "
+                "change credentials, alter approval gates or edit outside the requested scope.")
+
+    def _codex_edits(self, request: DoctorRequest, comments: list[DoctorReviewComment]) -> list[DoctorEdit]:
+        """Only consume exact-head structured edits from already authenticated review findings."""
+        head = sha(request.head_sha)
+        edits: list[DoctorEdit] = []
+        seen = set()
+        for comment in comments:
+            if comment.author != CODEX_BOT:
+                return []
+            pattern = re.compile(r"(?m)^DOCTOR_PATCH " + head + r"\s*\n```json\s*\n([\s\S]*?)\n```\s*$")
+            matches = pattern.findall(comment.body)
+            if len(matches) != 1 or len(matches[0].encode()) > 24000:
+                return []
+            try:
+                raw = json.loads(matches[0])
+                if not isinstance(raw, list) or not 1 <= len(raw) <= 20:
+                    return []
+                for item in raw:
+                    edit = DoctorEdit.model_validate(item)
+                    if edit.path in PROTECTED_FILES or not path_allowed(edit.path, request):
+                        return []
+                    identity = (edit.path, edit.old, edit.new)
+                    if identity not in seen:
+                        seen.add(identity)
+                        edits.append(edit)
+            except (ValueError, TypeError):
+                return []
+        return edits if len(edits) <= 20 and len({edit.path for edit in edits}) <= 5 else []
+
+    def _request_codex_patch(self, request: DoctorRequest) -> None:
+        head = sha(request.head_sha)
+        if request.codex_patch_requested_head == head:
+            return
+        endpoint = f"issues/{request.pr_number}/comments"
+        body = (f"@codex review exact commit {head}. Doctor needs a concrete repair proposal "
+                "because its cloud repair provider is unavailable. Review the existing findings and "
+                "failed tests. Return scoped edits, not direct commits.\n"
+                f"<!-- doctor-patch-request:{head} -->" + self._patch_contract(head))
+        actor = self.git._api_request("GET", "https://api.github.com/user")["login"]
+        existing = next((item for item in self._list(endpoint)
+                         if item.get("body") == body and (item.get("user") or {}).get("login") == actor), None)
+        comment = existing or self._api("POST", endpoint, {"body": body})
+        request.codex_patch_requested_head = head
+        # A new review request must not use a reaction on the old request.
+        request.review_request_id = int(comment["id"])
+        log(request, self.settings, "codex_patch_requested", head, self.archive.upsert_request)
 
     def _attempt(self, request: DoctorRequest, **kwargs) -> DoctorRepairAttempt:
         return DoctorRepairAttempt(
@@ -398,10 +467,24 @@ class GitHubDoctorWorker:
             raise PermissionError("The Doctor pull request must be open and ready for review.")
         findings = [comment.body for comment in actionable_comments]
         log(request, self.settings, f"codex_fix_cycle_{cycle}", "\n".join(findings), self.archive.upsert_request)
-        if self.ci_workflow and any(comment.author == "GitHub CI" for comment in actionable_comments):
-            self._stage(request, base=base, parent=request.head_sha, findings=findings, require_ci_failure=True)
-        else:
-            self._stage(request, base=base, parent=request.head_sha, findings=findings)
+        codex_edits = self._codex_edits(request, actionable_comments) if self.settings.doctor_codex_fallback else []
+        require_failure = bool(self.ci_workflow and (
+            any(comment.author == "GitHub CI" for comment in actionable_comments)
+            or (request.ci_branch and not request.learned_edits)))
+        options = {"require_ci_failure": True} if require_failure else {}
+        if codex_edits:
+            options["codex_edits"] = codex_edits
+        try:
+            self._stage(request, base=base, parent=request.head_sha, findings=findings, **options)
+        except CloudRepairUnavailable:
+            if not self.settings.doctor_codex_fallback or request.wiki_link:
+                raise
+            self._request_codex_patch(request)
+            if not codex_edits:
+                # Waiting for a concrete response is not a new repair attempt.
+                request.review_cycles = max(0, request.review_cycles - 1)
+                self.archive.upsert_request(request)
+            return self._attempt(request, reason="Waiting for concrete exact-head Codex edits; OpenAI unavailable.")
         return self._publish(request, base_branch)
 
     def _codex_review(self, request: DoctorRequest) -> tuple[str, list[DoctorReviewComment]]:
@@ -508,6 +591,12 @@ class GitHubDoctorWorker:
             raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
         if request.ci_branch and not request.learned_edits:
             status, _, findings = exact_ci(self, request.head_sha, request.ci_branch)
+            if status == "failed" and request.codex_patch_requested_head == request.head_sha:
+                verdict, comments = self._codex_review(request)
+                if verdict == "changes_requested" and self._codex_edits(request, comments):
+                    return self._attempt(request, review_comments=comments, review_verdict=verdict,
+                                         reason="Codex supplied an exact-head repair for the selected CI failure.")
+                return self._attempt(request, reason="Waiting for concrete Codex edits for the reproduced CI failure.")
             return self._attempt(request, review_comments=findings,
                                  reason=f"Selected PR is waiting on its exact-head functional CI failure ({status}).")
         self._request_review(request)

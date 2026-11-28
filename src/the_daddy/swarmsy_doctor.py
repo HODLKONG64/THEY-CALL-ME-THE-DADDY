@@ -208,6 +208,9 @@ class DoctorRequest(BaseModel):
     pending_head_sha: str = ""
     pending_base_sha: str = ""
     pending_diff_digest: str = ""
+    pending_codex_only: bool = False
+    codex_only_head: str = ""
+    codex_patch_requested_head: str = ""
     delivery_retries: int = 0
     review_cycles: int = 0
     review_request_id: int = 0
