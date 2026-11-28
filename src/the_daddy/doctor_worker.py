@@ -661,6 +661,8 @@ class GitHubDoctorWorker:
                 self.telegram.decision(request, "invalidate")
             raise PermissionError("Base advanced after Doctor validated this commit. Revalidate before merging.")
         if request.codex_patch_requested_head == request.head_sha:
+            if not self.settings.doctor_codex_fallback:
+                return self._attempt(request, reason="Codex fallback is disabled with an outstanding patch request; merge blocked.")
             if self.telegram.enabled:
                 decision = self.telegram.decision(request)
                 if decision == "rejected":
