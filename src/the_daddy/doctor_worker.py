@@ -472,6 +472,15 @@ class GitHubDoctorWorker:
         self._verify_pr(request, pr, request.head_sha, base_branch)
         if pr["state"] != "open" or paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
             raise PermissionError("The Doctor pull request must be open and ready for review.")
+        if self.telegram.enabled:
+            decision = self.telegram.decision(request)
+            if decision == "rejected":
+                raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
+            if any(comment.author == "Telegram owner" for comment in actionable_comments) and decision != "fix_requested":
+                return self._attempt(request, reason="Further-fix decision is no longer current.")
+            if decision in ("ready", "approved"):
+                if self.telegram.decision(request, "invalidate") != "invalidated":
+                    return self._attempt(request, reason="Waiting to invalidate previous Telegram approval before editing.")
         findings = [comment.body for comment in actionable_comments]
         log(request, self.settings, f"codex_fix_cycle_{cycle}", "\n".join(findings), self._checkpoint)
         codex_edits = self._codex_edits(request, actionable_comments) if self.settings.doctor_codex_fallback else []
@@ -586,11 +595,18 @@ class GitHubDoctorWorker:
         if request.pending_head_sha:
             return self._publish(request, base_branch)
         pr = self._api("GET", f"pulls/{request.pr_number}")
-        self._verify_pr(request, pr, request.head_sha, base_branch)
+        try:
+            self._verify_pr(request, pr, request.head_sha, base_branch)
+        except PermissionError:
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
+            raise
         if pr.get("merged") is True:
             self._record_merge(request, pr["merge_commit_sha"], base_branch)
             return self._attempt(request, merged=True)
         if pr["state"] != "open":
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             raise PermissionError("The Doctor pull request is closed.")
         if paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
             if self.telegram.enabled:
@@ -627,11 +643,15 @@ class GitHubDoctorWorker:
                 return self._attempt(request, review_verdict="changes_requested", review_comments=findings,
                                      reason="The exact-head CI suite found a functional failure.")
             if status != "passed":
+                if self.telegram.enabled:
+                    self.telegram.decision(request, "invalidate")
                 return self._attempt(request, reason=f"Waiting for exact-head CI ({status}).")
         if is_moonboys_repo(request.repo_target) and not (request.ci_branch or request.ci_follow_up):
             return self._attempt(request, review_verdict="approved", reason="Codex approved. Website merge and release require GK approval.")
         passed, failures = self._ci_review(request.head_sha)
         if failures:
+            if self.telegram.enabled:
+                self.telegram.decision(request, "invalidate")
             return self._attempt(request, review_verdict="changes_requested", review_comments=failures,
                                  reason="Required GitHub CI checks requested follow-up.")
         if not request.learned_edits or any(edit.path in PROTECTED_FILES for edit in request.learned_edits):
@@ -646,7 +666,14 @@ class GitHubDoctorWorker:
                 if decision == "rejected":
                     raise PermissionError("Owner rejected the repair in Telegram. PR retained.")
                 if decision == "fix_requested":
-                    return self._attempt(request, reason="Owner requested further repair. Awaiting specific owner instructions; merge blocked.")
+                    return self._attempt(request, review_verdict="changes_requested", review_comments=[
+                        DoctorReviewComment(author="Telegram owner", body=(
+                            "Owner requested another repair pass on this exact candidate. Reassess the original "
+                            "problem and current diff for a concrete remaining defect within the existing approved "
+                            "scope. Do not invent a defect or make cosmetic changes just to create a new commit. "
+                            "If no substantive correction is justified, return blocked and leave the PR unmerged."
+                        ))
+                    ], reason="Owner requested further repair; merge blocked until a new validated commit and approval.")
                 if decision != "approved":
                     return self._attempt(request, review_verdict="approved",
                                          reason="Waiting for exact-commit Telegram approval.")
