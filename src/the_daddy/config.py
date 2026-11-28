@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     openai_model_light: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL_LIGHT", "gpt-5.4-nano"))
     openai_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("OPENAI_TIMEOUT_SECONDS", "120")))
 
+    # Opt-in local proposal provider; OpenAI remains the independent approval provider.
+    doctor_local_ai: bool = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_LOCAL_AI", "false").lower() == "true")
+    doctor_local_model: str = Field(default_factory=lambda: os.getenv("DADDY_DOCTOR_LOCAL_MODEL", "qwen3:4b-instruct"))
+    doctor_local_timeout: int = Field(default=90, ge=5, le=180)
+    doctor_local_prompt_bytes: int = Field(default=8000, ge=1000, le=10000)
+
     # GitHub / PR lane
     github_token: str = Field(default_factory=lambda: os.getenv("GITHUB_TOKEN", ""))
     github_repo: str = Field(default_factory=lambda: os.getenv("GITHUB_REPO", ""))  # owner/repo
