@@ -41,8 +41,8 @@ def local_repo(tmp_path):
     return source
 
 
-@pytest.mark.parametrize("interrupted_push", [False, True])
-def test_website_revalidates_same_pr_on_new_base(local_repo, tmp_path, monkeypatch, interrupted_push):
+@pytest.mark.parametrize("delivery", ["normal", "interrupted_push", "stale_pr_head"])
+def test_website_revalidates_same_pr_on_new_base(local_repo, tmp_path, monkeypatch, delivery):
     page = local_repo / "games/chain-maze/index.html"
     page.parent.mkdir(parents=True)
     page.write_text('<div id="app">\n')
@@ -78,7 +78,8 @@ def test_website_revalidates_same_pr_on_new_base(local_repo, tmp_path, monkeypat
         original_init(workspace, root, settings)
         workspace.url = local_repo.as_uri()
 
-    fail_push = interrupted_push
+    fail_push = delivery == "interrupted_push"
+    stale_pr_head = delivery == "stale_pr_head"
 
     def push(workspace, *args):
         nonlocal fail_push
@@ -88,9 +89,13 @@ def test_website_revalidates_same_pr_on_new_base(local_repo, tmp_path, monkeypat
         return original_push(workspace, *args)
 
     def current_pr(*args):
+        nonlocal stale_pr_head
+        head = git(local_repo, "rev-parse", branch)
+        if stale_pr_head and head != old_head:
+            head = old_head
+            stale_pr_head = False
         return {"state": "open", "draft": False,
-                "head": {"repo": {"full_name": MOONBOYS_REPO}, "ref": branch,
-                         "sha": git(local_repo, "rev-parse", branch)},
+                "head": {"repo": {"full_name": MOONBOYS_REPO}, "ref": branch, "sha": head},
                 "base": {"repo": {"full_name": MOONBOYS_REPO}, "ref": "main", "sha": base}}
 
     def validate(root):
@@ -108,11 +113,15 @@ def test_website_revalidates_same_pr_on_new_base(local_repo, tmp_path, monkeypat
     worker.repair.validator = Mock(side_effect=validate)
     worker.telegram.decision = Mock(side_effect=["approved", "invalidated", "invalidated"])
 
-    if interrupted_push:
+    if delivery == "interrupted_push":
         with pytest.raises(RuntimeError, match="interrupted push"):
             worker.poll_review(request)
         request = worker.archive.get_request(request.request_id)
         assert request.pending_revalidation
+    if delivery == "stale_pr_head":
+        result = worker.poll_review(request)
+        assert "Waiting for GitHub" in result.reason
+        assert request.pending_revalidation and request.head_sha == old_head
 
     result = worker.poll_review(request)
     assert not result.merge_ready

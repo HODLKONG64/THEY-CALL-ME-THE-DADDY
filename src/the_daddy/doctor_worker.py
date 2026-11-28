@@ -278,7 +278,8 @@ class GitHubDoctorWorker:
             raise PermissionError("The website advanced during validation. Request a fresh review of the case.")
         remote = self._head(request)
         if request.pr_number:
-            self._verify_open_pr(request, remote)
+            if not self._delivery_pr_ready(request, remote):
+                return self._attempt(request, reason="Waiting for GitHub to update the pull request head.")
         if remote != request.pending_head_sha:
             if remote != request.head_sha:
                 raise PermissionError("Doctor repair branch changed outside the validated delivery.")
@@ -332,10 +333,8 @@ class GitHubDoctorWorker:
             request.pr_number = int(pr["number"])
             request.swarmsy_pr_url = f"https://github.com/{self.git.github_repo}/pull/{request.pr_number}"
         else:
-            pr = self._api("GET", f"pulls/{request.pr_number}")
-            self._verify_pr(request, pr, request.pending_head_sha, base_branch)
-            if pr["state"] != "open" or pr["draft"]:
-                raise PermissionError("The Doctor pull request was closed or converted to draft during delivery.")
+            if not self._delivery_pr_ready(request, request.pending_head_sha):
+                return self._attempt(request, reason="Waiting for GitHub to update the pull request head.")
         request.head_sha = request.pending_head_sha
         request.codex_only_head = request.head_sha if request.pending_codex_only else ""
         request.pending_codex_only = False
@@ -350,6 +349,15 @@ class GitHubDoctorWorker:
         log(request, self.settings, "pr_head_published", request.head_sha, self._checkpoint)
         self._request_review(request)
         return self._attempt(request, reason="Waiting for Codex to review the validated commit.")
+
+    def _delivery_pr_ready(self, request: DoctorRequest, expected_head: str) -> bool:
+        pr = self._api("GET", f"pulls/{request.pr_number}")
+        head = pr["head"]["sha"]
+        if head not in (request.head_sha, request.pending_head_sha):
+            raise PermissionError("Pull request head differs from the validated Doctor delivery.")
+        self._verify_pr(request, pr, head, request.base_branch)
+        self._require_open_pr(request, pr)
+        return head == expected_head
 
     def _revalidate_website(self, request: DoctorRequest, base_branch: str, base: str) -> DoctorRepairAttempt:
         if not self.telegram.enabled or request.codex_patch_requested_head == request.head_sha:
@@ -397,11 +405,15 @@ class GitHubDoctorWorker:
     def _verify_open_pr(self, request: DoctorRequest, expected_head: str) -> dict:
         pr = self._api("GET", f"pulls/{request.pr_number}")
         self._verify_pr(request, pr, expected_head, request.base_branch)
+        self._require_open_pr(request, pr)
+        return pr
+
+    @staticmethod
+    def _require_open_pr(request: DoctorRequest, pr: dict) -> None:
         if pr.get("state") != "open":
             raise PermissionError("PR closed during validation.")
         if paused(pr) or (request.ci_branch and REPAIR_LABEL not in labels(pr)):
             raise RuntimeError("PR is paused, draft, or no longer selected for CI repair.")
-        return pr
 
     def _verify_pr(self, request: DoctorRequest, pr: dict, expected_head: str, base_branch: str) -> None:
         head = pr["head"]
