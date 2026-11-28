@@ -81,7 +81,6 @@ class GitHubDoctorWorker:
 
     def _checkpoint(self, request: DoctorRequest) -> None:
         self.archive.upsert_request(request)
-        self.telegram.checkpoint(request)
 
     def _api(self, method: str, endpoint: str, data: dict | None = None):
         url = f"https://api.github.com/repos/{self.git.github_repo}"

@@ -132,7 +132,9 @@ def test_outbox_survives_restart_and_deduplicates(tmp_path, monkeypatch, request
     path = tmp_path/"archive.json"
     client = TelegramApproval(path, True)
     client.emit(request_record, "running")
-    client.emit(request_record, "running")
+    client.emit(request_record, "pr_opened_waiting_review")
+    client.emit(request_record, "blocked_needs_human_permission")
+    client.emit(request_record, "blocked_needs_human_permission")
     client._post = Mock(return_value={})
     client.flush()
     restarted = TelegramApproval(path, True)
@@ -141,7 +143,7 @@ def test_outbox_survives_restart_and_deduplicates(tmp_path, monkeypatch, request
     restarted.flush()
     events = [call.args[0] for call in restarted._post.call_args_list if call.args[0]["action"] == "event"]
     assert len(events) == 1
-    assert events[0]["event"] == "running"
+    assert events[0]["event"] == "blocked_needs_human_permission"
 
 
 def test_merge_receipt_survives_restart_and_requires_exact_ack(tmp_path, monkeypatch, request_record):
